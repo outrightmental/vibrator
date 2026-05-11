@@ -87,8 +87,49 @@ test("buildPlan chooses the oldest unblocked issues up to available capacity", (
   ]);
 });
 
-test("buildPlan requests another review after review comments are addressed", () => {
+test("buildPlan shepherds a PR with no linked issue by requesting Copilot review", () => {
   const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [createPullRequest({ number: 200, linkedIssueNumbers: [] })],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "request-review", issueNumber: undefined, pullRequestNumber: 200 },
+  ]);
+});
+
+test("buildPlan continues shepherding an unlinked PR through the review cycle", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 201,
+        linkedIssueNumbers: [],
+        hasCleanCopilotReviewOnHead: true,
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "write-final-description",
+      issueNumber: undefined,
+      pullRequestNumber: 201,
+      pullRequestTitle: "PR 201",
+      pullRequestHeadRefName: "branch-201",
+      closingIssueNumbers: [],
+      pullRequestBody: "",
+    },
+  ]);
+});
+
+test("buildPlan requests another review after review comments are addressed", () => {  const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 9 })],
     pullRequests: [createPullRequest({ number: 12, linkedIssueNumbers: [9] })],
     agentSessions: [
