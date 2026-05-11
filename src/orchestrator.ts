@@ -9,8 +9,12 @@ import type {
 
 const BLOCKED_BY_PATTERN = /\b(?:blocked by|depends on)\s+#(\d+)\b/gi;
 const BLOCKS_PATTERN = /\bblocks\s+#(\d+)\b/gi;
-const LINKED_ISSUE_PATTERN =
-  /\b(?:close[sd]?|fix(?:e[sd]?|es)?|resolve[sd]?|implement(?:s|ed)?|for)\s+#(\d+)\b/gi;
+const LINKED_ISSUE_KEYWORDS =
+  String.raw`(?:close[sd]?|fix(?:e[sd]?|es)?|resolve[sd]?|implement(?:s|ed)?|for)`;
+const LINKED_ISSUE_PATTERN = new RegExp(
+  String.raw`\b${LINKED_ISSUE_KEYWORDS}\s*:?\s*#(\d+)\b`,
+  "gi",
+);
 
 const ACTIVE_STATUSES = new Set(["queued", "in_progress"]);
 
@@ -99,13 +103,14 @@ function buildPullRequestIndex(pullRequests: PullRequest[]): Map<number, PullReq
 
 function getRelevantSessions(
   agentSessions: AgentSession[],
-  issueNumber: number,
+  issueNumbers: readonly number[],
   pullRequestNumber: number,
 ): AgentSession[] {
+  const issueNumberSet = new Set(issueNumbers);
   return agentSessions
     .filter(
       (session) =>
-        session.issueNumber === issueNumber ||
+        issueNumberSet.has(session.issueNumber) ||
         session.pullRequestNumber === pullRequestNumber,
     )
     .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt));
@@ -119,21 +124,30 @@ function getLatestCompletedSession(agentSessions: AgentSession[]): AgentSession 
 
 function planPullRequestAction(
   pullRequest: PullRequest,
-  issueNumber: number,
+  issueNumbers: readonly number[],
   agentSessions: AgentSession[],
 ): OrchestratorAction | undefined {
-  const relevantSessions = getRelevantSessions(agentSessions, issueNumber, pullRequest.number);
+  const issueNumber = issueNumbers[0];
+  if (issueNumber === undefined) {
+    return undefined;
+  }
+
+  const relevantSessions = getRelevantSessions(agentSessions, issueNumbers, pullRequest.number);
   if (relevantSessions.some(isActiveSession)) {
     return undefined;
   }
 
   const latestCompletedSession = getLatestCompletedSession(relevantSessions);
+  const sessionIssueNumber =
+    latestCompletedSession && issueNumbers.includes(latestCompletedSession.issueNumber)
+      ? latestCompletedSession.issueNumber
+      : issueNumber;
   if (latestCompletedSession?.phase === "review") {
     const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
     if (reviewCommentCount > 0) {
       return {
         type: "address-review-comments",
-        issueNumber,
+        issueNumber: sessionIssueNumber,
         pullRequestNumber: pullRequest.number,
         reviewCommentCount,
       };
@@ -141,7 +155,7 @@ function planPullRequestAction(
 
     return {
       type: "write-final-description",
-      issueNumber,
+      issueNumber: sessionIssueNumber,
       pullRequestNumber: pullRequest.number,
     };
   }
@@ -149,11 +163,12 @@ function planPullRequestAction(
   if (latestCompletedSession?.phase === "final-description") {
     return {
       type: "merge-pull-request",
-      issueNumber,
+      issueNumber: sessionIssueNumber,
+      issueNumbers: [...issueNumbers],
       pullRequestNumber: pullRequest.number,
       pullRequestBody: buildMergedPullRequestBody(
         pullRequest.body,
-        issueNumber,
+        issueNumbers,
         latestCompletedSession.result?.generatedDescription,
       ),
     };
@@ -162,7 +177,7 @@ function planPullRequestAction(
   if (latestCompletedSession?.phase === "address-review-comments") {
     return {
       type: "request-review",
-      issueNumber,
+      issueNumber: sessionIssueNumber,
       pullRequestNumber: pullRequest.number,
     };
   }
@@ -170,7 +185,7 @@ function planPullRequestAction(
   if (latestCompletedSession?.phase === "implementation") {
     return {
       type: "request-review",
-      issueNumber,
+      issueNumber: sessionIssueNumber,
       pullRequestNumber: pullRequest.number,
     };
   }
@@ -206,16 +221,21 @@ function countImplementationSessionsWithoutPullRequests(
 
 export function buildMergedPullRequestBody(
   pullRequestBody: string,
-  issueNumber: number,
+  issueNumbers: readonly number[],
   generatedDescription?: string,
 ): string {
   const baseBody = (generatedDescription ?? pullRequestBody).trim();
-  const closesLine = `Closes #${issueNumber}`;
-  if (baseBody.includes(closesLine)) {
-    return baseBody;
-  }
+  const missingClosingReferences = uniqueSorted(issueNumbers)
+    .filter(
+      (issueNumber) =>
+        !new RegExp(
+          String.raw`\b${LINKED_ISSUE_KEYWORDS}\s*:?\s*#${issueNumber}\b`,
+          "i",
+        ).test(baseBody),
+    )
+    .map((issueNumber) => `Closes #${issueNumber}`);
 
-  return [baseBody, closesLine].filter(Boolean).join("\n\n");
+  return [baseBody, ...missingClosingReferences].filter(Boolean).join("\n\n");
 }
 
 export function buildPlan(
@@ -231,12 +251,11 @@ export function buildPlan(
 
   const actions: OrchestratorAction[] = [];
   for (const pullRequest of pullRequests) {
-    const issueNumber = pullRequest.linkedIssueNumbers[0];
-    if (issueNumber === undefined) {
-      continue;
-    }
-
-    const action = planPullRequestAction(pullRequest, issueNumber, snapshot.agentSessions);
+    const action = planPullRequestAction(
+      pullRequest,
+      pullRequest.linkedIssueNumbers,
+      snapshot.agentSessions,
+    );
     if (action) {
       actions.push(action);
     }

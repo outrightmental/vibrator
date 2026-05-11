@@ -124,7 +124,7 @@ async function executeAction(
     case "merge-pull-request":
       await gitHubClient.updatePullRequestBody(
         action.pullRequestNumber,
-        buildMergedPullRequestBody(action.pullRequestBody, action.issueNumber),
+        buildMergedPullRequestBody(action.pullRequestBody, action.issueNumbers),
       );
       await gitHubClient.mergePullRequest(action.pullRequestNumber);
       return;

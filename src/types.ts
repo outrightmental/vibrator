@@ -62,6 +62,7 @@ export type OrchestratorAction =
   | {
       type: "merge-pull-request";
       issueNumber: number;
+      issueNumbers: number[];
       pullRequestNumber: number;
       pullRequestBody: string;
     };

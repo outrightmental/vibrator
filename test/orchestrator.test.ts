@@ -158,6 +158,7 @@ test("buildPlan merges a pull request after a final description has been generat
     {
       type: "merge-pull-request",
       issueNumber: 5,
+      issueNumbers: [5],
       pullRequestNumber: 15,
       pullRequestBody: "Final summary.\n\nCloses #5",
     },
@@ -171,13 +172,56 @@ test("parseLinkedIssueNumbers finds closes and fixes references", () => {
   );
 });
 
+test("parseLinkedIssueNumbers accepts optional punctuation before the issue reference", () => {
+  assert.deepEqual(
+    parseLinkedIssueNumbers("Closes: #12\nFixes:#7\nResolves : #9"),
+    [7, 9, 12],
+  );
+});
+
+test("buildPlan uses sessions from any linked issue on the same pull request", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 3 }), createIssue({ number: 8 })],
+    pullRequests: [createPullRequest({ number: 20, linkedIssueNumbers: [3, 8] })],
+    agentSessions: [
+      createSession({
+        id: "review-8",
+        issueNumber: 8,
+        pullRequestNumber: 20,
+        phase: "review",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { reviewCommentCount: 1 },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "address-review-comments",
+      issueNumber: 8,
+      pullRequestNumber: 20,
+      reviewCommentCount: 1,
+    },
+  ]);
+});
+
 test("buildMergedPullRequestBody appends a closing reference once", () => {
   assert.equal(
-    buildMergedPullRequestBody("Summary", 42),
+    buildMergedPullRequestBody("Summary", [42]),
     "Summary\n\nCloses #42",
   );
   assert.equal(
-    buildMergedPullRequestBody("Summary\n\nCloses #42", 42),
+    buildMergedPullRequestBody("Summary\n\nCloses #42", [42]),
     "Summary\n\nCloses #42",
+  );
+  assert.equal(
+    buildMergedPullRequestBody("Summary\n\ncloses #42", [42]),
+    "Summary\n\ncloses #42",
+  );
+  assert.equal(
+    buildMergedPullRequestBody("Summary", [42, 7]),
+    "Summary\n\nCloses #7\n\nCloses #42",
   );
 });
