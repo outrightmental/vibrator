@@ -6,6 +6,13 @@ export interface Issue {
   updatedAt: string;
   state: "open" | "closed";
   assignees: string[];
+  /**
+   * GitHub's native issue Type (e.g. "Bug", "Feature", "Task"). This is the
+   * `type` field surfaced by the Issue Types feature — distinct from labels.
+   * `null` when the repository has no type assigned to the issue (or hasn't
+   * adopted issue types). Compared case-insensitively by callers.
+   */
+  type: string | null;
 }
 
 export interface PullRequest {

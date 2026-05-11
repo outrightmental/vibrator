@@ -56,6 +56,7 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     assignees: overrides.assignees ?? [],
+    type: overrides.type ?? null,
   };
 }
 

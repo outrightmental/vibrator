@@ -18,6 +18,7 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     assignees: overrides.assignees ?? [],
+    type: overrides.type ?? null,
   };
 }
 
@@ -85,6 +86,24 @@ test("buildPlan chooses the oldest unblocked issues up to available capacity", (
     { type: "start-implementation", issueNumber: 1 },
     { type: "start-implementation", issueNumber: 4 },
   ]);
+});
+
+test("buildPlan prioritizes bug-typed issues ahead of older non-bug issues", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      // Older feature issue — would win on createdAt alone.
+      createIssue({ number: 9, createdAt: "2024-01-01T00:00:00.000Z", type: "Feature" }),
+      createIssue({ number: 50, createdAt: "2024-02-01T00:00:00.000Z", type: "Task" }),
+      // Newer bug — must be picked first by virtue of its issue Type.
+      createIssue({ number: 70, createdAt: "2024-03-01T00:00:00.000Z", type: "Bug" }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 1);
+
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 70 }]);
 });
 
 test("buildPlan shepherds a PR with no linked issue by requesting Copilot review", () => {

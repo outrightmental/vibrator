@@ -81,6 +81,10 @@ interface GitHubIssueResponse {
   updated_at: string;
   pull_request?: object;
   assignees?: Array<{ login: string }> | null;
+  // GitHub's Issue Types feature. The REST API returns the assigned type as
+  // a nested object on the issue payload, or null when the repository has
+  // not assigned a type. Distinct from labels.
+  type?: { name?: string | null } | null;
 }
 
 interface GitHubPullRequestResponse {
@@ -303,6 +307,7 @@ export class GitHubClient {
         createdAt: issue.created_at,
         updatedAt: issue.updated_at,
         assignees: (issue.assignees ?? []).map((assignee) => assignee.login),
+        type: issue.type?.name ?? null,
       }));
   }
 

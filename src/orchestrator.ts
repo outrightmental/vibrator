@@ -35,6 +35,20 @@ function sortByCreatedAt<T extends { createdAt: string; number: number }>(items:
   });
 }
 
+/**
+ * Lower number = higher priority. Bugs (GitHub issue Type === "Bug",
+ * case-insensitively) jump ahead of every other type — features, tasks,
+ * chores, untyped issues — because an open bug with no blocking
+ * relationships should always be addressed before new feature/task work.
+ * Compared on the native issue Type field, NOT labels.
+ */
+function issuePriority(issue: Issue): number {
+  if (issue.type?.toLowerCase() === "bug") {
+    return 0;
+  }
+  return 1;
+}
+
 function appendMatches(target: Set<number>, source: string, pattern: RegExp): void {
   for (const match of source.matchAll(pattern)) {
     const capturedIssueNumber = match[1];
@@ -413,7 +427,16 @@ export function buildPlan(
     return blockers.every((blocker) => !openIssueNumbers.has(blocker));
   });
 
-  for (const issue of eligibleIssues.slice(0, remainingCapacity)) {
+  // Prioritize bugs ahead of other issue types. GitHub's native issue Type
+  // (distinct from labels) is the authoritative signal — an unblocked open
+  // bug should always be picked before any feature/task/chore work,
+  // regardless of which was filed first. Within the same priority bucket the
+  // existing createdAt ordering is preserved (oldest first).
+  const prioritizedEligibleIssues = [...eligibleIssues].sort(
+    (left, right) => issuePriority(left) - issuePriority(right),
+  );
+
+  for (const issue of prioritizedEligibleIssues.slice(0, remainingCapacity)) {
     actions.push({ type: "start-implementation", issueNumber: issue.number });
   }
 
