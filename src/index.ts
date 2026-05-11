@@ -144,8 +144,12 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       }
       log(`  Approving workflow ${label}...`);
       try {
-        await gitHubClient.approveWorkflowRun(run.id);
-        log(`  Approved workflow ${label}.`);
+        const result = await gitHubClient.approveWorkflowRun(run.id);
+        if (result.approved) {
+          log(`  Approved workflow ${label}.`);
+        } else {
+          log(`  Skipped workflow ${label}: ${result.reason}`);
+        }
       } catch (error) {
         log(`  Failed to approve workflow ${label}: ${(error as Error).message}`);
       }

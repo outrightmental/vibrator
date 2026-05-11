@@ -377,12 +377,18 @@ export class GitHubClient {
           continue;
         }
         seenRunIds.add(run.id);
+        // Skip runs that have already transitioned out of a pending state
+        // (the API can return stale entries briefly after status changes).
+        const actualStatus = run.status ?? status;
+        if (actualStatus !== "action_required" && actualStatus !== "waiting") {
+          continue;
+        }
         matches.push({
           id: run.id,
           name: run.name ?? "",
           headBranch: run.head_branch ?? "",
           event: run.event,
-          status: run.status ?? status,
+          status: actualStatus,
           htmlUrl:
             run.html_url ??
             `${this.repositoryUrl()}/actions/runs/${run.id}`,
@@ -393,14 +399,28 @@ export class GitHubClient {
     return matches;
   }
 
-  async approveWorkflowRun(runId: number): Promise<void> {
-    await this.request(
-      `/repos/${this.options.owner}/${this.options.repo}/actions/runs/${runId}/approve`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      },
-    );
+  async approveWorkflowRun(runId: number): Promise<{ approved: boolean; reason?: string }> {
+    try {
+      await this.request(
+        `/repos/${this.options.owner}/${this.options.repo}/actions/runs/${runId}/approve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+      return { approved: true };
+    } catch (error) {
+      const statusCode = (error as NodeJS.ErrnoException & { statusCode?: number }).statusCode;
+      // 403 is expected for same-repo branches — the /approve endpoint only works
+      // for fork PRs from first-time external contributors.
+      if (statusCode === 403) {
+        return {
+          approved: false,
+          reason: "not a fork PR — /approve only applies to first-time external contributors",
+        };
+      }
+      throw error;
+    }
   }
 
   async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
