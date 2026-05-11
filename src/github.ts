@@ -189,11 +189,11 @@ export class GitHubClient {
   }
 
   async listOpenPullRequests(): Promise<PullRequest[]> {
-    const [pullRequests, closingIssueNumbersByPullRequest] = await Promise.all([
+    const [pullRequests, prGraphQLData] = await Promise.all([
       this.getAllPages<GitHubPullRequestResponse>(
         `/repos/${this.options.owner}/${this.options.repo}/pulls?state=open`,
       ),
-      this.fetchOpenPullRequestClosingIssueReferences(),
+      this.fetchOpenPullRequestGraphQLData(),
     ]);
 
     return pullRequests.map((pullRequest) => {
@@ -203,7 +203,8 @@ export class GitHubClient {
       // the Copilot coding agent often link via the sidebar rather than
       // writing "Fixes #N" in the body. Merge it with any in-body keyword
       // references so we don't miss either source.
-      const linkedFromGitHub = closingIssueNumbersByPullRequest.get(pullRequest.number) ?? [];
+      const graphQLData = prGraphQLData.get(pullRequest.number);
+      const linkedFromGitHub = graphQLData?.closingIssueNumbers ?? [];
       const linkedFromBody = parseLinkedIssueNumbers(textForRegex);
       const closingFromBody = parseClosingIssueNumbers(textForRegex);
       const linkedIssueNumbers = mergeSortedUnique(linkedFromGitHub, linkedFromBody);
@@ -215,6 +216,7 @@ export class GitHubClient {
         headSha: pullRequest.head.sha,
         state: pullRequest.state,
         draft: pullRequest.draft,
+        hasMergeConflicts: graphQLData?.hasMergeConflicts ?? false,
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         linkedIssueNumbers,
@@ -223,28 +225,32 @@ export class GitHubClient {
     });
   }
 
-  private async fetchOpenPullRequestClosingIssueReferences(): Promise<Map<number, number[]>> {
-    const result = new Map<number, number[]>();
+  private async fetchOpenPullRequestGraphQLData(): Promise<Map<number, { closingIssueNumbers: number[]; hasMergeConflicts: boolean }>> {
+    type QueryResult = {
+      repository: {
+        pullRequests: {
+          nodes: Array<{
+            number: number;
+            mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+            closingIssuesReferences: { nodes: Array<{ number: number }> } | null;
+          }>;
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        };
+      } | null;
+    };
+
+    const result = new Map<number, { closingIssueNumbers: number[]; hasMergeConflicts: boolean }>();
     let after: string | null = null;
 
     do {
-      const data = await this.graphqlRequest<{
-        repository: {
-          pullRequests: {
-            nodes: Array<{
-              number: number;
-              closingIssuesReferences: { nodes: Array<{ number: number }> } | null;
-            }>;
-            pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          };
-        } | null;
-      }>(
+      const data: QueryResult = await this.graphqlRequest<QueryResult>(
         `
-          query OpenPullRequestClosingIssues($owner: String!, $repo: String!, $after: String) {
+          query OpenPullRequestGraphQLData($owner: String!, $repo: String!, $after: String) {
             repository(owner: $owner, name: $repo) {
               pullRequests(first: 50, states: OPEN, after: $after) {
                 nodes {
                   number
+                  mergeable
                   closingIssuesReferences(first: 50) { nodes { number } }
                 }
                 pageInfo { hasNextPage endCursor }
@@ -262,7 +268,11 @@ export class GitHubClient {
 
       for (const node of pullRequests.nodes) {
         const issueNumbers = node.closingIssuesReferences?.nodes.map((reference) => reference.number) ?? [];
-        result.set(node.number, [...new Set(issueNumbers)].sort((left, right) => left - right));
+        result.set(node.number, {
+          closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
+          // UNKNOWN means GitHub hasn't computed mergeability yet — treat conservatively as no conflict.
+          hasMergeConflicts: node.mergeable === "CONFLICTING",
+        });
       }
 
       after = pullRequests.pageInfo.hasNextPage ? pullRequests.pageInfo.endCursor : null;
@@ -494,6 +504,51 @@ export class GitHubClient {
       }
       throw error;
     }
+  }
+
+  async requestCopilotReview(pullRequestNumber: number): Promise<void> {
+    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
+
+    // Use the github.com-only `requestReviewsByLogin` GraphQL mutation to
+    // register a formal pull-request review request from the Copilot code
+    // review bot. The bot login requires the `[bot]` suffix on this mutation.
+    // `union: true` ensures any existing reviewers are preserved.
+    await this.graphqlRequest(
+      `
+        mutation RequestCopilotReview($pullRequestId: ID!, $botLogins: [String!]!) {
+          requestReviewsByLogin(
+            input: { pullRequestId: $pullRequestId, botLogins: $botLogins, union: true }
+          ) {
+            clientMutationId
+          }
+        }
+      `,
+      {
+        pullRequestId: pullRequestNodeId,
+        botLogins: ["copilot-pull-request-reviewer[bot]"],
+      },
+    );
+  }
+
+  private async getPullRequestNodeId(pullRequestNumber: number): Promise<string> {
+    const data = await this.graphqlRequest<{
+      repository: { pullRequest: { id: string } | null } | null;
+    }>(
+      `
+        query PullRequestNodeId($owner: String!, $repo: String!, $pullRequestNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $pullRequestNumber) { id }
+          }
+        }
+      `,
+      { owner: this.options.owner, repo: this.options.repo, pullRequestNumber },
+    );
+
+    const id = data.repository?.pullRequest?.id;
+    if (!id) {
+      throw new Error(`Could not resolve node id for pull request #${pullRequestNumber}.`);
+    }
+    return id;
   }
 
   async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {

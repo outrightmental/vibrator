@@ -7,6 +7,7 @@ export interface ActionGitHubClient {
   updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void>;
   mergePullRequest(pullRequestNumber: number): Promise<void>;
   resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void>;
+  requestCopilotReview(pullRequestNumber: number): Promise<void>;
 }
 
 export interface ActionSessionStore {
@@ -54,10 +55,7 @@ export async function executeAction(
       if (action.resolveReviewThreads) {
         await gitHubClient.resolvePullRequestReviewThreads(action.pullRequestNumber);
       }
-      await gitHubClient.createIssueComment(
-        action.pullRequestNumber,
-        "@copilot Please review this pull request using automatic model selection.",
-      );
+      await gitHubClient.requestCopilotReview(action.pullRequestNumber);
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         pullRequestNumber: action.pullRequestNumber,
@@ -94,6 +92,18 @@ export async function executeAction(
         buildMergedPullRequestBody(action.pullRequestBody, action.closingIssueNumbers),
       );
       await gitHubClient.mergePullRequest(action.pullRequestNumber);
+      return;
+    case "resolve-conflicts":
+      await gitHubClient.createIssueComment(
+        action.pullRequestNumber,
+        "@copilot This pull request has merge conflicts. Please resolve the conflicts and push the changes.",
+      );
+      await sessionStore.createSession({
+        issueNumber: action.issueNumber,
+        pullRequestNumber: action.pullRequestNumber,
+        phase: "resolve-conflicts",
+        result: { pullRequestHeadSha: action.pullRequestHeadSha },
+      });
       return;
   }
 }

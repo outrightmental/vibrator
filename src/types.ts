@@ -17,6 +17,7 @@ export interface PullRequest {
   updatedAt: string;
   state: "open" | "closed";
   draft: boolean;
+  hasMergeConflicts: boolean;
   linkedIssueNumbers: number[];
   closingIssueNumbers: number[];
 }
@@ -25,6 +26,7 @@ export type AgentSessionPhase =
   | "implementation"
   | "review"
   | "address-review-comments"
+  | "resolve-conflicts"
   | "final-description";
 
 export type AgentSessionStatus = "queued" | "in_progress" | "completed" | "failed";
@@ -75,6 +77,12 @@ export type OrchestratorAction =
       pullRequestNumber: number;
       closingIssueNumbers: number[];
       pullRequestBody: string;
+    }
+  | {
+      type: "resolve-conflicts";
+      issueNumber: number;
+      pullRequestNumber: number;
+      pullRequestHeadSha: string;
     }
   | {
       type: "merge-pull-request";

@@ -135,6 +135,12 @@ export async function reconcileSessions(
           events.push({ session, outcome: "completed" });
         }
         break;
+      case "resolve-conflicts":
+        if (pullRequest && hasUpdatedHeadSha(session, pullRequest)) {
+          await sessionStore.completeSession(session.id);
+          events.push({ session, outcome: "completed" });
+        }
+        break;
       case "final-description":
         if (pullRequest && hasUpdatedPullRequestBody(session, pullRequest)) {
           await sessionStore.completeSession(session.id, {

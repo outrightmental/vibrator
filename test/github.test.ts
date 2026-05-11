@@ -77,8 +77,8 @@ test("listOpenPullRequests merges GitHub closingIssuesReferences with body-keywo
 
     if (url.endsWith("/graphql")) {
       const body = JSON.parse(String(init?.body)) as { query: string };
-      // We only expect the open-pull-request closing-issue refs query here.
-      assert.match(body.query, /query OpenPullRequestClosingIssues/);
+      // We only expect the open-pull-request graphql data query here.
+      assert.match(body.query, /query OpenPullRequestGraphQLData/);
       assert.equal(countBraceBalance(body.query), 0);
       return new Response(
         JSON.stringify({
@@ -88,10 +88,12 @@ test("listOpenPullRequests merges GitHub closingIssuesReferences with body-keywo
                 nodes: [
                   {
                     number: 101,
+                    mergeable: "MERGEABLE",
                     closingIssuesReferences: { nodes: [{ number: 7 }] },
                   },
                   {
                     number: 102,
+                    mergeable: "CONFLICTING",
                     closingIssuesReferences: { nodes: [] },
                   },
                 ],
@@ -152,9 +154,11 @@ test("listOpenPullRequests merges GitHub closingIssuesReferences with body-keywo
     // PR #101: linked only via GitHub sidebar — body has no keyword.
     assert.deepEqual(pr101.linkedIssueNumbers, [7]);
     assert.deepEqual(pr101.closingIssueNumbers, [7]);
-    // PR #102: linked only via body keyword "Fixes #9".
+    assert.equal(pr101.hasMergeConflicts, false);
+    // PR #102: linked only via body keyword "Fixes #9"; has merge conflicts.
     assert.deepEqual(pr102.linkedIssueNumbers, [9]);
     assert.deepEqual(pr102.closingIssueNumbers, [9]);
+    assert.equal(pr102.hasMergeConflicts, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -158,6 +158,20 @@ function planPullRequestAction(
     issueNumbers.includes(completedSessionIssueNumber)
       ? completedSessionIssueNumber
       : issueNumber;
+
+  // Merge conflicts take priority over the normal review/merge flow. We ask
+  // Copilot to resolve them before proceeding; once the head SHA changes
+  // (Copilot pushed a resolution) the resolve-conflicts session completes and
+  // the normal flow resumes on the next iteration.
+  if (pullRequest.hasMergeConflicts) {
+    return {
+      type: "resolve-conflicts",
+      issueNumber: actionIssueNumber,
+      pullRequestNumber: pullRequest.number,
+      pullRequestHeadSha: pullRequest.headSha,
+    };
+  }
+
   if (latestCompletedSession?.phase === "review") {
     const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
     if (reviewCommentCount > 0) {
@@ -214,6 +228,15 @@ function planPullRequestAction(
       issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
       resolveReviewThreads: true,
+    };
+  }
+
+  if (latestCompletedSession?.phase === "resolve-conflicts") {
+    // Conflicts were resolved and Copilot pushed new code — start a fresh review.
+    return {
+      type: "request-review",
+      issueNumber: actionIssueNumber,
+      pullRequestNumber: pullRequest.number,
     };
   }
 

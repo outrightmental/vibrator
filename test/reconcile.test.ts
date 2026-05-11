@@ -27,6 +27,7 @@ function createPullRequest(
     headSha: overrides.headSha ?? `sha-${overrides.number}`,
     state: overrides.state ?? "open",
     draft: overrides.draft ?? false,
+    hasMergeConflicts: overrides.hasMergeConflicts ?? false,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,
@@ -319,6 +320,53 @@ test("reconcileSessions completes address-review-comments sessions when the PR h
   );
 
   assert.deepEqual(completedSessions, ["address-review-comments-2"]);
+});
+
+test("reconcileSessions completes resolve-conflicts sessions when the PR head sha changes", async () => {
+  const completedSessions: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 11,
+        linkedIssueNumbers: [6],
+        closingIssueNumbers: [6],
+        headSha: "sha-resolved",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "resolve-conflicts-1",
+        issueNumber: 6,
+        pullRequestNumber: 11,
+        phase: "resolve-conflicts",
+        result: { pullRequestHeadSha: "sha-conflicting" },
+      }),
+    ],
+  };
+
+  await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
+        return [];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessions.push(sessionId);
+        return undefined;
+      },
+      async failSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, ["resolve-conflicts-1"]);
 });
 
 test("reconcileSessions does not complete final-description sessions when the PR body is unchanged", async () => {

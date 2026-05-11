@@ -22,6 +22,9 @@ test("executeAction assigns the issue to Copilot when starting implementation", 
     async resolvePullRequestReviewThreads(): Promise<void> {
       calls.push("resolve");
     },
+    async requestCopilotReview(pullRequestNumber: number): Promise<void> {
+      calls.push(`request-review:${pullRequestNumber}`);
+    },
   };
   const sessions: Array<{
     issueNumber: number;
@@ -67,6 +70,9 @@ test("executeAction resolves review threads before requesting another review", a
     async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
       calls.push(`resolve:${pullRequestNumber}`);
     },
+    async requestCopilotReview(pullRequestNumber: number): Promise<void> {
+      calls.push(`request-review:${pullRequestNumber}`);
+    },
   };
   const sessions: Array<{
     issueNumber: number;
@@ -95,7 +101,7 @@ test("executeAction resolves review threads before requesting another review", a
 
   assert.deepEqual(calls, [
     "resolve:12",
-    "comment:12:@copilot Please review this pull request using automatic model selection.",
+    "request-review:12",
   ]);
   assert.deepEqual(sessions, [
     { issueNumber: 9, pullRequestNumber: 12, phase: "review" },
@@ -120,6 +126,9 @@ test("executeAction skips review-thread resolution for a first review request", 
     async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
       calls.push(`resolve:${pullRequestNumber}`);
     },
+    async requestCopilotReview(pullRequestNumber: number): Promise<void> {
+      calls.push(`request-review:${pullRequestNumber}`);
+    },
   };
   const sessionStore = {
     async createSession(): Promise<void> {},
@@ -133,7 +142,7 @@ test("executeAction skips review-thread resolution for a first review request", 
   await executeAction(gitHubClient, sessionStore, action, false);
 
   assert.deepEqual(calls, [
-    "comment:10:@copilot Please review this pull request using automatic model selection.",
+    "request-review:10",
   ]);
 });
 
@@ -154,6 +163,9 @@ test("executeAction only requests explicit closing references in final descripti
     },
     async resolvePullRequestReviewThreads(): Promise<void> {
       calls.push("resolve");
+    },
+    async requestCopilotReview(): Promise<void> {
+      calls.push("request-review");
     },
   };
   const sessionStore = {
@@ -196,6 +208,9 @@ test("executeAction formats multiple explicit closing references correctly", asy
     async resolvePullRequestReviewThreads(): Promise<void> {
       calls.push("resolve");
     },
+    async requestCopilotReview(): Promise<void> {
+      calls.push("request-review");
+    },
   };
   const sessionStore = {
     async createSession(): Promise<void> {},
@@ -232,6 +247,7 @@ test("executeAction stores the current PR head sha when requesting review commen
     async updatePullRequestBody(): Promise<void> {},
     async mergePullRequest(): Promise<void> {},
     async resolvePullRequestReviewThreads(): Promise<void> {},
+    async requestCopilotReview(): Promise<void> {},
   };
   const sessionStore = {
     async createSession(input: {
@@ -280,6 +296,7 @@ test("executeAction stores the current PR body when requesting a final descripti
     async updatePullRequestBody(): Promise<void> {},
     async mergePullRequest(): Promise<void> {},
     async resolvePullRequestReviewThreads(): Promise<void> {},
+    async requestCopilotReview(): Promise<void> {},
   };
   const sessionStore = {
     async createSession(input: {

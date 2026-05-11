@@ -31,6 +31,7 @@ function createPullRequest(
     headSha: overrides.headSha ?? `sha-${overrides.number}`,
     state: overrides.state ?? "open",
     draft: overrides.draft ?? false,
+    hasMergeConflicts: overrides.hasMergeConflicts ?? false,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,
@@ -193,6 +194,93 @@ test("buildPlan requests Copilot review on a draft pull request with no prior se
 
   assert.deepEqual(plan.actions, [
     { type: "request-review", issueNumber: 11, pullRequestNumber: 21 },
+  ]);
+});
+
+test("buildPlan asks Copilot to resolve merge conflicts before any other PR action", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 12 })],
+    pullRequests: [
+      createPullRequest({
+        number: 22,
+        linkedIssueNumbers: [12],
+        hasMergeConflicts: true,
+        headSha: "sha-conflict",
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "resolve-conflicts",
+      issueNumber: 12,
+      pullRequestNumber: 22,
+      pullRequestHeadSha: "sha-conflict",
+    },
+  ]);
+});
+
+test("buildPlan asks Copilot to resolve conflicts even when a completed session exists", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 13 })],
+    pullRequests: [
+      createPullRequest({
+        number: 23,
+        linkedIssueNumbers: [13],
+        hasMergeConflicts: true,
+        headSha: "sha-conflict-2",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-1",
+        issueNumber: 13,
+        pullRequestNumber: 23,
+        phase: "review",
+        result: { reviewCommentCount: 0 },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "resolve-conflicts",
+      issueNumber: 13,
+      pullRequestNumber: 23,
+      pullRequestHeadSha: "sha-conflict-2",
+    },
+  ]);
+});
+
+test("buildPlan requests a fresh review after conflicts are resolved", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 14 })],
+    pullRequests: [
+      createPullRequest({
+        number: 24,
+        linkedIssueNumbers: [14],
+        hasMergeConflicts: false,
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "resolve-conflicts-1",
+        issueNumber: 14,
+        pullRequestNumber: 24,
+        phase: "resolve-conflicts",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "request-review", issueNumber: 14, pullRequestNumber: 24 },
   ]);
 });
 
