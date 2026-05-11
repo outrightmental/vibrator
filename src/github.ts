@@ -209,14 +209,107 @@ export class GitHubClient {
   }
 
   async assignIssueToCopilot(issueNumber: number): Promise<void> {
-    await this.request(
-      `/repos/${this.options.owner}/${this.options.repo}/issues/${issueNumber}/assignees`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assignees: ["Copilot"] }),
-      },
+    const issueNodeId = await this.getIssueNodeId(issueNumber);
+    const copilotBotId = await this.getCopilotAssigneeId();
+    if (!copilotBotId) {
+      throw new Error(
+        `Cannot assign issue #${issueNumber} to Copilot: the Copilot coding agent is not available as an assignee on ${this.options.owner}/${this.options.repo}. Enable the Copilot coding agent for this repository and ensure your GITHUB_TOKEN has access.`,
+      );
+    }
+
+    const data = await this.graphqlRequest<{
+      replaceActorsForAssignable: {
+        assignable: {
+          assignees: { nodes: Array<{ login: string }> };
+        } | null;
+      };
+    }>(
+      `
+        mutation AssignCopilot($assignableId: ID!, $actorIds: [ID!]!) {
+          replaceActorsForAssignable(input: { assignableId: $assignableId, actorIds: $actorIds }) {
+            assignable {
+              ... on Issue {
+                assignees(first: 20) {
+                  nodes { login }
+                }
+              }
+            }
+          }
+        }
+      `,
+      { assignableId: issueNodeId, actorIds: [copilotBotId] },
     );
+
+    const assignedLogins = data.replaceActorsForAssignable.assignable?.assignees.nodes.map(
+      (node) => node.login.toLowerCase(),
+    ) ?? [];
+    if (!assignedLogins.some((login) => login === "copilot" || login === "copilot-swe-agent")) {
+      throw new Error(
+        `Assigning issue #${issueNumber} to Copilot did not take effect (final assignees: ${assignedLogins.join(", ") || "none"}).`,
+      );
+    }
+  }
+
+  private cachedCopilotAssigneeId: string | null | undefined;
+
+  private async getCopilotAssigneeId(): Promise<string | null> {
+    if (this.cachedCopilotAssigneeId !== undefined) {
+      return this.cachedCopilotAssigneeId;
+    }
+
+    const data = await this.graphqlRequest<{
+      repository: {
+        suggestedActors: {
+          nodes: Array<{ __typename: string; id: string; login: string }>;
+        };
+      } | null;
+    }>(
+      `
+        query SuggestedAssignees($owner: String!, $repo: String!) {
+          repository(owner: $owner, name: $repo) {
+            suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+              nodes {
+                __typename
+                ... on Bot { id login }
+                ... on User { id login }
+                ... on Organization { id login }
+                ... on Mannequin { id login }
+              }
+            }
+          }
+        }
+      `,
+      { owner: this.options.owner, repo: this.options.repo },
+    );
+
+    const nodes = data.repository?.suggestedActors.nodes ?? [];
+    const copilotNode = nodes.find((node) => {
+      const login = node.login?.toLowerCase();
+      return login === "copilot" || login === "copilot-swe-agent";
+    });
+    this.cachedCopilotAssigneeId = copilotNode?.id ?? null;
+    return this.cachedCopilotAssigneeId;
+  }
+
+  private async getIssueNodeId(issueNumber: number): Promise<string> {
+    const data = await this.graphqlRequest<{
+      repository: { issue: { id: string } | null } | null;
+    }>(
+      `
+        query IssueNodeId($owner: String!, $repo: String!, $issueNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            issue(number: $issueNumber) { id }
+          }
+        }
+      `,
+      { owner: this.options.owner, repo: this.options.repo, issueNumber },
+    );
+
+    const id = data.repository?.issue?.id;
+    if (!id) {
+      throw new Error(`Could not resolve node id for issue #${issueNumber}.`);
+    }
+    return id;
   }
 
   async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {
