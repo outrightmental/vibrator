@@ -712,3 +712,113 @@ test("buildPlan does not reduce capacity for implementation sessions on closed i
     { type: "start-implementation", issueNumber: 2 },
   ]);
 });
+
+test("buildPlan sets reassignCopilot on address-review-comments after a copilot-did-not-acknowledge failure", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 7 })],
+    pullRequests: [createPullRequest({ number: 16, linkedIssueNumbers: [7] })],
+    agentSessions: [
+      createSession({
+        id: "review-1",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "review",
+        status: "completed",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { reviewCommentCount: 2 },
+      }),
+      createSession({
+        id: "address-failed-1",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "address-review-comments",
+        status: "failed",
+        updatedAt: "2024-01-02T00:30:00.000Z",
+        staleReason: "copilot-did-not-acknowledge",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "address-review-comments",
+      issueNumber: 7,
+      pullRequestNumber: 16,
+      pullRequestHeadSha: "sha-16",
+      reviewCommentCount: 2,
+      reassignCopilot: true,
+    },
+  ]);
+});
+
+test("buildPlan does not set reassignCopilot when a later completed address-review-comments session cleared the no-ack failure", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 7 })],
+    pullRequests: [createPullRequest({ number: 16, linkedIssueNumbers: [7] })],
+    agentSessions: [
+      createSession({
+        id: "review-1",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "review",
+        status: "completed",
+        updatedAt: "2024-01-03T00:00:00.000Z",
+        result: { reviewCommentCount: 1 },
+      }),
+      createSession({
+        id: "address-failed-1",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "address-review-comments",
+        status: "failed",
+        updatedAt: "2024-01-02T00:30:00.000Z",
+        staleReason: "copilot-did-not-acknowledge",
+      }),
+      createSession({
+        id: "address-completed-1",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "address-review-comments",
+        status: "completed",
+        updatedAt: "2024-01-02T01:00:00.000Z",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "address-review-comments",
+      issueNumber: 7,
+      pullRequestNumber: 16,
+      pullRequestHeadSha: "sha-16",
+      reviewCommentCount: 1,
+    },
+  ]);
+});
+
+test("buildPlan sets reassignCopilot on start-implementation after a copilot-did-not-acknowledge implementation failure", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 42, createdAt: "2024-01-01T00:00:00.000Z" })],
+    pullRequests: [],
+    agentSessions: [
+      createSession({
+        id: "impl-failed-1",
+        issueNumber: 42,
+        phase: "implementation",
+        status: "failed",
+        updatedAt: "2024-01-02T00:30:00.000Z",
+        staleReason: "copilot-did-not-acknowledge",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 2);
+
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 42, reassignCopilot: true },
+  ]);
+});
