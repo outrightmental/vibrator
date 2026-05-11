@@ -348,8 +348,26 @@ export class GitHubClient {
       html_url: string | null;
     }
 
-    const statusesToQuery = ["action_required", "waiting"] as const;
-    const seenRunIds = new Set<number>();
+    // Statuses that indicate a workflow run is awaiting approval. GitHub uses
+    // `action_required` for first-time-contributor approval and `waiting` for
+    // environment / deployment protection rule approvals.
+    const PENDING_STATUSES = new Set(["action_required", "waiting"]);
+
+    // Fetch recent runs without a status filter and inspect each — the
+    // `?status=action_required` query filter has been observed to omit runs
+    // that the UI shows as "Action required", so we filter client-side.
+    let response: { workflow_runs?: WorkflowRunResponse[] };
+    try {
+      response = await this.request<{ workflow_runs?: WorkflowRunResponse[] }>(
+        `/repos/${this.options.owner}/${this.options.repo}/actions/runs?per_page=100`,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
+        return [];
+      }
+      throw error;
+    }
+
     const matches: Array<{
       id: number;
       name: string;
@@ -359,41 +377,25 @@ export class GitHubClient {
       htmlUrl: string;
     }> = [];
 
-    for (const status of statusesToQuery) {
-      let response: { workflow_runs?: WorkflowRunResponse[] };
-      try {
-        response = await this.request<{ workflow_runs?: WorkflowRunResponse[] }>(
-          `/repos/${this.options.owner}/${this.options.repo}/actions/runs?status=${status}&per_page=100`,
-        );
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
-          continue;
-        }
-        throw error;
+    for (const run of response.workflow_runs ?? []) {
+      const actualStatus = run.status ?? "";
+      const actualConclusion = run.conclusion ?? "";
+      // A run is awaiting approval if either its status indicates pending
+      // approval, or it's a completed run with conclusion=action_required
+      // (e.g. previously-run workflows needing re-approval).
+      const isPending =
+        PENDING_STATUSES.has(actualStatus) || actualConclusion === "action_required";
+      if (!isPending) {
+        continue;
       }
-
-      for (const run of response.workflow_runs ?? []) {
-        if (seenRunIds.has(run.id)) {
-          continue;
-        }
-        seenRunIds.add(run.id);
-        // Skip runs that have already transitioned out of a pending state
-        // (the API can return stale entries briefly after status changes).
-        const actualStatus = run.status ?? status;
-        if (actualStatus !== "action_required" && actualStatus !== "waiting") {
-          continue;
-        }
-        matches.push({
-          id: run.id,
-          name: run.name ?? "",
-          headBranch: run.head_branch ?? "",
-          event: run.event,
-          status: actualStatus,
-          htmlUrl:
-            run.html_url ??
-            `${this.repositoryUrl()}/actions/runs/${run.id}`,
-        });
-      }
+      matches.push({
+        id: run.id,
+        name: run.name ?? "",
+        headBranch: run.head_branch ?? "",
+        event: run.event,
+        status: actualConclusion === "action_required" ? "action_required" : actualStatus,
+        htmlUrl: run.html_url ?? `${this.repositoryUrl()}/actions/runs/${run.id}`,
+      });
     }
 
     return matches;
