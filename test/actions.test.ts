@@ -79,3 +79,40 @@ test("executeAction skips review-thread resolution for a first review request", 
     "comment:10:@copilot Please review this pull request using automatic model selection.",
   ]);
 });
+
+test("executeAction only requests explicit closing references in final descriptions", async () => {
+  const calls: string[] = [];
+  const gitHubClient = {
+    async createIssueComment(issueNumber: number, body: string): Promise<void> {
+      calls.push(`comment:${issueNumber}:${body}`);
+    },
+    async updatePullRequestBody(): Promise<void> {
+      calls.push("update");
+    },
+    async mergePullRequest(): Promise<void> {
+      calls.push("merge");
+    },
+    async resolvePullRequestReviewThreads(): Promise<void> {
+      calls.push("resolve");
+    },
+  };
+  const sessionStore = {
+    async createSession(): Promise<void> {},
+  };
+
+  await executeAction(
+    gitHubClient,
+    sessionStore,
+    {
+      type: "write-final-description",
+      issueNumber: 3,
+      pullRequestNumber: 10,
+      closingIssueNumbers: [],
+    },
+    false,
+  );
+
+  assert.deepEqual(calls, [
+    "comment:10:@copilot Please write the final pull request description based on the final commits in this pull request.",
+  ]);
+});

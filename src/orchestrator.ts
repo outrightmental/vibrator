@@ -9,8 +9,12 @@ import type {
 
 const BLOCKED_BY_PATTERN = /\b(?:blocked by|depends on)\s+#(\d+)\b/gi;
 const BLOCKS_PATTERN = /\bblocks\s+#(\d+)\b/gi;
-const LINKED_ISSUE_KEYWORDS =
-  String.raw`(?:close[sd]?|fix(?:e[sd]?|es)?|resolve[sd]?|implement(?:s|ed)?|for)`;
+const CLOSING_ISSUE_KEYWORDS = String.raw`(?:close[sd]?|fix(?:e[sd]?|es)?|resolve[sd]?)`;
+const LINKED_ISSUE_KEYWORDS = String.raw`(?:${CLOSING_ISSUE_KEYWORDS}|implement(?:s|ed)?|for)`;
+const CLOSING_ISSUE_PATTERN = new RegExp(
+  String.raw`\b${CLOSING_ISSUE_KEYWORDS}\s*:?\s*#(\d+)\b`,
+  "gi",
+);
 const LINKED_ISSUE_PATTERN = new RegExp(
   String.raw`\b${LINKED_ISSUE_KEYWORDS}\s*:?\s*#(\d+)\b`,
   "gi",
@@ -59,6 +63,12 @@ export function parseLinkedIssueNumbers(text: string): number[] {
   const linkedIssues = new Set<number>();
   appendMatches(linkedIssues, text, LINKED_ISSUE_PATTERN);
   return uniqueSorted(linkedIssues);
+}
+
+export function parseClosingIssueNumbers(text: string): number[] {
+  const closingIssues = new Set<number>();
+  appendMatches(closingIssues, text, CLOSING_ISSUE_PATTERN);
+  return uniqueSorted(closingIssues);
 }
 
 export function buildBlockedIssueIndex(issues: Issue[]): Record<number, number[]> {
@@ -161,6 +171,7 @@ function planPullRequestAction(
       type: "write-final-description",
       issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
+      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
     };
   }
 
@@ -168,11 +179,11 @@ function planPullRequestAction(
     return {
       type: "merge-pull-request",
       issueNumber: actionIssueNumber,
-      issueNumbers: [...issueNumbers],
+      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
       pullRequestNumber: pullRequest.number,
       pullRequestBody: buildMergedPullRequestBody(
         pullRequest.body,
-        issueNumbers,
+        pullRequest.closingIssueNumbers,
         latestCompletedSession.result?.generatedDescription,
       ),
     };
@@ -226,13 +237,13 @@ function countImplementationSessionsWithoutPullRequests(
 
 export function buildMergedPullRequestBody(
   pullRequestBody: string,
-  issueNumbers: readonly number[],
+  closingIssueNumbers: readonly number[],
   generatedDescription?: string,
 ): string {
   const baseBody = (generatedDescription ?? pullRequestBody).trim();
-  const existingLinkedIssues = new Set(parseLinkedIssueNumbers(baseBody));
-  const missingClosingReferences = uniqueSorted(issueNumbers)
-    .filter((issueNumber) => !existingLinkedIssues.has(issueNumber))
+  const existingClosingIssues = new Set(parseClosingIssueNumbers(baseBody));
+  const missingClosingReferences = uniqueSorted(closingIssueNumbers)
+    .filter((issueNumber) => !existingClosingIssues.has(issueNumber))
     .map((issueNumber) => `Closes #${issueNumber}`);
 
   return [baseBody, ...missingClosingReferences].filter(Boolean).join("\n\n");

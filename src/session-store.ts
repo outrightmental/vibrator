@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { AgentSession, AgentSessionPhase, AgentSessionResult, AgentSessionStatus } from "./types.js";
@@ -7,8 +7,43 @@ interface SessionState {
   sessions: AgentSession[];
 }
 
+const MAX_PERSISTED_TERMINAL_SESSIONS = 200;
+
 function nowIsoString(): string {
   return new Date().toISOString();
+}
+
+function isActiveSession(session: AgentSession): boolean {
+  return session.status === "queued" || session.status === "in_progress";
+}
+
+function getSessionSortTimestamp(session: AgentSession): number {
+  return Date.parse(session.updatedAt);
+}
+
+function buildSessionKey(session: AgentSession): string {
+  return `${session.issueNumber}:${session.pullRequestNumber ?? ""}:${session.phase}`;
+}
+
+function pruneSessions(sessions: AgentSession[]): AgentSession[] {
+  const activeSessions = sessions.filter(isActiveSession);
+  const terminalSessionsByKey = new Map<string, AgentSession>();
+
+  for (const session of [...sessions]
+    .filter((session) => !isActiveSession(session))
+    .sort((left, right) => getSessionSortTimestamp(right) - getSessionSortTimestamp(left))) {
+    const key = buildSessionKey(session);
+    if (!terminalSessionsByKey.has(key)) {
+      terminalSessionsByKey.set(key, session);
+    }
+    if (terminalSessionsByKey.size >= MAX_PERSISTED_TERMINAL_SESSIONS) {
+      break;
+    }
+  }
+
+  return [...activeSessions, ...terminalSessionsByKey.values()].sort(
+    (left, right) => getSessionSortTimestamp(left) - getSessionSortTimestamp(right),
+  );
 }
 
 export class FileSessionStore {
@@ -30,11 +65,13 @@ export class FileSessionStore {
 
   async save(sessions: AgentSession[]): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
+    const tempFilePath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(
-      this.filePath,
-      `${JSON.stringify({ sessions }, null, 2)}\n`,
+      tempFilePath,
+      `${JSON.stringify({ sessions: pruneSessions(sessions) }, null, 2)}\n`,
       "utf8",
     );
+    await rename(tempFilePath, this.filePath);
   }
 
   async createSession(input: {
@@ -82,5 +119,33 @@ export class FileSessionStore {
     }
     await this.save(sessions);
     return session;
+  }
+
+  async failStaleSessions(maxAgeMs: number, now = Date.now()): Promise<AgentSession[]> {
+    const sessions = await this.load();
+    const failedSessions: AgentSession[] = [];
+    const failedAt = new Date(now).toISOString();
+
+    for (const session of sessions) {
+      if (!isActiveSession(session)) {
+        continue;
+      }
+
+      const lastUpdatedAt = Date.parse(session.updatedAt);
+      if (Number.isNaN(lastUpdatedAt) || now - lastUpdatedAt < maxAgeMs) {
+        continue;
+      }
+
+      session.status = "failed";
+      session.updatedAt = failedAt;
+      session.completedAt = failedAt;
+      failedSessions.push(session);
+    }
+
+    if (failedSessions.length > 0) {
+      await this.save(sessions);
+    }
+
+    return failedSessions;
   }
 }

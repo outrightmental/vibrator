@@ -18,6 +18,7 @@ interface Config {
   once: boolean;
   dryRun: boolean;
   sessionStorePath: string;
+  sessionTimeoutMs: number;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -52,6 +53,7 @@ function parseArgs(argv: string[]): Config {
   const intervalMs = Number.parseInt(process.env.LOOP_INTERVAL_MS ?? "60000", 10);
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
+  const sessionTimeoutMs = Number.parseInt(process.env.SESSION_TIMEOUT_MS ?? "21600000", 10);
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
 
@@ -64,6 +66,7 @@ function parseArgs(argv: string[]): Config {
     once,
     dryRun,
     sessionStorePath,
+    sessionTimeoutMs: Number.isNaN(sessionTimeoutMs) ? 21600000 : sessionTimeoutMs,
   };
 }
 
@@ -74,6 +77,7 @@ async function runIteration(config: Config): Promise<void> {
     token: config.token,
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
+  await sessionStore.failStaleSessions(config.sessionTimeoutMs);
   const snapshot = await loadSnapshot(gitHubClient, sessionStore);
   const plan = buildPlan(snapshot, config.maxConcurrency);
 

@@ -16,6 +16,17 @@ export interface ActionSessionStore {
   }): Promise<unknown>;
 }
 
+function buildFinalDescriptionPrompt(closingIssueNumbers: readonly number[]): string {
+  if (closingIssueNumbers.length === 0) {
+    return "@copilot Please write the final pull request description based on the final commits in this pull request.";
+  }
+
+  const closingReferences = closingIssueNumbers
+    .map((issueNumber) => `Closes #${issueNumber}`)
+    .join('", "');
+  return `@copilot Please write the final pull request description based on the final commits in this pull request and include "${closingReferences}".`;
+}
+
 export async function executeAction(
   gitHubClient: ActionGitHubClient,
   sessionStore: ActionSessionStore,
@@ -65,7 +76,7 @@ export async function executeAction(
     case "write-final-description":
       await gitHubClient.createIssueComment(
         action.pullRequestNumber,
-        `@copilot Please write the final pull request description based on the final commits in this pull request and include "Closes #${action.issueNumber}".`,
+        buildFinalDescriptionPrompt(action.closingIssueNumbers),
       );
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
@@ -76,7 +87,7 @@ export async function executeAction(
     case "merge-pull-request":
       await gitHubClient.updatePullRequestBody(
         action.pullRequestNumber,
-        buildMergedPullRequestBody(action.pullRequestBody, action.issueNumbers),
+        buildMergedPullRequestBody(action.pullRequestBody, action.closingIssueNumbers),
       );
       await gitHubClient.mergePullRequest(action.pullRequestNumber);
       return;

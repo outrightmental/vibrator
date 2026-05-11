@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildMergedPullRequestBody,
   buildPlan,
+  parseClosingIssueNumbers,
   parseLinkedIssueNumbers,
 } from "../src/orchestrator.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "../src/types.js";
@@ -31,6 +32,7 @@ function createPullRequest(
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,
+    closingIssueNumbers: overrides.closingIssueNumbers ?? overrides.linkedIssueNumbers,
   };
 }
 
@@ -142,6 +144,7 @@ test("buildPlan merges a pull request after a final description has been generat
       createPullRequest({
         number: 15,
         linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
         body: "Ready to merge.",
       }),
     ],
@@ -163,9 +166,45 @@ test("buildPlan merges a pull request after a final description has been generat
     {
       type: "merge-pull-request",
       issueNumber: 5,
-      issueNumbers: [5],
+      closingIssueNumbers: [5],
       pullRequestNumber: 15,
       pullRequestBody: "Final summary.\n\nCloses #5",
+    },
+  ]);
+});
+
+test("buildPlan does not append closing references for non-closing issue links", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 6 })],
+    pullRequests: [
+      createPullRequest({
+        number: 18,
+        linkedIssueNumbers: [6],
+        closingIssueNumbers: [],
+        body: "Implements the requested change for #6.",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "description-2",
+        issueNumber: 6,
+        pullRequestNumber: 18,
+        phase: "final-description",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { generatedDescription: "Final summary." },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "merge-pull-request",
+      issueNumber: 6,
+      closingIssueNumbers: [],
+      pullRequestNumber: 18,
+      pullRequestBody: "Final summary.",
     },
   ]);
 });
@@ -174,6 +213,13 @@ test("parseLinkedIssueNumbers finds closes and fixes references", () => {
   assert.deepEqual(
     parseLinkedIssueNumbers("Implements feature. Fixes #12 and closes #7."),
     [7, 12],
+  );
+});
+
+test("parseClosingIssueNumbers only finds explicit closing references", () => {
+  assert.deepEqual(
+    parseClosingIssueNumbers("For #12. Implements #8. Fixes #7 and closes: #3."),
+    [3, 7],
   );
 });
 

@@ -16,6 +16,7 @@ export interface PullRequest {
   state: "open" | "closed";
   draft: boolean;
   linkedIssueNumbers: number[];
+  closingIssueNumbers: number[];
 }
 
 export type AgentSessionPhase =
@@ -63,11 +64,16 @@ export type OrchestratorAction =
       pullRequestNumber: number;
       reviewCommentCount: number;
     }
-  | { type: "write-final-description"; issueNumber: number; pullRequestNumber: number }
+  | {
+      type: "write-final-description";
+      issueNumber: number;
+      pullRequestNumber: number;
+      closingIssueNumbers: number[];
+    }
   | {
       type: "merge-pull-request";
       issueNumber: number;
-      issueNumbers: number[];
+      closingIssueNumbers: number[];
       pullRequestNumber: number;
       pullRequestBody: string;
     };

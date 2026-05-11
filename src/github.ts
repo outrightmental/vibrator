@@ -1,7 +1,4 @@
-import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
-
-import { parseLinkedIssueNumbers } from "./orchestrator.js";
+import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "./types.js";
 
@@ -152,6 +149,9 @@ export class GitHubClient {
       linkedIssueNumbers: parseLinkedIssueNumbers(
         `${pullRequest.title}\n${pullRequest.body ?? ""}`,
       ),
+      closingIssueNumbers: parseClosingIssueNumbers(
+        `${pullRequest.title}\n${pullRequest.body ?? ""}`,
+      ),
     }));
   }
 
@@ -253,10 +253,6 @@ export async function loadSnapshot(
   ]);
 
   return { issues, pullRequests, agentSessions };
-}
-
-export async function ensureSessionStoreDirectory(filePath: string): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
 }
 
 export function buildDefaultSessionStorePath(owner: string, repo: string): string {
