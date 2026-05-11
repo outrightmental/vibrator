@@ -10,6 +10,7 @@ import {
 } from "./github.js";
 import { createLocalCopilotChatClient } from "./local-copilot.js";
 import { buildPlan } from "./orchestrator.js";
+import { detectRateLimitMessage } from "./rate-limit.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import type {
@@ -199,6 +200,29 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   );
   write(HEAVY_RULE);
 
+  // --- Rate-limit pause -------------------------------------------------
+  // If a previous iteration detected a Copilot rate-limit message and
+  // recorded a reset timestamp, refuse to dispatch any GitHub-side work
+  // until that window has elapsed. The whole point is to stop spamming
+  // the repo with requests that Copilot will immediately reject.
+  const rateLimitedUntil = await sessionStore.getRateLimitedUntil();
+  if (rateLimitedUntil && rateLimitedUntil.getTime() > Date.now()) {
+    section("Rate-limited — skipping iteration");
+    bullet(
+      `Copilot rate limit in effect until ${rateLimitedUntil.toISOString()} ` +
+        `(≈${formatDuration(rateLimitedUntil.getTime() - Date.now())} remaining)`,
+    );
+    note(
+      "vibrator will resume automatically once the window elapses. To clear " +
+        "this manually, delete `rateLimitedUntil` from the session store file.",
+    );
+    return;
+  }
+  if (rateLimitedUntil && rateLimitedUntil.getTime() <= Date.now()) {
+    // Window elapsed — clear the marker so the rest of the iteration runs normally.
+    await sessionStore.setRateLimitedUntil(undefined);
+  }
+
   // --- Workflow approvals ------------------------------------------------
   section("Workflow approvals");
   try {
@@ -303,6 +327,56 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   for (const session of reconciledActiveSessions) {
     note(`◦ ${describeSession(session, gitHubClient)}`, 2);
   }
+
+  // --- Rate-limit detection --------------------------------------------
+  // Scan recent "Copilot stopped work" timeline events on every open PR
+  // for the rate-limit message ("You've hit your rate limit. Please wait
+  // for your limit to reset in N minutes…"). If detected, persist the
+  // reset time and skip plan execution — the next iteration will see the
+  // pause and short-circuit immediately.
+  section("Copilot rate-limit check");
+  let detectedRateLimitResetAt: Date | undefined;
+  for (const pullRequest of snapshot.pullRequests) {
+    try {
+      const stoppedEvents = await gitHubClient.listCopilotStoppedWorkEvents(
+        pullRequest.number,
+      );
+      for (const event of stoppedEvents) {
+        const detection = detectRateLimitMessage(event.message);
+        if (!detection) continue;
+        if (
+          !detectedRateLimitResetAt ||
+          detection.resetAt.getTime() > detectedRateLimitResetAt.getTime()
+        ) {
+          detectedRateLimitResetAt = detection.resetAt;
+        }
+        note(
+          `◦ rate-limit message on PR #${pullRequest.number} (${gitHubClient.pullRequestUrl(pullRequest.number)}) — ` +
+            `reset at ${detection.resetAt.toISOString()}` +
+            (detection.durationWasParsed ? "" : " (fallback window)"),
+          2,
+        );
+      }
+    } catch (error) {
+      note(
+        `◦ failed to scan PR #${pullRequest.number} timeline: ${(error as Error).message}`,
+        2,
+      );
+    }
+  }
+  if (detectedRateLimitResetAt) {
+    await sessionStore.setRateLimitedUntil(detectedRateLimitResetAt);
+    bullet(
+      `pausing until ${detectedRateLimitResetAt.toISOString()} ` +
+        `(≈${formatDuration(detectedRateLimitResetAt.getTime() - Date.now())} from now)`,
+    );
+    note(
+      "Skipping plan execution this iteration. Subsequent iterations will be " +
+        "skipped until the window elapses.",
+    );
+    return;
+  }
+  bullet("no active rate-limit messages detected");
 
   // --- Plan -------------------------------------------------------------
   const plan = buildPlan(snapshot, config.maxConcurrency);

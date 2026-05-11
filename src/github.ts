@@ -6,9 +6,44 @@ import { FileSessionStore } from "./session-store.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "./types.js";
 
 /**
- * Runs a shell command, inheriting stderr (so any failure output is visible)
- * and rejecting on a non-zero exit code.
+ * Pulls every plausible string field out of a GitHub timeline event so
+ * downstream code can search the combined text for rate-limit phrases
+ * and similar markers. The Copilot coding agent's "stopped work"
+ * timeline events do not have a fixed payload shape — the human-visible
+ * error message has appeared on `message`, `body`, `summary`, and
+ * nested `error.message` at various times. Flatten them all into one
+ * newline-joined string and let pattern matching decide what's
+ * meaningful.
  */
+export function extractEventMessage(event: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 4 || value === null || value === undefined) return;
+    if (typeof value === "string") {
+      parts.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const nested of Object.values(value as Record<string, unknown>)) {
+        visit(nested, depth + 1);
+      }
+    }
+  };
+  for (const [key, value] of Object.entries(event)) {
+    // Skip metadata fields that never carry the user-visible message.
+    if (key === "event" || key === "created_at" || key === "node_id" || key === "id") {
+      continue;
+    }
+    visit(value, 0);
+  }
+  return parts.join("\n");
+}
+
+
 function runShellCommand(command: string, args: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"] });
@@ -863,6 +898,55 @@ export class GitHubClient {
         );
       })
       .map((event) => ({ createdAt: event.created_at }));
+  }
+
+  /**
+   * Returns recent "Copilot stopped work due to an error" timeline events
+   * on a pull request, including any message body the event carries.
+   * The Copilot coding agent posts these when it aborts a session for
+   * any reason (rate-limit exhaustion, internal error, etc.). vibrator
+   * inspects the message body to detect rate-limit exhaustion and
+   * temporarily pauses dispatching new work.
+   *
+   * The exact event name is not part of GitHub's public REST spec and
+   * has changed over time; we therefore match any "copilot" event whose
+   * name suggests an abort (stop/error/fail/abort/cancel). We also
+   * surface every plausible text field on the event payload so the
+   * caller can run rate-limit detection across whichever field GitHub
+   * is using today.
+   */
+  async listCopilotStoppedWorkEvents(
+    pullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string; message: string }>> {
+    // The Copilot agent's stopped-work timeline event isn't part of
+    // GitHub's typed REST schema; the message body can land on any of
+    // several string fields (`message`, `body`, nested `error.message`,
+    // etc.). Read pragmatically with an index signature.
+    interface TimelineEvent {
+      event?: string;
+      created_at?: string;
+      [key: string]: unknown;
+    }
+    const events = await this.getAllPages<TimelineEvent>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/timeline`,
+    );
+    return events
+      .filter((event): event is TimelineEvent & { created_at: string } => {
+        if (!event.created_at) return false;
+        const name = (event.event ?? "").toLowerCase();
+        if (!name.includes("copilot")) return false;
+        return (
+          name.includes("stop") ||
+          name.includes("error") ||
+          name.includes("fail") ||
+          name.includes("abort") ||
+          name.includes("cancel")
+        );
+      })
+      .map((event) => ({
+        createdAt: event.created_at,
+        message: extractEventMessage(event),
+      }));
   }
 
   private async listUnresolvedPullRequestReviewThreadIds(
