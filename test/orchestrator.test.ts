@@ -310,3 +310,28 @@ test("buildMergedPullRequestBody appends a closing reference once", () => {
     "Summary\n\nCloses #7\n\nCloses #42",
   );
 });
+
+test("buildPlan does not reduce capacity for implementation sessions on closed issues", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z" }),
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z" }),
+    ],
+    pullRequests: [],
+    agentSessions: [
+      createSession({
+        id: "implementation-closed",
+        issueNumber: 99,
+        phase: "implementation",
+        status: "in_progress",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 2);
+
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+    { type: "start-implementation", issueNumber: 2 },
+  ]);
+});

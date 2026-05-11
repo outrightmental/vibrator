@@ -231,6 +231,7 @@ function planPullRequestAction(
 
 function countImplementationSessionsWithoutPullRequests(
   agentSessions: AgentSession[],
+  openIssueNumbers: ReadonlySet<number>,
   pullRequestIndex: Map<number, PullRequest>,
 ): number {
   const issueNumbers = new Set<number>();
@@ -238,6 +239,7 @@ function countImplementationSessionsWithoutPullRequests(
     if (
       session.phase === "implementation" &&
       isActiveSession(session) &&
+      openIssueNumbers.has(session.issueNumber) &&
       !pullRequestIndex.has(session.issueNumber)
     ) {
       issueNumbers.add(session.issueNumber);
@@ -289,8 +291,10 @@ export function buildPlan(
   }
 
   const activePullRequestCount = pullRequests.length;
+  const openIssueNumbers = new Set(issues.map((issue) => issue.number));
   const implementationSessionsWithoutPullRequests = countImplementationSessionsWithoutPullRequests(
     snapshot.agentSessions,
+    openIssueNumbers,
     pullRequestIndex,
   );
   const remainingCapacity = Math.max(
@@ -315,7 +319,6 @@ export function buildPlan(
     }
   }
 
-  const openIssueNumbers = new Set(issues.map((issue) => issue.number));
   const eligibleIssues = issues.filter((issue) => {
     if (unavailableIssueNumbers.has(issue.number)) {
       return false;

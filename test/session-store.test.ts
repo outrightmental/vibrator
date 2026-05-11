@@ -133,3 +133,34 @@ test("createSession generates unique ids", async () => {
 
   assert.notEqual(first.id, second.id);
 });
+
+test("save replaces an existing session file on repeated writes", async () => {
+  const filePath = await createSessionStorePath();
+  const sessionStore = new FileSessionStore(filePath);
+
+  await sessionStore.save([
+    {
+      id: "session-1",
+      issueNumber: 1,
+      phase: "implementation",
+      status: "completed",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+      completedAt: "2024-01-01T00:00:00.000Z",
+    },
+  ]);
+  await sessionStore.save([
+    {
+      id: "session-2",
+      issueNumber: 2,
+      phase: "review",
+      status: "completed",
+      createdAt: "2024-01-02T00:00:00.000Z",
+      updatedAt: "2024-01-02T00:00:00.000Z",
+      completedAt: "2024-01-02T00:00:00.000Z",
+    },
+  ]);
+
+  const persistedSessions = await sessionStore.load();
+  assert.deepEqual(persistedSessions.map((session) => session.id), ["session-2"]);
+});

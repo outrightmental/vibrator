@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { AgentSession, AgentSessionPhase, AgentSessionResult, AgentSessionStatus } from "./types.js";
@@ -11,6 +11,7 @@ interface SessionState {
 // Keep enough recent terminal history for follow-up planning while preventing
 // the local session-store file from growing without bound during long-running use.
 const MAX_PERSISTED_TERMINAL_SESSIONS = 200;
+const WINDOWS_RENAME_CONFLICT_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES"]);
 
 function nowIsoString(): string {
   return new Date().toISOString();
@@ -49,6 +50,52 @@ function pruneSessions(sessions: AgentSession[]): AgentSession[] {
   );
 }
 
+async function replaceFileCrossPlatform(
+  tempFilePath: string,
+  filePath: string,
+): Promise<void> {
+  try {
+    await rename(tempFilePath, filePath);
+    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!code || !WINDOWS_RENAME_CONFLICT_ERROR_CODES.has(code)) {
+      throw error;
+    }
+  }
+
+  const backupFilePath = `${filePath}.${randomUUID()}.bak`;
+  let backupCreated = false;
+
+  try {
+    try {
+      await rename(filePath, backupFilePath);
+      backupCreated = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    await rename(tempFilePath, filePath);
+
+    if (backupCreated) {
+      await rm(backupFilePath, { force: true });
+    }
+  } catch (error) {
+    if (backupCreated) {
+      try {
+        await rename(backupFilePath, filePath);
+      } catch {
+        // Best effort restore before surfacing the original write failure.
+      }
+    }
+
+    await rm(tempFilePath, { force: true });
+    throw error;
+  }
+}
+
 export class FileSessionStore {
   constructor(private readonly filePath: string) {}
 
@@ -74,7 +121,7 @@ export class FileSessionStore {
       `${JSON.stringify({ sessions: pruneSessions(sessions) }, null, 2)}\n`,
       "utf8",
     );
-    await rename(tempFilePath, this.filePath);
+    await replaceFileCrossPlatform(tempFilePath, this.filePath);
   }
 
   async createSession(input: {
