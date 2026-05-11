@@ -17,6 +17,7 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     state: overrides.state ?? "open",
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
+    assignees: overrides.assignees ?? [],
   };
 }
 
@@ -28,8 +29,11 @@ function createPullRequest(
     title: overrides.title ?? `PR ${overrides.number}`,
     body: overrides.body ?? "",
     headSha: overrides.headSha ?? `sha-${overrides.number}`,
+    headRefName: overrides.headRefName ?? `branch-${overrides.number}`,
     state: overrides.state ?? "open",
     draft: overrides.draft ?? false,
+    hasMergeConflicts: overrides.hasMergeConflicts ?? false,
+    hasCleanCopilotReviewOnHead: overrides.hasCleanCopilotReviewOnHead ?? false,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,
@@ -83,8 +87,49 @@ test("buildPlan chooses the oldest unblocked issues up to available capacity", (
   ]);
 });
 
-test("buildPlan requests another review after review comments are addressed", () => {
+test("buildPlan shepherds a PR with no linked issue by requesting Copilot review", () => {
   const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [createPullRequest({ number: 200, linkedIssueNumbers: [] })],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "request-review", issueNumber: undefined, pullRequestNumber: 200 },
+  ]);
+});
+
+test("buildPlan continues shepherding an unlinked PR through the review cycle", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 201,
+        linkedIssueNumbers: [],
+        hasCleanCopilotReviewOnHead: true,
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "write-final-description",
+      issueNumber: undefined,
+      pullRequestNumber: 201,
+      pullRequestTitle: "PR 201",
+      pullRequestHeadRefName: "branch-201",
+      closingIssueNumbers: [],
+      pullRequestBody: "",
+    },
+  ]);
+});
+
+test("buildPlan requests another review after review comments are addressed", () => {  const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 9 })],
     pullRequests: [createPullRequest({ number: 12, linkedIssueNumbers: [9] })],
     agentSessions: [
@@ -106,6 +151,70 @@ test("buildPlan requests another review after review comments are addressed", ()
       issueNumber: 9,
       pullRequestNumber: 12,
       resolveReviewThreads: true,
+    },
+  ]);
+});
+
+test("buildPlan does not re-request review when Copilot has cleanly reviewed the current head", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 91 })],
+    pullRequests: [
+      createPullRequest({
+        number: 191,
+        linkedIssueNumbers: [91],
+        hasCleanCopilotReviewOnHead: true,
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-1",
+        issueNumber: 91,
+        pullRequestNumber: 191,
+        phase: "address-review-comments",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "write-final-description",
+      issueNumber: 91,
+      pullRequestNumber: 191,
+      pullRequestTitle: "PR 191",
+      pullRequestHeadRefName: "branch-191",
+      closingIssueNumbers: [91],
+      pullRequestBody: "",
+    },
+  ]);
+});
+
+test("buildPlan jumps straight to final-description when a clean Copilot review is seen with no prior session", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 92 })],
+    pullRequests: [
+      createPullRequest({
+        number: 192,
+        linkedIssueNumbers: [92],
+        hasCleanCopilotReviewOnHead: true,
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "write-final-description",
+      issueNumber: 92,
+      pullRequestNumber: 192,
+      pullRequestTitle: "PR 192",
+      pullRequestHeadRefName: "branch-192",
+      closingIssueNumbers: [92],
+      pullRequestBody: "",
     },
   ]);
 });
@@ -175,6 +284,113 @@ test("buildPlan merges a pull request after a final description has been generat
   ]);
 });
 
+test("buildPlan requests Copilot review on a draft pull request with no prior session", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 11 })],
+    pullRequests: [
+      createPullRequest({
+        number: 21,
+        linkedIssueNumbers: [11],
+        draft: true,
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "request-review", issueNumber: 11, pullRequestNumber: 21 },
+  ]);
+});
+
+test("buildPlan asks Copilot to resolve merge conflicts before any other PR action", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 12 })],
+    pullRequests: [
+      createPullRequest({
+        number: 22,
+        linkedIssueNumbers: [12],
+        hasMergeConflicts: true,
+        headSha: "sha-conflict",
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "resolve-conflicts",
+      issueNumber: 12,
+      pullRequestNumber: 22,
+      pullRequestHeadSha: "sha-conflict",
+    },
+  ]);
+});
+
+test("buildPlan asks Copilot to resolve conflicts even when a completed session exists", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 13 })],
+    pullRequests: [
+      createPullRequest({
+        number: 23,
+        linkedIssueNumbers: [13],
+        hasMergeConflicts: true,
+        headSha: "sha-conflict-2",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-1",
+        issueNumber: 13,
+        pullRequestNumber: 23,
+        phase: "review",
+        result: { reviewCommentCount: 0 },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "resolve-conflicts",
+      issueNumber: 13,
+      pullRequestNumber: 23,
+      pullRequestHeadSha: "sha-conflict-2",
+    },
+  ]);
+});
+
+test("buildPlan requests a fresh review after conflicts are resolved", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 14 })],
+    pullRequests: [
+      createPullRequest({
+        number: 24,
+        linkedIssueNumbers: [14],
+        hasMergeConflicts: false,
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "resolve-conflicts-1",
+        issueNumber: 14,
+        pullRequestNumber: 24,
+        phase: "resolve-conflicts",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "request-review", issueNumber: 14, pullRequestNumber: 24 },
+  ]);
+});
+
 test("buildPlan does not merge a draft pull request after final description completion", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 5 })],
@@ -233,6 +449,8 @@ test("buildPlan re-requests the final description if none was captured", () => {
       type: "write-final-description",
       issueNumber: 5,
       pullRequestNumber: 15,
+      pullRequestTitle: "PR 15",
+      pullRequestHeadRefName: "branch-15",
       closingIssueNumbers: [5],
       pullRequestBody: "Ready to merge.",
     },

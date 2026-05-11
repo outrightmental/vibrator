@@ -2,204 +2,205 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { executeAction } from "../src/actions.js";
-import type { OrchestratorAction } from "../src/types.js";
+import type {
+  ActionGitHubClient,
+  ActionLocalCopilotChatClient,
+  ActionSessionStore,
+  ExecuteActionContext,
+} from "../src/actions.js";
+import type { AgentSessionPhase, OrchestratorAction } from "../src/types.js";
 
-test("executeAction resolves review threads before requesting another review", async () => {
+type SessionInput = {
+  issueNumber: number | undefined;
+  pullRequestNumber?: number;
+  phase: AgentSessionPhase;
+  status?: "queued" | "in_progress" | "completed" | "failed";
+  result?: {
+    pullRequestBody?: string;
+    pullRequestHeadSha?: string;
+    generatedDescription?: string;
+  };
+};
+
+interface Harness {
+  calls: string[];
+  sessions: SessionInput[];
+  gitHubClient: ActionGitHubClient;
+  sessionStore: ActionSessionStore;
+  localCopilotChatClient: ActionLocalCopilotChatClient;
+  context: ExecuteActionContext;
+}
+
+function createHarness(overrides: { generatedDescription?: string } = {}): Harness {
   const calls: string[] = [];
-  const gitHubClient = {
+  const sessions: SessionInput[] = [];
+  const gitHubClient: ActionGitHubClient = {
     async createIssueComment(issueNumber: number, body: string): Promise<void> {
       calls.push(`comment:${issueNumber}:${body}`);
     },
-    async updatePullRequestBody(): Promise<void> {
-      calls.push("update");
+    async assignIssueToCopilot(issueNumber: number): Promise<void> {
+      calls.push(`assign:${issueNumber}`);
     },
-    async mergePullRequest(): Promise<void> {
-      calls.push("merge");
+    async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {
+      calls.push(`update-body:${pullRequestNumber}:${body}`);
+    },
+    async mergePullRequest(pullRequestNumber: number): Promise<void> {
+      calls.push(`merge:${pullRequestNumber}`);
+    },
+    async squashMergePullRequest(
+      pullRequestNumber: number,
+      subject: string,
+      body: string,
+    ): Promise<void> {
+      calls.push(`squash-merge:${pullRequestNumber}:${subject}:${body}`);
     },
     async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
       calls.push(`resolve:${pullRequestNumber}`);
     },
-  };
-  const sessions: Array<{
-    issueNumber: number;
-    pullRequestNumber?: number;
-    phase: string;
-    result?: { pullRequestBody?: string; pullRequestHeadSha?: string };
-  }> = [];
-  const sessionStore = {
-    async createSession(input: {
-      issueNumber: number;
-      pullRequestNumber?: number;
-      phase: "implementation" | "review" | "address-review-comments" | "final-description";
-      result?: { pullRequestBody?: string; pullRequestHeadSha?: string };
-    }): Promise<void> {
-      sessions.push(input);
+    async requestCopilotReview(pullRequestNumber: number): Promise<void> {
+      calls.push(`request-review:${pullRequestNumber}`);
     },
   };
-  const action: OrchestratorAction = {
+  const sessionStore: ActionSessionStore = {
+    async createSession(input: SessionInput): Promise<unknown> {
+      sessions.push(input);
+      return input;
+    },
+  };
+  const generatedDescription = overrides.generatedDescription ?? "Generated description";
+  const localCopilotChatClient: ActionLocalCopilotChatClient = {
+    async generateFinalDescription(params): Promise<string> {
+      calls.push(`generate:${params.pullRequestNumber}`);
+      return generatedDescription;
+    },
+  };
+  return {
+    calls,
+    sessions,
+    gitHubClient,
+    sessionStore,
+    localCopilotChatClient,
+    context: { owner: "acme", repo: "widgets" },
+  };
+}
+
+async function run(harness: Harness, action: OrchestratorAction, dryRun = false): Promise<void> {
+  await executeAction(
+    harness.gitHubClient,
+    harness.sessionStore,
+    action,
+    dryRun,
+    harness.localCopilotChatClient,
+    harness.context,
+  );
+}
+
+test("executeAction assigns the issue to Copilot when starting implementation", async () => {
+  const harness = createHarness();
+
+  await run(harness, { type: "start-implementation", issueNumber: 7 });
+
+  assert.deepEqual(harness.calls, ["assign:7"]);
+  assert.deepEqual(harness.sessions, [
+    { issueNumber: 7, phase: "implementation" },
+  ]);
+});
+
+test("executeAction resolves review threads before requesting another review", async () => {
+  const harness = createHarness();
+
+  await run(harness, {
     type: "request-review",
     issueNumber: 9,
     pullRequestNumber: 12,
     resolveReviewThreads: true,
-  };
+  });
 
-  await executeAction(gitHubClient, sessionStore, action, false);
-
-  assert.deepEqual(calls, [
-    "resolve:12",
-    "comment:12:@copilot Please review this pull request using automatic model selection.",
-  ]);
-  assert.deepEqual(sessions, [
+  assert.deepEqual(harness.calls, ["resolve:12", "request-review:12"]);
+  assert.deepEqual(harness.sessions, [
     { issueNumber: 9, pullRequestNumber: 12, phase: "review" },
   ]);
 });
 
 test("executeAction skips review-thread resolution for a first review request", async () => {
-  const calls: string[] = [];
-  const gitHubClient = {
-    async createIssueComment(issueNumber: number, body: string): Promise<void> {
-      calls.push(`comment:${issueNumber}:${body}`);
-    },
-    async updatePullRequestBody(): Promise<void> {
-      calls.push("update");
-    },
-    async mergePullRequest(): Promise<void> {
-      calls.push("merge");
-    },
-    async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
-      calls.push(`resolve:${pullRequestNumber}`);
-    },
-  };
-  const sessionStore = {
-    async createSession(): Promise<void> {},
-  };
-  const action: OrchestratorAction = {
+  const harness = createHarness();
+
+  await run(harness, {
     type: "request-review",
     issueNumber: 3,
     pullRequestNumber: 10,
-  };
+  });
 
-  await executeAction(gitHubClient, sessionStore, action, false);
+  assert.deepEqual(harness.calls, ["request-review:10"]);
+});
 
-  assert.deepEqual(calls, [
-    "comment:10:@copilot Please review this pull request using automatic model selection.",
+test("executeAction generates a description via the local copilot CLI and squash-merges the PR", async () => {
+  const harness = createHarness({ generatedDescription: "Polished description" });
+
+  await run(harness, {
+    type: "write-final-description",
+    issueNumber: 3,
+    pullRequestNumber: 10,
+    pullRequestTitle: "Add widget",
+    pullRequestHeadRefName: "feature/add-widget",
+    closingIssueNumbers: [],
+    pullRequestBody: "Current PR body",
+  });
+
+  assert.deepEqual(harness.calls, [
+    "generate:10",
+    "update-body:10:Polished description",
+    "squash-merge:10:Add widget:Polished description",
+  ]);
+  assert.deepEqual(harness.sessions, [
+    {
+      issueNumber: 3,
+      pullRequestNumber: 10,
+      phase: "final-description",
+      status: "completed",
+      result: {
+        pullRequestBody: "Polished description",
+        generatedDescription: "Polished description",
+      },
+    },
   ]);
 });
 
-test("executeAction only requests explicit closing references in final descriptions", async () => {
-  const calls: string[] = [];
-  const gitHubClient = {
-    async createIssueComment(issueNumber: number, body: string): Promise<void> {
-      calls.push(`comment:${issueNumber}:${body}`);
-    },
-    async updatePullRequestBody(): Promise<void> {
-      calls.push("update");
-    },
-    async mergePullRequest(): Promise<void> {
-      calls.push("merge");
-    },
-    async resolvePullRequestReviewThreads(): Promise<void> {
-      calls.push("resolve");
-    },
-  };
-  const sessionStore = {
-    async createSession(): Promise<void> {},
-  };
+test("executeAction appends missing closing references to the generated description before merging", async () => {
+  const harness = createHarness({
+    generatedDescription: "Summary of changes.\n\nMore details.",
+  });
 
-  await executeAction(
-    gitHubClient,
-    sessionStore,
-    {
-      type: "write-final-description",
-      issueNumber: 3,
-      pullRequestNumber: 10,
-      closingIssueNumbers: [],
-      pullRequestBody: "Current PR body",
-    },
-    false,
-  );
+  await run(harness, {
+    type: "write-final-description",
+    issueNumber: 3,
+    pullRequestNumber: 10,
+    pullRequestTitle: "Fix bug",
+    pullRequestHeadRefName: "fix/bug",
+    closingIssueNumbers: [3, 8],
+    pullRequestBody: "Current PR body",
+  });
 
-  assert.deepEqual(calls, [
-    "comment:10:@copilot Please write the final pull request description based on the final commits in this pull request.",
-  ]);
-});
-
-test("executeAction formats multiple explicit closing references correctly", async () => {
-  const calls: string[] = [];
-  const gitHubClient = {
-    async createIssueComment(issueNumber: number, body: string): Promise<void> {
-      calls.push(`comment:${issueNumber}:${body}`);
-    },
-    async updatePullRequestBody(): Promise<void> {
-      calls.push("update");
-    },
-    async mergePullRequest(): Promise<void> {
-      calls.push("merge");
-    },
-    async resolvePullRequestReviewThreads(): Promise<void> {
-      calls.push("resolve");
-    },
-  };
-  const sessionStore = {
-    async createSession(): Promise<void> {},
-  };
-
-  await executeAction(
-    gitHubClient,
-    sessionStore,
-    {
-      type: "write-final-description",
-      issueNumber: 3,
-      pullRequestNumber: 10,
-      closingIssueNumbers: [3, 8],
-      pullRequestBody: "Current PR body",
-    },
-    false,
-  );
-
-  assert.deepEqual(calls, [
-    'comment:10:@copilot Please write the final pull request description based on the final commits in this pull request and include "Closes #3", "Closes #8".',
+  const expectedBody = "Summary of changes.\n\nMore details.\n\nCloses #3\n\nCloses #8";
+  assert.deepEqual(harness.calls, [
+    "generate:10",
+    `update-body:10:${expectedBody}`,
+    `squash-merge:10:Fix bug:${expectedBody}`,
   ]);
 });
 
 test("executeAction stores the current PR head sha when requesting review comment fixes", async () => {
-  const sessions: Array<{
-    issueNumber: number;
-    pullRequestNumber?: number;
-    phase: string;
-    result?: { pullRequestHeadSha?: string };
-  }> = [];
-  const gitHubClient = {
-    async createIssueComment(): Promise<void> {},
-    async updatePullRequestBody(): Promise<void> {},
-    async mergePullRequest(): Promise<void> {},
-    async resolvePullRequestReviewThreads(): Promise<void> {},
-  };
-  const sessionStore = {
-    async createSession(input: {
-      issueNumber: number;
-      pullRequestNumber?: number;
-      phase: "implementation" | "review" | "address-review-comments" | "final-description";
-      result?: { pullRequestHeadSha?: string };
-    }): Promise<void> {
-      sessions.push(input);
-    },
-  };
+  const harness = createHarness();
 
-  await executeAction(
-    gitHubClient,
-    sessionStore,
-    {
-      type: "address-review-comments",
-      issueNumber: 4,
-      pullRequestNumber: 11,
-      pullRequestHeadSha: "sha-123",
-      reviewCommentCount: 2,
-    },
-    false,
-  );
+  await run(harness, {
+    type: "address-review-comments",
+    issueNumber: 4,
+    pullRequestNumber: 11,
+    pullRequestHeadSha: "sha-123",
+    reviewCommentCount: 2,
+  });
 
-  assert.deepEqual(sessions, [
+  assert.deepEqual(harness.sessions, [
     {
       issueNumber: 4,
       pullRequestNumber: 11,
@@ -209,49 +210,23 @@ test("executeAction stores the current PR head sha when requesting review commen
   ]);
 });
 
-test("executeAction stores the current PR body when requesting a final description", async () => {
-  const sessions: Array<{
-    issueNumber: number;
-    pullRequestNumber?: number;
-    phase: string;
-    result?: { pullRequestBody?: string };
-  }> = [];
-  const gitHubClient = {
-    async createIssueComment(): Promise<void> {},
-    async updatePullRequestBody(): Promise<void> {},
-    async mergePullRequest(): Promise<void> {},
-    async resolvePullRequestReviewThreads(): Promise<void> {},
-  };
-  const sessionStore = {
-    async createSession(input: {
-      issueNumber: number;
-      pullRequestNumber?: number;
-      phase: "implementation" | "review" | "address-review-comments" | "final-description";
-      result?: { pullRequestBody?: string };
-    }): Promise<void> {
-      sessions.push(input);
-    },
-  };
+test("executeAction is a no-op when dry-run is enabled", async () => {
+  const harness = createHarness();
 
-  await executeAction(
-    gitHubClient,
-    sessionStore,
+  await run(
+    harness,
     {
       type: "write-final-description",
-      issueNumber: 4,
-      pullRequestNumber: 11,
-      closingIssueNumbers: [4],
-      pullRequestBody: "Current PR body",
+      issueNumber: 3,
+      pullRequestNumber: 10,
+      pullRequestTitle: "T",
+      pullRequestHeadRefName: "b",
+      closingIssueNumbers: [],
+      pullRequestBody: "body",
     },
-    false,
+    true,
   );
 
-  assert.deepEqual(sessions, [
-    {
-      issueNumber: 4,
-      pullRequestNumber: 11,
-      phase: "final-description",
-      result: { pullRequestBody: "Current PR body" },
-    },
-  ]);
+  assert.deepEqual(harness.calls, []);
+  assert.deepEqual(harness.sessions, []);
 });

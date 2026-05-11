@@ -26,7 +26,7 @@ function getSessionSortTimestamp(session: AgentSession): number {
 }
 
 function buildSessionKey(session: AgentSession): string {
-  return `${session.issueNumber}:${session.pullRequestNumber ?? ""}:${session.phase}`;
+  return `${session.issueNumber ?? ""}:${session.pullRequestNumber ?? ""}:${session.phase}`;
 }
 
 function pruneSessions(sessions: AgentSession[]): AgentSession[] {
@@ -129,7 +129,7 @@ export class FileSessionStore {
   }
 
   async createSession(input: {
-    issueNumber: number;
+    issueNumber?: number | undefined;
     pullRequestNumber?: number;
     phase: AgentSessionPhase;
     status?: AgentSessionStatus;
@@ -175,6 +175,21 @@ export class FileSessionStore {
     } else {
       delete session.result;
     }
+    await this.save(sessions);
+    return session;
+  }
+
+  async failSession(sessionId: string): Promise<AgentSession | undefined> {
+    const sessions = await this.load();
+    const session = sessions.find((candidate) => candidate.id === sessionId);
+    if (!session) {
+      return undefined;
+    }
+
+    const failedAt = nowIsoString();
+    session.status = "failed";
+    session.updatedAt = failedAt;
+    session.completedAt = failedAt;
     await this.save(sessions);
     return session;
   }
