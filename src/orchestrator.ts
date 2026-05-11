@@ -127,7 +127,10 @@ function planPullRequestAction(
   issueNumbers: readonly number[],
   agentSessions: AgentSession[],
 ): OrchestratorAction | undefined {
-  const issueNumber = issueNumbers[0]!;
+  const issueNumber = issueNumbers[0];
+  if (issueNumber === undefined) {
+    return undefined;
+  }
 
   const relevantSessions = getRelevantSessions(agentSessions, issueNumbers, pullRequest.number);
   if (relevantSessions.some(isActiveSession)) {
@@ -135,16 +138,18 @@ function planPullRequestAction(
   }
 
   const latestCompletedSession = getLatestCompletedSession(relevantSessions);
-  const sessionIssueNumber =
-    latestCompletedSession && issueNumbers.includes(latestCompletedSession.issueNumber)
-      ? latestCompletedSession.issueNumber
+  const completedSessionIssueNumber = latestCompletedSession?.issueNumber;
+  const actionIssueNumber =
+    completedSessionIssueNumber !== undefined &&
+    issueNumbers.includes(completedSessionIssueNumber)
+      ? completedSessionIssueNumber
       : issueNumber;
   if (latestCompletedSession?.phase === "review") {
     const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
     if (reviewCommentCount > 0) {
       return {
         type: "address-review-comments",
-        issueNumber: sessionIssueNumber,
+        issueNumber: actionIssueNumber,
         pullRequestNumber: pullRequest.number,
         reviewCommentCount,
       };
@@ -152,7 +157,7 @@ function planPullRequestAction(
 
     return {
       type: "write-final-description",
-      issueNumber: sessionIssueNumber,
+      issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
     };
   }
@@ -160,7 +165,7 @@ function planPullRequestAction(
   if (latestCompletedSession?.phase === "final-description") {
     return {
       type: "merge-pull-request",
-      issueNumber: sessionIssueNumber,
+      issueNumber: actionIssueNumber,
       issueNumbers: [...issueNumbers],
       pullRequestNumber: pullRequest.number,
       pullRequestBody: buildMergedPullRequestBody(
@@ -174,7 +179,7 @@ function planPullRequestAction(
   if (latestCompletedSession?.phase === "address-review-comments") {
     return {
       type: "request-review",
-      issueNumber: sessionIssueNumber,
+      issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
     };
   }
@@ -182,7 +187,7 @@ function planPullRequestAction(
   if (latestCompletedSession?.phase === "implementation") {
     return {
       type: "request-review",
-      issueNumber: sessionIssueNumber,
+      issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
     };
   }
