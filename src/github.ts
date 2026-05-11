@@ -12,6 +12,7 @@ interface GitHubIssueResponse {
   created_at: string;
   updated_at: string;
   pull_request?: object;
+  assignees?: Array<{ login: string }> | null;
 }
 
 interface GitHubPullRequestResponse {
@@ -50,13 +51,32 @@ export interface GitHubClientOptions {
   repo: string;
   token: string;
   apiBaseUrl?: string;
+  htmlBaseUrl?: string;
 }
 
 export class GitHubClient {
   private readonly apiBaseUrl: string;
+  readonly htmlBaseUrl: string;
+  readonly owner: string;
+  readonly repo: string;
 
   constructor(private readonly options: GitHubClientOptions) {
     this.apiBaseUrl = options.apiBaseUrl ?? "https://api.github.com";
+    this.htmlBaseUrl = options.htmlBaseUrl ?? "https://github.com";
+    this.owner = options.owner;
+    this.repo = options.repo;
+  }
+
+  repositoryUrl(): string {
+    return `${this.htmlBaseUrl}/${this.owner}/${this.repo}`;
+  }
+
+  issueUrl(issueNumber: number): string {
+    return `${this.repositoryUrl()}/issues/${issueNumber}`;
+  }
+
+  pullRequestUrl(pullRequestNumber: number): string {
+    return `${this.repositoryUrl()}/pull/${pullRequestNumber}`;
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -154,6 +174,7 @@ export class GitHubClient {
         state: issue.state,
         createdAt: issue.created_at,
         updatedAt: issue.updated_at,
+        assignees: (issue.assignees ?? []).map((assignee) => assignee.login),
       }));
   }
 

@@ -2,7 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { reconcileSessions } from "../src/reconcile.js";
-import type { AgentSession, PullRequest, RepositorySnapshot } from "../src/types.js";
+import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "../src/types.js";
+
+function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
+  return {
+    number: overrides.number,
+    title: overrides.title ?? `Issue ${overrides.number}`,
+    body: overrides.body ?? "",
+    state: overrides.state ?? "open",
+    createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
+    updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
+    assignees: overrides.assignees ?? [],
+  };
+}
 
 function createPullRequest(
   overrides: Partial<PullRequest> &
@@ -83,6 +95,9 @@ test("reconcileSessions completes implementation sessions when a linked PR appea
         completedSessions.push({ sessionId });
         return undefined;
       },
+      async failSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
     },
     snapshot,
   );
@@ -133,6 +148,9 @@ test("reconcileSessions completes review sessions with unresolved thread counts"
           completedSession.reviewCommentCount = result.reviewCommentCount;
         }
         completedSessions.push(completedSession);
+        return undefined;
+      },
+      async failSession(): Promise<AgentSession | undefined> {
         return undefined;
       },
     },
@@ -192,6 +210,9 @@ test("reconcileSessions completes final-description sessions from updated PR bod
         completedSessions.push(completedSession);
         return undefined;
       },
+      async failSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
     },
     snapshot,
   );
@@ -243,6 +264,9 @@ test("reconcileSessions does not complete address-review-comments sessions when 
         completedSessions.push(sessionId);
         return undefined;
       },
+      async failSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
     },
     snapshot,
   );
@@ -285,6 +309,9 @@ test("reconcileSessions completes address-review-comments sessions when the PR h
     {
       async completeSession(sessionId: string): Promise<AgentSession | undefined> {
         completedSessions.push(sessionId);
+        return undefined;
+      },
+      async failSession(): Promise<AgentSession | undefined> {
         return undefined;
       },
     },
@@ -342,9 +369,137 @@ test("reconcileSessions does not complete final-description sessions when the PR
         completedSessions.push(completedSession);
         return undefined;
       },
+      async failSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
     },
     snapshot,
   );
 
   assert.deepEqual(completedSessions, []);
+});
+
+test("reconcileSessions fails stale implementation sessions when Copilot is not assigned to the issue", async () => {
+  const failedSessionIds: string[] = [];
+  const completedSessionIds: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 7, assignees: ["alice"] })],
+    pullRequests: [],
+    agentSessions: [
+      createSession({
+        id: "implementation-stale-1",
+        issueNumber: 7,
+        phase: "implementation",
+      }),
+    ],
+  };
+
+  const events = await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
+        return [];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessionIds.push(sessionId);
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessionIds.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessionIds, []);
+  assert.deepEqual(failedSessionIds, ["implementation-stale-1"]);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.outcome, "failed-stale");
+  assert.equal(events[0]?.staleReason, "copilot-not-assigned");
+});
+
+test("reconcileSessions keeps implementation sessions when Copilot is still assigned to the issue", async () => {
+  const failedSessionIds: string[] = [];
+  const completedSessionIds: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 8, assignees: ["Copilot"] })],
+    pullRequests: [],
+    agentSessions: [
+      createSession({
+        id: "implementation-active-1",
+        issueNumber: 8,
+        phase: "implementation",
+      }),
+    ],
+  };
+
+  const events = await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
+        return [];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessionIds.push(sessionId);
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessionIds.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessionIds, []);
+  assert.deepEqual(failedSessionIds, []);
+  assert.deepEqual(events, []);
+});
+
+test("reconcileSessions fails implementation sessions when the issue is closed (not in snapshot)", async () => {
+  const failedSessionIds: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [],
+    agentSessions: [
+      createSession({
+        id: "implementation-stale-2",
+        issueNumber: 99,
+        phase: "implementation",
+      }),
+    ],
+  };
+
+  const events = await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
+        return [];
+      },
+    },
+    {
+      async completeSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessionIds.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(failedSessionIds, ["implementation-stale-2"]);
+  assert.equal(events[0]?.staleReason, "issue-closed");
 });

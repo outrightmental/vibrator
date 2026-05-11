@@ -5,6 +5,7 @@ export interface Issue {
   createdAt: string;
   updatedAt: string;
   state: "open" | "closed";
+  assignees: string[];
 }
 
 export interface PullRequest {

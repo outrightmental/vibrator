@@ -17,6 +17,7 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     state: overrides.state ?? "open",
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
+    assignees: overrides.assignees ?? [],
   };
 }
 

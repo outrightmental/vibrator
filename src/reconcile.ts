@@ -1,4 +1,4 @@
-import type { AgentSession, AgentSessionResult, PullRequest, RepositorySnapshot } from "./types.js";
+import type { AgentSession, AgentSessionResult, Issue, PullRequest, RepositorySnapshot } from "./types.js";
 
 export interface ReconcileGitHubClient {
   countUnresolvedPullRequestReviewThreads(pullRequestNumber: number): Promise<number>;
@@ -12,6 +12,21 @@ export interface ReconcileSessionStore {
     sessionId: string,
     result?: AgentSessionResult,
   ): Promise<AgentSession | undefined>;
+  failSession(sessionId: string): Promise<AgentSession | undefined>;
+}
+
+export type ReconcileStaleReason = "issue-closed" | "copilot-not-assigned";
+
+export interface ReconcileSessionEvent {
+  session: AgentSession;
+  outcome: "completed" | "failed-stale";
+  staleReason?: ReconcileStaleReason;
+}
+
+const COPILOT_ASSIGNEE_LOGINS = new Set(["copilot", "copilot-swe-agent"]);
+
+function isCopilotAssigned(issue: Issue): boolean {
+  return issue.assignees.some((login) => COPILOT_ASSIGNEE_LOGINS.has(login.toLowerCase()));
 }
 
 function isActiveSession(session: AgentSession): boolean {
@@ -51,10 +66,15 @@ export async function reconcileSessions(
   gitHubClient: ReconcileGitHubClient,
   sessionStore: ReconcileSessionStore,
   snapshot: RepositorySnapshot,
-): Promise<void> {
+): Promise<ReconcileSessionEvent[]> {
+  const events: ReconcileSessionEvent[] = [];
   const activeSessions = snapshot.agentSessions
     .filter(isActiveSession)
     .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+
+  const issuesByNumber = new Map<number, Issue>(
+    snapshot.issues.map((issue) => [issue.number, issue]),
+  );
 
   for (const session of activeSessions) {
     const pullRequest = findPullRequestForSession(snapshot, session);
@@ -63,6 +83,26 @@ export async function reconcileSessions(
       case "implementation":
         if (pullRequest) {
           await sessionStore.completeSession(session.id);
+          events.push({ session, outcome: "completed" });
+          break;
+        }
+
+        {
+          const issue = issuesByNumber.get(session.issueNumber);
+          if (!issue) {
+            await sessionStore.failSession(session.id);
+            events.push({ session, outcome: "failed-stale", staleReason: "issue-closed" });
+            break;
+          }
+
+          if (!isCopilotAssigned(issue)) {
+            await sessionStore.failSession(session.id);
+            events.push({
+              session,
+              outcome: "failed-stale",
+              staleReason: "copilot-not-assigned",
+            });
+          }
         }
         break;
       case "review":
@@ -87,10 +127,12 @@ export async function reconcileSessions(
             session.pullRequestNumber,
           ),
         });
+        events.push({ session, outcome: "completed" });
         break;
       case "address-review-comments":
         if (pullRequest && hasUpdatedHeadSha(session, pullRequest)) {
           await sessionStore.completeSession(session.id);
+          events.push({ session, outcome: "completed" });
         }
         break;
       case "final-description":
@@ -98,8 +140,11 @@ export async function reconcileSessions(
           await sessionStore.completeSession(session.id, {
             generatedDescription: pullRequest.body,
           });
+          events.push({ session, outcome: "completed" });
         }
         break;
     }
   }
+
+  return events;
 }

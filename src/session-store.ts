@@ -179,6 +179,21 @@ export class FileSessionStore {
     return session;
   }
 
+  async failSession(sessionId: string): Promise<AgentSession | undefined> {
+    const sessions = await this.load();
+    const session = sessions.find((candidate) => candidate.id === sessionId);
+    if (!session) {
+      return undefined;
+    }
+
+    const failedAt = nowIsoString();
+    session.status = "failed";
+    session.updatedAt = failedAt;
+    session.completedAt = failedAt;
+    await this.save(sessions);
+    return session;
+  }
+
   async failStaleSessions(maxAgeMs: number, now = Date.now()): Promise<AgentSession[]> {
     const sessions = await this.load();
     const failedSessions: AgentSession[] = [];

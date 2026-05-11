@@ -23,21 +23,36 @@ function log(message: string): void {
   console.log(`[${timestamp()}] ${message}`);
 }
 
-function describeAction(action: OrchestratorAction, snapshot: RepositorySnapshot): string {
+function describeAction(
+  action: OrchestratorAction,
+  snapshot: RepositorySnapshot,
+  gitHubClient: GitHubClient,
+): string {
   const issueTitle = snapshot.issues.find((i) => i.number === action.issueNumber)?.title;
   const issueSuffix = issueTitle ? ` "${issueTitle}"` : "";
+  const issueUrl = gitHubClient.issueUrl(action.issueNumber);
   switch (action.type) {
     case "start-implementation":
-      return `Start implementation of issue #${action.issueNumber}${issueSuffix}`;
+      return `Start implementation of issue #${action.issueNumber}${issueSuffix} (${issueUrl})`;
     case "request-review":
-      return `Request review for PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix})`;
+      return `Request review for PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "address-review-comments":
-      return `Address ${action.reviewCommentCount} review comment(s) on PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix})`;
+      return `Address ${action.reviewCommentCount} review comment(s) on PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "write-final-description":
-      return `Write final description for PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix})`;
+      return `Write final description for PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "merge-pull-request":
-      return `Merge PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix})`;
+      return `Merge PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
   }
+}
+
+function describeSessionTarget(
+  session: { issueNumber: number; pullRequestNumber?: number },
+  gitHubClient: GitHubClient,
+): string {
+  if (session.pullRequestNumber !== undefined) {
+    return `PR #${session.pullRequestNumber} (${gitHubClient.pullRequestUrl(session.pullRequestNumber)})`;
+  }
+  return `issue #${session.issueNumber} (${gitHubClient.issueUrl(session.issueNumber)})`;
 }
 
 interface Config {
@@ -106,13 +121,13 @@ function parseArgs(argv: string[]): Config {
 
 async function runIteration(config: Config, iterationNumber: number): Promise<void> {
   const repo = `${config.owner}/${config.repo}`;
-  log(`--- Iteration ${iterationNumber} | ${repo} | concurrency: ${config.maxConcurrency}${config.dryRun ? " | DRY RUN" : ""} ---`);
-
   const gitHubClient = new GitHubClient({
     owner: config.owner,
     repo: config.repo,
     token: config.token,
   });
+  log(`--- Iteration ${iterationNumber} | ${repo} (${gitHubClient.repositoryUrl()}) | concurrency: ${config.maxConcurrency}${config.dryRun ? " | DRY RUN" : ""} ---`);
+
   const sessionStore = new FileSessionStore(config.sessionStorePath);
 
   log("Loading snapshot from GitHub...");
@@ -123,25 +138,61 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   log(
     `Snapshot loaded: ${snapshot.issues.length} open issue(s), ${snapshot.pullRequests.length} PR(s), ${activeSessions.length} active session(s)`,
   );
+  if (activeSessions.length > 0) {
+    log("Active agent sessions (pre-reconcile):");
+    for (const session of activeSessions) {
+      log(`  - session ${session.id} | phase=${session.phase} | status=${session.status} | ${describeSessionTarget(session, gitHubClient)}`);
+    }
+  }
 
   log("Reconciling sessions...");
-  await reconcileSessions(gitHubClient, sessionStore, snapshot);
-  await sessionStore.failStaleSessions(config.sessionTimeoutMs);
+  const reconcileEvents = await reconcileSessions(gitHubClient, sessionStore, snapshot);
+  for (const event of reconcileEvents) {
+    if (event.outcome === "failed-stale") {
+      const reason =
+        event.staleReason === "issue-closed"
+          ? "issue no longer open"
+          : "Copilot is not assigned to the issue";
+      log(
+        `  Failed stale ${event.session.phase} session ${event.session.id} (${reason}): ${describeSessionTarget(event.session, gitHubClient)}`,
+      );
+    } else {
+      log(
+        `  Completed ${event.session.phase} session ${event.session.id}: ${describeSessionTarget(event.session, gitHubClient)}`,
+      );
+    }
+  }
+  const failedStale = await sessionStore.failStaleSessions(config.sessionTimeoutMs);
+  for (const session of failedStale) {
+    log(
+      `  Failed timed-out ${session.phase} session ${session.id}: ${describeSessionTarget(session, gitHubClient)}`,
+    );
+  }
   snapshot.agentSessions = await sessionStore.load();
-  const reconciledActive = snapshot.agentSessions.filter(
+  const reconciledActiveSessions = snapshot.agentSessions.filter(
     (s) => s.status === "queued" || s.status === "in_progress",
-  ).length;
+  );
   const reconciledCompleted = snapshot.agentSessions.filter((s) => s.status === "completed").length;
-  log(`Sessions after reconciliation: ${reconciledActive} active, ${reconciledCompleted} completed`);
+  log(`Sessions after reconciliation: ${reconciledActiveSessions.length} active, ${reconciledCompleted} completed`);
+  if (reconciledActiveSessions.length > 0) {
+    log("Active agent sessions (post-reconcile):");
+    for (const session of reconciledActiveSessions) {
+      log(`  - session ${session.id} | phase=${session.phase} | status=${session.status} | ${describeSessionTarget(session, gitHubClient)}`);
+    }
+  }
 
   const plan = buildPlan(snapshot, config.maxConcurrency);
 
   const blockedEntries = Object.entries(plan.blockedIssueNumbers);
   if (blockedEntries.length > 0) {
-    const blockedSummary = blockedEntries
-      .map(([blocked, blockers]) => `#${blocked} blocked by ${blockers.map((n) => `#${n}`).join(", ")}`)
-      .join("; ");
-    log(`Blocked issues: ${blockedSummary}`);
+    log("Blocked issues:");
+    for (const [blocked, blockers] of blockedEntries) {
+      const blockedNumber = Number.parseInt(blocked, 10);
+      const blockerSummary = blockers
+        .map((n) => `#${n} (${gitHubClient.issueUrl(n)})`)
+        .join(", ");
+      log(`  - #${blockedNumber} (${gitHubClient.issueUrl(blockedNumber)}) blocked by ${blockerSummary}`);
+    }
   }
 
   if (plan.actions.length === 0) {
@@ -150,7 +201,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     log(`${plan.actions.length} action(s) to execute:`);
     for (let i = 0; i < plan.actions.length; i++) {
       const action = plan.actions[i]!;
-      log(`  [${i + 1}/${plan.actions.length}] ${describeAction(action, snapshot)}`);
+      log(`  [${i + 1}/${plan.actions.length}] ${describeAction(action, snapshot, gitHubClient)}`);
       await executeAction(gitHubClient, sessionStore, action, config.dryRun);
       log(`  [${i + 1}/${plan.actions.length}] Done.`);
     }
@@ -159,7 +210,8 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
-  log(`vibrator starting | repo: ${config.owner}/${config.repo} | interval: ${config.intervalMs}ms | concurrency: ${config.maxConcurrency}${config.once ? " | --once" : ""}${config.dryRun ? " | --dry-run" : ""}`);
+  const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
+  log(`vibrator starting | repo: ${config.owner}/${config.repo} (${repositoryUrl}) | interval: ${config.intervalMs}ms | concurrency: ${config.maxConcurrency}${config.once ? " | --once" : ""}${config.dryRun ? " | --dry-run" : ""}`);
   let iterationNumber = 0;
   do {
     iterationNumber++;
