@@ -130,6 +130,31 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   const sessionStore = new FileSessionStore(config.sessionStorePath);
 
+  log("Checking for workflow runs awaiting approval...");
+  try {
+    const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
+    if (pendingRuns.length === 0) {
+      log("  No workflow runs awaiting approval.");
+    } else {
+      log(`  ${pendingRuns.length} workflow run(s) awaiting approval.`);
+      for (const run of pendingRuns) {
+        const label = `run ${run.id} (${run.name || "unnamed"}) on ${run.headBranch || "?"} [${run.event}]`;
+        if (config.dryRun) {
+          log(`  [dry-run] Would approve ${label}.`);
+          continue;
+        }
+        try {
+          await gitHubClient.approveWorkflowRun(run.id);
+          log(`  Approved ${label}.`);
+        } catch (error) {
+          log(`  Failed to approve ${label}: ${(error as Error).message}`);
+        }
+      }
+    }
+  } catch (error) {
+    log(`  Failed to list workflow runs awaiting approval: ${(error as Error).message}`);
+  }
+
   log("Loading snapshot from GitHub...");
   const snapshot = await loadSnapshot(gitHubClient, sessionStore);
   const activeSessions = snapshot.agentSessions.filter(

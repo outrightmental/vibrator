@@ -328,6 +328,53 @@ export class GitHubClient {
     });
   }
 
+  async listWorkflowRunsAwaitingApproval(): Promise<
+    Array<{ id: number; name: string; headBranch: string; event: string }>
+  > {
+    let response: {
+      workflow_runs?: Array<{
+        id: number;
+        name: string | null;
+        head_branch: string | null;
+        event: string;
+      }>;
+    };
+    try {
+      response = await this.request<{
+        workflow_runs?: Array<{
+          id: number;
+          name: string | null;
+          head_branch: string | null;
+          event: string;
+        }>;
+      }>(
+        `/repos/${this.options.owner}/${this.options.repo}/actions/runs?status=action_required&per_page=100`,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
+        return [];
+      }
+      throw error;
+    }
+
+    return (response.workflow_runs ?? []).map((run) => ({
+      id: run.id,
+      name: run.name ?? "",
+      headBranch: run.head_branch ?? "",
+      event: run.event,
+    }));
+  }
+
+  async approveWorkflowRun(runId: number): Promise<void> {
+    await this.request(
+      `/repos/${this.options.owner}/${this.options.repo}/actions/runs/${runId}/approve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
+
   async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
     const unresolvedThreadIds = await this.listUnresolvedPullRequestReviewThreadIds(
       pullRequestNumber,

@@ -1,55 +1,47 @@
 {
   "sessions": [
     {
-      "id": "8228a8f1-07b9-4aa9-94ef-867c73c36f3a",
-      "issueNumber": 4,
-      "phase": "implementation",
-      "status": "failed",
-      "createdAt": "2026-05-11T08:34:40.603Z",
-      "updatedAt": "2026-05-11T09:10:46.192Z",
-      "completedAt": "2026-05-11T09:10:46.192Z"
-    },
-    {
-      "id": "d42ad835-524d-4ca4-aa28-05acc2dd4b43",
-      "issueNumber": 5,
-      "phase": "implementation",
-      "status": "failed",
-      "createdAt": "2026-05-11T08:34:41.522Z",
-      "updatedAt": "2026-05-11T09:10:46.199Z",
-      "completedAt": "2026-05-11T09:10:46.199Z"
-    },
-    {
-      "id": "932ffd6b-1c1f-4bb5-b7b2-22bc0cbe8a52",
-      "issueNumber": 6,
-      "phase": "implementation",
-      "status": "failed",
-      "createdAt": "2026-05-11T08:34:42.198Z",
-      "updatedAt": "2026-05-11T09:10:46.204Z",
-      "completedAt": "2026-05-11T09:10:46.204Z"
-    },
-    {
       "id": "10404e64-5cb9-4f55-8bf3-f270afb1822c",
       "issueNumber": 4,
       "phase": "implementation",
-      "status": "in_progress",
+      "status": "failed",
       "createdAt": "2026-05-11T09:10:47.355Z",
-      "updatedAt": "2026-05-11T09:10:47.355Z"
+      "updatedAt": "2026-05-11T09:15:11.282Z",
+      "completedAt": "2026-05-11T09:15:11.282Z"
     },
     {
       "id": "8e5367c7-cd43-40c6-9600-12585fd9aef4",
       "issueNumber": 5,
       "phase": "implementation",
-      "status": "in_progress",
+      "status": "failed",
       "createdAt": "2026-05-11T09:10:48.441Z",
-      "updatedAt": "2026-05-11T09:10:48.441Z"
+      "updatedAt": "2026-05-11T09:15:11.297Z",
+      "completedAt": "2026-05-11T09:15:11.297Z"
     },
     {
       "id": "3587c232-c647-4c1e-bde6-4e3307707fef",
       "issueNumber": 6,
       "phase": "implementation",
-      "status": "in_progress",
+      "status": "failed",
       "createdAt": "2026-05-11T09:10:49.308Z",
-      "updatedAt": "2026-05-11T09:10:49.308Z"
+      "updatedAt": "2026-05-11T09:15:11.307Z",
+      "completedAt": "2026-05-11T09:15:11.307Z"
+    },
+    {
+      "id": "c4708212-bf36-4ac0-a8ac-eae68d8a269b",
+      "issueNumber": 4,
+      "phase": "implementation",
+      "status": "in_progress",
+      "createdAt": "2026-05-11T09:15:14.034Z",
+      "updatedAt": "2026-05-11T09:15:14.034Z"
+    },
+    {
+      "id": "504cfd23-cf78-4801-99e4-4a975b07b797",
+      "issueNumber": 5,
+      "phase": "implementation",
+      "status": "in_progress",
+      "createdAt": "2026-05-11T09:15:16.652Z",
+      "updatedAt": "2026-05-11T09:15:16.652Z"
     }
   ]
 }
