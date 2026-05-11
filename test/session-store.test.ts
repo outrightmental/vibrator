@@ -8,7 +8,7 @@ import { FileSessionStore } from "../src/session-store.js";
 import type { AgentSession } from "../src/types.js";
 
 async function createSessionStorePath(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "vibrator-session-store-"));
+  const directory = await mkdtemp(join(tmpdir(), "sdlc-session-store-"));
   return join(directory, "sessions.json");
 }
 

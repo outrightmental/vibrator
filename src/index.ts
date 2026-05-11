@@ -9,6 +9,8 @@ import {
 import { buildPlan } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
 
+const DEFAULT_SESSION_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+
 interface Config {
   owner: string;
   repo: string;
@@ -53,7 +55,10 @@ function parseArgs(argv: string[]): Config {
   const intervalMs = Number.parseInt(process.env.LOOP_INTERVAL_MS ?? "60000", 10);
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
-  const sessionTimeoutMs = Number.parseInt(process.env.SESSION_TIMEOUT_MS ?? "21600000", 10);
+  const sessionTimeoutMs = Number.parseInt(
+    process.env.SESSION_TIMEOUT_MS ?? String(DEFAULT_SESSION_TIMEOUT_MS),
+    10,
+  );
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
 
@@ -66,7 +71,7 @@ function parseArgs(argv: string[]): Config {
     once,
     dryRun,
     sessionStorePath,
-    sessionTimeoutMs: Number.isNaN(sessionTimeoutMs) ? 21600000 : sessionTimeoutMs,
+    sessionTimeoutMs: Number.isNaN(sessionTimeoutMs) ? DEFAULT_SESSION_TIMEOUT_MS : sessionTimeoutMs,
   };
 }
 

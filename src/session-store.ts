@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -65,7 +66,7 @@ export class FileSessionStore {
 
   async save(sessions: AgentSession[]): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    const tempFilePath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    const tempFilePath = `${this.filePath}.${randomUUID()}.tmp`;
     await writeFile(
       tempFilePath,
       `${JSON.stringify({ sessions: pruneSessions(sessions) }, null, 2)}\n`,
