@@ -127,10 +127,7 @@ function planPullRequestAction(
   issueNumbers: readonly number[],
   agentSessions: AgentSession[],
 ): OrchestratorAction | undefined {
-  const issueNumber = issueNumbers[0];
-  if (issueNumber === undefined) {
-    return undefined;
-  }
+  const issueNumber = issueNumbers[0]!;
 
   const relevantSessions = getRelevantSessions(agentSessions, issueNumbers, pullRequest.number);
   if (relevantSessions.some(isActiveSession)) {
@@ -251,6 +248,10 @@ export function buildPlan(
 
   const actions: OrchestratorAction[] = [];
   for (const pullRequest of pullRequests) {
+    if (pullRequest.linkedIssueNumbers.length === 0) {
+      continue;
+    }
+
     const action = planPullRequestAction(
       pullRequest,
       pullRequest.linkedIssueNumbers,
