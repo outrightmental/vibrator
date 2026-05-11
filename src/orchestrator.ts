@@ -229,14 +229,9 @@ export function buildMergedPullRequestBody(
   generatedDescription?: string,
 ): string {
   const baseBody = (generatedDescription ?? pullRequestBody).trim();
+  const existingLinkedIssues = new Set(parseLinkedIssueNumbers(baseBody));
   const missingClosingReferences = uniqueSorted(issueNumbers)
-    .filter(
-      (issueNumber) =>
-        !new RegExp(
-          String.raw`\b${LINKED_ISSUE_KEYWORDS}\s*:?\s*#${issueNumber}\b`,
-          "i",
-        ).test(baseBody),
-    )
+    .filter((issueNumber) => !existingLinkedIssues.has(issueNumber))
     .map((issueNumber) => `Closes #${issueNumber}`);
 
   return [baseBody, ...missingClosingReferences].filter(Boolean).join("\n\n");
