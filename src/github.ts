@@ -794,6 +794,43 @@ export class GitHubClient {
     ).length;
   }
 
+  /**
+   * Returns timestamps of "Copilot finished work" timeline events on a
+   * pull request. These events are emitted by the Copilot coding agent
+   * each time it ends a session (whether it pushed commits or only
+   * replied with a comment such as "no change needed"). The orchestrator
+   * uses this signal to detect when an address-review-comments session is
+   * effectively complete even though no new commits were pushed.
+   *
+   * The GitHub REST timeline endpoint returns events with an `event`
+   * string field; the exact name for Copilot's session events may vary
+   * over time, so this matches any event whose name contains both
+   * "copilot" and a completion verb (finish/complete/end).
+   */
+  async listCopilotFinishedWorkEvents(
+    pullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string }>> {
+    interface TimelineEvent {
+      event?: string;
+      created_at?: string;
+      actor?: { login?: string } | null;
+      performed_via_github_app?: { slug?: string } | null;
+    }
+    const events = await this.getAllPages<TimelineEvent>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/timeline`,
+    );
+    return events
+      .filter((event): event is TimelineEvent & { created_at: string } => {
+        if (!event.created_at) return false;
+        const name = (event.event ?? "").toLowerCase();
+        return (
+          name.includes("copilot") &&
+          (name.includes("finish") || name.includes("complete") || name.includes("end"))
+        );
+      })
+      .map((event) => ({ createdAt: event.created_at }));
+  }
+
   private async listUnresolvedPullRequestReviewThreadIds(
     pullRequestNumber: number,
   ): Promise<string[]> {

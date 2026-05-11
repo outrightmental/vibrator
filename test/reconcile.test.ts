@@ -2,7 +2,50 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { reconcileSessions } from "../src/reconcile.js";
+import type {
+  ReconcileGitHubClient,
+  ReconcileLocalCopilotChatClient,
+  ReconcileSessionEvent,
+  ReconcileSessionStore,
+} from "../src/reconcile.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "../src/types.js";
+
+const DEFAULT_CONTEXT = { owner: "octo", repo: "vibrator" } as const;
+
+const REJECTING_LOCAL_COPILOT_CHAT_CLIENT: ReconcileLocalCopilotChatClient = {
+  async evaluateReviewCommentsAddressed() {
+    throw new Error(
+      "evaluateReviewCommentsAddressed should not be called by this test",
+    );
+  },
+};
+
+async function runReconcile(
+  gitHubClient: Partial<ReconcileGitHubClient>,
+  sessionStore: ReconcileSessionStore,
+  snapshot: RepositorySnapshot,
+  localCopilotChatClient: ReconcileLocalCopilotChatClient = REJECTING_LOCAL_COPILOT_CHAT_CLIENT,
+): Promise<ReconcileSessionEvent[]> {
+  const filledGitHubClient: ReconcileGitHubClient = {
+    async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+      return 0;
+    },
+    async listPullRequestReviews() {
+      return [];
+    },
+    async listCopilotFinishedWorkEvents() {
+      return [];
+    },
+    ...gitHubClient,
+  };
+  return reconcileSessions(
+    filledGitHubClient,
+    sessionStore,
+    snapshot,
+    localCopilotChatClient,
+    DEFAULT_CONTEXT,
+  );
+}
 
 function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
   return {
@@ -84,7 +127,7 @@ test("reconcileSessions completes implementation sessions when a linked PR appea
     ],
   };
 
-  await reconcileSessions(
+  await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -130,7 +173,7 @@ test("reconcileSessions completes review sessions with unresolved thread counts"
     ],
   };
 
-  await reconcileSessions(
+  await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 2;
@@ -189,7 +232,7 @@ test("reconcileSessions fails review sessions when Copilot replies that it wasn'
     ],
   };
 
-  const events = await reconcileSessions(
+  const events = await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(
         pullRequestNumber: number,
@@ -251,7 +294,7 @@ test("reconcileSessions completes review sessions when Copilot replies with a su
     ],
   };
 
-  await reconcileSessions(
+  await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -318,7 +361,7 @@ test("reconcileSessions completes final-description sessions from updated PR bod
     ],
   };
 
-  await reconcileSessions(
+  await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -381,7 +424,7 @@ test("reconcileSessions does not complete address-review-comments sessions when 
     ],
   };
 
-  await reconcileSessions(
+  await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -428,7 +471,7 @@ test("reconcileSessions completes address-review-comments sessions when the PR h
     ],
   };
 
-  await reconcileSessions(
+  await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -475,7 +518,7 @@ test("reconcileSessions completes resolve-conflicts sessions when the PR head sh
     ],
   };
 
-  await reconcileSessions(
+  await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -524,7 +567,7 @@ test("reconcileSessions does not complete final-description sessions when the PR
     ],
   };
 
-  await reconcileSessions(
+  await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -572,7 +615,7 @@ test("reconcileSessions fails stale implementation sessions when Copilot is not 
     ],
   };
 
-  const events = await reconcileSessions(
+  const events = await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -616,7 +659,7 @@ test("reconcileSessions keeps implementation sessions when Copilot is still assi
     ],
   };
 
-  const events = await reconcileSessions(
+  const events = await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -657,7 +700,7 @@ test("reconcileSessions fails implementation sessions when the issue is closed (
     ],
   };
 
-  const events = await reconcileSessions(
+  const events = await runReconcile(
     {
       async countUnresolvedPullRequestReviewThreads(): Promise<number> {
         return 0;
@@ -680,4 +723,175 @@ test("reconcileSessions fails implementation sessions when the issue is closed (
 
   assert.deepEqual(failedSessionIds, ["implementation-stale-2"]);
   assert.equal(events[0]?.staleReason, "issue-closed");
+});
+
+test("reconcileSessions completes address-review-comments via copilot CLI evaluation when verdict is DONE", async () => {
+  const completedSessionIds: string[] = [];
+  const failedSessionIds: string[] = [];
+  const evaluateCalls: Array<{ pullRequestNumber: number }> = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-1",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "address-review-comments",
+        createdAt: "2024-01-01T00:30:00.000Z",
+        result: { pullRequestHeadSha: "sha-1" },
+      }),
+    ],
+  };
+
+  const events = await runReconcile(
+    {
+      async listCopilotFinishedWorkEvents() {
+        return [{ createdAt: "2024-01-01T01:00:00.000Z" }];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessionIds.push(sessionId);
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessionIds.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+    {
+      async evaluateReviewCommentsAddressed(params) {
+        evaluateCalls.push({ pullRequestNumber: params.pullRequestNumber });
+        return { verdict: "DONE", rationale: "tests already cover this case" };
+      },
+    },
+  );
+
+  assert.deepEqual(completedSessionIds, ["address-1"]);
+  assert.deepEqual(failedSessionIds, []);
+  assert.deepEqual(evaluateCalls, [{ pullRequestNumber: 10 }]);
+  assert.equal(events[0]?.outcome, "completed");
+  assert.equal(events[0]?.evaluationRationale, "tests already cover this case");
+});
+
+test("reconcileSessions fails address-review-comments via copilot CLI evaluation when verdict is NOT_DONE", async () => {
+  const completedSessionIds: string[] = [];
+  const failedSessionIds: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-1",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "address-review-comments",
+        createdAt: "2024-01-01T00:30:00.000Z",
+        result: { pullRequestHeadSha: "sha-1" },
+      }),
+    ],
+  };
+
+  const events = await runReconcile(
+    {
+      async listCopilotFinishedWorkEvents() {
+        return [{ createdAt: "2024-01-01T01:00:00.000Z" }];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessionIds.push(sessionId);
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessionIds.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+    {
+      async evaluateReviewCommentsAddressed() {
+        return { verdict: "NOT_DONE", rationale: "comment X still requires a code change" };
+      },
+    },
+  );
+
+  assert.deepEqual(completedSessionIds, []);
+  assert.deepEqual(failedSessionIds, ["address-1"]);
+  assert.equal(events[0]?.outcome, "failed-stale");
+  assert.equal(events[0]?.staleReason, "copilot-review-comments-not-addressed");
+  assert.equal(events[0]?.evaluationRationale, "comment X still requires a code change");
+});
+
+test("reconcileSessions waits when no Copilot finished-work event has occurred yet", async () => {
+  const completedSessionIds: string[] = [];
+  const failedSessionIds: string[] = [];
+  let evaluateCalled = false;
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-1",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "address-review-comments",
+        createdAt: "2024-01-01T00:30:00.000Z",
+        result: { pullRequestHeadSha: "sha-1" },
+      }),
+    ],
+  };
+
+  await runReconcile(
+    {
+      // The only finished-work event predates the session, so it must be ignored.
+      async listCopilotFinishedWorkEvents() {
+        return [{ createdAt: "2024-01-01T00:00:00.000Z" }];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessionIds.push(sessionId);
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessionIds.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+    {
+      async evaluateReviewCommentsAddressed() {
+        evaluateCalled = true;
+        return { verdict: "DONE", rationale: "" };
+      },
+    },
+  );
+
+  assert.deepEqual(completedSessionIds, []);
+  assert.deepEqual(failedSessionIds, []);
+  assert.equal(evaluateCalled, false);
 });

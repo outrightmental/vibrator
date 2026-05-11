@@ -251,7 +251,13 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   // --- Reconciliation ---------------------------------------------------
   section("Reconciliation");
-  const reconcileEvents = await reconcileSessions(gitHubClient, sessionStore, snapshot);
+  const reconcileEvents = await reconcileSessions(
+    gitHubClient,
+    sessionStore,
+    snapshot,
+    localCopilotChatClient,
+    { owner: config.owner, repo: config.repo },
+  );
   const completedEvents = reconcileEvents.filter((e) => e.outcome === "completed");
   const failedStaleEvents = reconcileEvents.filter((e) => e.outcome === "failed-stale");
   const failedTimedOut = await sessionStore.failStaleSessions(config.sessionTimeoutMs);
@@ -262,11 +268,27 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   }
   bullet(`${failedStaleEvents.length} session(s) failed (stale)`);
   for (const event of failedStaleEvents) {
-    const reason =
-      event.staleReason === "issue-closed"
-        ? "issue no longer open"
-        : "Copilot not assigned to issue";
+    let reason: string;
+    switch (event.staleReason) {
+      case "issue-closed":
+        reason = "issue no longer open";
+        break;
+      case "copilot-not-assigned":
+        reason = "Copilot not assigned to issue";
+        break;
+      case "copilot-review-failed":
+        reason = "Copilot review came back as failed (wasn't able to review)";
+        break;
+      case "copilot-review-comments-not-addressed":
+        reason = "Copilot ended its turn but review comments are not adequately addressed";
+        break;
+      default:
+        reason = "unknown reason";
+    }
     note(`◦ ${describeSession(event.session, gitHubClient)} — ${reason}`, 2);
+    if (event.evaluationRationale) {
+      note(`  rationale: ${event.evaluationRationale.split("\n")[0]}`, 4);
+    }
   }
   bullet(`${failedTimedOut.length} session(s) timed out`);
   for (const session of failedTimedOut) {

@@ -1,4 +1,8 @@
 import { isFailedCopilotReview, COPILOT_REVIEWER_LOGIN } from "./github.js";
+import type {
+  EvaluateReviewCommentsAddressedParams,
+  ReviewCommentsAddressedEvaluation,
+} from "./local-copilot.js";
 import type { AgentSession, AgentSessionResult, Issue, PullRequest, RepositorySnapshot } from "./types.js";
 
 export interface ReconcileGitHubClient {
@@ -13,6 +17,15 @@ export interface ReconcileGitHubClient {
       body?: string | null;
     }>
   >;
+  listCopilotFinishedWorkEvents(
+    pullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string }>>;
+}
+
+export interface ReconcileLocalCopilotChatClient {
+  evaluateReviewCommentsAddressed(
+    params: EvaluateReviewCommentsAddressedParams,
+  ): Promise<ReviewCommentsAddressedEvaluation>;
 }
 
 export interface ReconcileSessionStore {
@@ -26,12 +39,24 @@ export interface ReconcileSessionStore {
 export type ReconcileStaleReason =
   | "issue-closed"
   | "copilot-not-assigned"
-  | "copilot-review-failed";
+  | "copilot-review-failed"
+  | "copilot-review-comments-not-addressed";
 
 export interface ReconcileSessionEvent {
   session: AgentSession;
   outcome: "completed" | "failed-stale";
   staleReason?: ReconcileStaleReason;
+  /**
+   * Free-text rationale captured from the local copilot CLI when an
+   * address-review-comments session is resolved by AI evaluation. Useful
+   * for operators reviewing why the orchestrator decided DONE/NOT_DONE.
+   */
+  evaluationRationale?: string;
+}
+
+export interface ReconcileContext {
+  owner: string;
+  repo: string;
 }
 
 const COPILOT_ASSIGNEE_LOGINS = new Set(["copilot", "copilot-swe-agent"]);
@@ -78,6 +103,8 @@ export async function reconcileSessions(
   gitHubClient: ReconcileGitHubClient,
   sessionStore: ReconcileSessionStore,
   snapshot: RepositorySnapshot,
+  localCopilotChatClient: ReconcileLocalCopilotChatClient,
+  context: ReconcileContext,
 ): Promise<ReconcileSessionEvent[]> {
   const events: ReconcileSessionEvent[] = [];
   const activeSessions = snapshot.agentSessions
@@ -174,9 +201,62 @@ export async function reconcileSessions(
         }
         break;
       case "address-review-comments":
-        if (pullRequest && hasUpdatedHeadSha(session, pullRequest)) {
+        if (pullRequest === undefined) {
+          break;
+        }
+        if (hasUpdatedHeadSha(session, pullRequest)) {
           await sessionStore.completeSession(session.id);
           events.push({ session, outcome: "completed" });
+          break;
+        }
+
+        if (session.pullRequestNumber === undefined) {
+          break;
+        }
+
+        // Copilot may end its session by posting a comment ("no change
+        // needed") without pushing any commits. In that case the head SHA
+        // never updates and the session would sit forever waiting. Detect
+        // the "Copilot finished work" timeline event after session.createdAt
+        // and, when found, ask the local copilot CLI to evaluate whether
+        // every review comment is actually addressed. The CLI's verdict
+        // (DONE / NOT_DONE) decides whether to complete or fail the
+        // session — failing it lets the orchestrator re-issue the
+        // address-review-comments action on the next iteration.
+        {
+          const finishedWorkEvents = await gitHubClient.listCopilotFinishedWorkEvents(
+            session.pullRequestNumber,
+          );
+          const sessionStartMs = Date.parse(session.createdAt);
+          const hasFinishedAfterSession = finishedWorkEvents.some(
+            (event) => Date.parse(event.createdAt) > sessionStartMs,
+          );
+          if (!hasFinishedAfterSession) {
+            break;
+          }
+
+          const evaluation = await localCopilotChatClient.evaluateReviewCommentsAddressed({
+            owner: context.owner,
+            repo: context.repo,
+            pullRequestNumber: session.pullRequestNumber,
+          });
+
+          if (evaluation.verdict === "DONE") {
+            await sessionStore.completeSession(session.id);
+            events.push({
+              session,
+              outcome: "completed",
+              evaluationRationale: evaluation.rationale,
+            });
+          } else {
+            await sessionStore.failSession(session.id);
+            events.push({
+              session,
+              outcome: "failed-stale",
+              staleReason: "copilot-review-comments-not-addressed",
+              evaluationRationale: evaluation.rationale,
+            });
+          }
         }
         break;
       case "resolve-conflicts":

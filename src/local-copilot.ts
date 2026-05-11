@@ -18,12 +18,33 @@ export interface GenerateFinalDescriptionParams {
 }
 
 /**
+ * Parameters for evaluating whether a Copilot session that ended without
+ * pushing new commits has nevertheless adequately addressed every
+ * outstanding pull-request review comment.
+ */
+export interface EvaluateReviewCommentsAddressedParams {
+  owner: string;
+  repo: string;
+  pullRequestNumber: number;
+}
+
+export type ReviewCommentsAddressedVerdict = "DONE" | "NOT_DONE";
+
+export interface ReviewCommentsAddressedEvaluation {
+  verdict: ReviewCommentsAddressedVerdict;
+  rationale: string;
+}
+
+/**
  * Local Copilot chat client. The default implementation shells out to the
  * `copilot` CLI inside a fresh checkout of the PR branch so the CLI can
  * inspect the actual diff and commits.
  */
 export interface LocalCopilotChatClient {
   generateFinalDescription(params: GenerateFinalDescriptionParams): Promise<string>;
+  evaluateReviewCommentsAddressed(
+    params: EvaluateReviewCommentsAddressedParams,
+  ): Promise<ReviewCommentsAddressedEvaluation>;
 }
 
 interface LocalCopilotChatClientOptions {
@@ -110,6 +131,15 @@ function runCommand(
 export const FINAL_DESCRIPTION_START_MARKER = "<<<VIBRATOR_PR_BODY_START>>>";
 export const FINAL_DESCRIPTION_END_MARKER = "<<<VIBRATOR_PR_BODY_END>>>";
 
+/**
+ * Sentinel line emitted by the `copilot` CLI when evaluating whether
+ * unresolved review comments on a PR have been adequately addressed. The
+ * CLI must end its output with exactly `VERDICT: DONE` or
+ * `VERDICT: NOT_DONE` (on its own line, optionally followed by a
+ * rationale block).
+ */
+export const REVIEW_COMMENTS_VERDICT_PATTERN = /^VERDICT:\s*(DONE|NOT_DONE)\b/im;
+
 function buildFinalDescriptionPrompt(params: GenerateFinalDescriptionParams): string {
   const closingReferences =
     params.closingIssueNumbers.length === 0
@@ -163,6 +193,48 @@ export function extractFinalDescription(rawOutput: string): string {
   return inner.replace(/^\s*\r?\n/, "").replace(/\r?\n\s*$/, "").trim();
 }
 
+/**
+ * Parses the verdict from raw `copilot` CLI output. The CLI is instructed
+ * to emit a `VERDICT: DONE` or `VERDICT: NOT_DONE` sentinel line; the
+ * remaining stdout is treated as the rationale. If no sentinel is found
+ * the verdict is conservatively reported as NOT_DONE so the orchestrator
+ * re-asks Copilot rather than auto-merging on an ambiguous answer.
+ */
+export function extractReviewCommentsVerdict(
+  rawOutput: string,
+): ReviewCommentsAddressedEvaluation {
+  const match = rawOutput.match(REVIEW_COMMENTS_VERDICT_PATTERN);
+  if (!match) {
+    return { verdict: "NOT_DONE", rationale: rawOutput.trim() };
+  }
+  const verdict = match[1] === "DONE" ? "DONE" : "NOT_DONE";
+  return { verdict, rationale: rawOutput.trim() };
+}
+
+function buildReviewCommentsEvaluationPrompt(
+  params: EvaluateReviewCommentsAddressedParams,
+): string {
+  return [
+    `You are evaluating whether every unresolved review comment on pull request #${params.pullRequestNumber} in ${params.owner}/${params.repo} has been adequately addressed.`,
+    "",
+    "Context: the Copilot coding agent was asked to address the review comments but ended its turn without pushing new commits. It may have decided no code change was warranted (e.g. the existing code is already correct), or it may have failed to make the change. Your job is to decide which.",
+    "",
+    "Use the available tools to investigate. At minimum, inspect:",
+    `- The unresolved review comments: \`gh pr view ${params.pullRequestNumber} --json reviews,comments,reviewThreads\` (or \`gh api\`).`,
+    `- Copilot's most recent comment on the PR: \`gh pr view ${params.pullRequestNumber} --comments\`.`,
+    "- The current diff and any commits on the branch: `git log` and `git diff origin/main..HEAD`.",
+    "",
+    "Decide one of:",
+    "- DONE: every unresolved review comment is genuinely resolved by the code in its current state OR by a substantive explanation from Copilot that makes a code change unnecessary. The PR can safely proceed to the next stage (re-review, then merge).",
+    "- NOT_DONE: at least one review comment still requires a code change that has not been made. The orchestrator will re-ask Copilot to address them.",
+    "",
+    "Output format requirements:",
+    "- After your investigation, emit a single line `VERDICT: DONE` or `VERDICT: NOT_DONE` (exact prefix, on its own line).",
+    "- Optionally, write a short rationale before or after that line.",
+    "- The orchestrator only reads the VERDICT line, so be conservative: if you are not confident every comment is resolved, emit NOT_DONE.",
+  ].join("\n");
+}
+
 class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
   private readonly checkoutRootDir: string;
   private readonly copilotCommand: string;
@@ -175,6 +247,31 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
   }
 
   async generateFinalDescription(params: GenerateFinalDescriptionParams): Promise<string> {
+    const repoDir = await this.checkoutPullRequest({
+      owner: params.owner,
+      repo: params.repo,
+      pullRequestNumber: params.pullRequestNumber,
+    });
+
+    const prompt = buildFinalDescriptionPrompt(params);
+    const stdout = await this.runCopilot(prompt, repoDir);
+    return extractFinalDescription(stdout);
+  }
+
+  async evaluateReviewCommentsAddressed(
+    params: EvaluateReviewCommentsAddressedParams,
+  ): Promise<ReviewCommentsAddressedEvaluation> {
+    const repoDir = await this.checkoutPullRequest(params);
+    const prompt = buildReviewCommentsEvaluationPrompt(params);
+    const stdout = await this.runCopilot(prompt, repoDir);
+    return extractReviewCommentsVerdict(stdout);
+  }
+
+  private async checkoutPullRequest(params: {
+    owner: string;
+    repo: string;
+    pullRequestNumber: number;
+  }): Promise<string> {
     const repoDir = join(
       this.checkoutRootDir,
       `${params.owner}-${params.repo}`,
@@ -211,7 +308,10 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
       cwd: repoDir,
     });
 
-    const prompt = buildFinalDescriptionPrompt(params);
+    return repoDir;
+  }
+
+  private async runCopilot(prompt: string, cwd: string): Promise<string> {
     // Strip GitHub token env vars so the `copilot` CLI falls back to its own
     // keyring-stored authentication. Inheriting GITHUB_TOKEN/GH_TOKEN from
     // vibrator's .env causes copilot to use a PAT that typically lacks the
@@ -220,13 +320,11 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
     delete copilotEnv.GITHUB_TOKEN;
     delete copilotEnv.GH_TOKEN;
     delete copilotEnv.COPILOT_GITHUB_TOKEN;
-    const stdout = await runCommand(this.copilotCommand, ["-p", prompt], {
-      cwd: repoDir,
+    return runCommand(this.copilotCommand, ["-p", prompt], {
+      cwd,
       captureStdout: true,
       env: copilotEnv,
     });
-
-    return extractFinalDescription(stdout);
   }
 }
 
