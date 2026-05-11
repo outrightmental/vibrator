@@ -1,0 +1,32 @@
+{
+  "name": "vibrator",
+  "version": "1.0.0",
+  "description": "Orchestrator for agentic vibe coding",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/src/index.js",
+    "test": "node --import tsx --test test/**/*.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/outrightmental/vibrator.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bugs": {
+    "url": "https://github.com/outrightmental/vibrator/issues"
+  },
+  "homepage": "https://github.com/outrightmental/vibrator#readme",
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
