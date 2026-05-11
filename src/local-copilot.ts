@@ -163,10 +163,20 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
         this.ghCommand,
         ["repo", "clone", `${params.owner}/${params.repo}`, repoDir, "--", "--depth=50"],
       );
-    } else {
-      // Refresh existing checkout.
-      await runCommand("git", ["fetch", "--all", "--prune"], { cwd: repoDir });
     }
+
+    // Ensure `origin` fetches all branches into refs/remotes/origin/*. A
+    // shallow / single-branch clone (which `gh repo clone --depth=50`
+    // produces) configures `origin` with a narrow refspec covering only the
+    // default branch, which causes `gh pr checkout` to fail with
+    // "starting point 'origin/<branch>' is not a branch" because the
+    // remote-tracking ref it just fetched isn't covered by the refspec.
+    await runCommand(
+      "git",
+      ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+      { cwd: repoDir },
+    );
+    await runCommand("git", ["fetch", "origin", "--prune"], { cwd: repoDir });
 
     // Check out the PR branch into the existing repo. `gh pr checkout` handles
     // both same-repo and fork-PR cases.
