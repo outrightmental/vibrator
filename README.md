@@ -13,7 +13,7 @@ On each loop it:
 3. Enforces a configurable maximum concurrency (defaults to `3`).
 4. Assigns the next eligible issues to Copilot by posting GitHub comments.
 5. Watches linked pull requests through a review/fix/re-review loop.
-6. Requests a final PR description, appends `Closes #<issue>`, and squash merges the pull request when the review loop is done.
+6. Requests a final PR description, preserves/appends any explicit closing references parsed from the PR title/body, and squash merges the pull request when the review loop is done.
 
 ## Usage
 
