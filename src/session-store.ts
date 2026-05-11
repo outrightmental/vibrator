@@ -8,6 +8,8 @@ interface SessionState {
   sessions: AgentSession[];
 }
 
+// Keep enough recent terminal history for follow-up planning while preventing
+// the local session-store file from growing without bound during long-running use.
 const MAX_PERSISTED_TERMINAL_SESSIONS = 200;
 
 function nowIsoString(): string {

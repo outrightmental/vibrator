@@ -9,14 +9,16 @@ import type {
 
 const BLOCKED_BY_PATTERN = /\b(?:blocked by|depends on)\s+#(\d+)\b/gi;
 const BLOCKS_PATTERN = /\bblocks\s+#(\d+)\b/gi;
-const CLOSING_ISSUE_KEYWORDS = String.raw`(?:close[sd]?|fix(?:e[sd]?|es)?|resolve[sd]?)`;
-const LINKED_ISSUE_KEYWORDS = String.raw`(?:${CLOSING_ISSUE_KEYWORDS}|implement(?:s|ed)?|for)`;
+const CLOSING_ISSUE_KEYWORDS = ["close[sd]?", "fix(?:e[sd]?|es)?", "resolve[sd]?"] as const;
+const LINKED_ISSUE_KEYWORDS = [...CLOSING_ISSUE_KEYWORDS, "implement(?:s|ed)?", "for"] as const;
+const CLOSING_ISSUE_KEYWORD_PATTERN = String.raw`(?:${CLOSING_ISSUE_KEYWORDS.join("|")})`;
+const LINKED_ISSUE_KEYWORD_PATTERN = String.raw`(?:${LINKED_ISSUE_KEYWORDS.join("|")})`;
 const CLOSING_ISSUE_PATTERN = new RegExp(
-  String.raw`\b${CLOSING_ISSUE_KEYWORDS}\s*:?\s*#(\d+)\b`,
+  String.raw`\b${CLOSING_ISSUE_KEYWORD_PATTERN}\s*:?\s*#(\d+)\b`,
   "gi",
 );
 const LINKED_ISSUE_PATTERN = new RegExp(
-  String.raw`\b${LINKED_ISSUE_KEYWORDS}\s*:?\s*#(\d+)\b`,
+  String.raw`\b${LINKED_ISSUE_KEYWORD_PATTERN}\s*:?\s*#(\d+)\b`,
   "gi",
 );
 
