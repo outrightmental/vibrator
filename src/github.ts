@@ -61,6 +61,66 @@ interface GitHubPullRequestResponse {
 
 interface GitHubPullRequestReviewResponse {
   submitted_at: string | null;
+  user: { login: string } | null;
+  state: string;
+  body: string | null;
+}
+
+/**
+ * Login of the GitHub Copilot pull-request review bot.
+ */
+export const COPILOT_REVIEWER_LOGIN = "copilot-pull-request-reviewer";
+
+/**
+ * Pattern matching the failure message Copilot posts as a review body when
+ * it could not analyze the PR (e.g. "Copilot wasn't able to review any files
+ * in this pull request."). A review matching this body must NEVER be
+ * treated as a successful approval.
+ */
+export const COPILOT_REVIEW_FAILURE_PATTERN = /wasn't able to review/i;
+
+/**
+ * Pattern matching the success message Copilot posts when it has reviewed
+ * the PR and found nothing worth commenting on (e.g. "Copilot reviewed N
+ * files... and generated no comments."). Only reviews matching this body
+ * (or an explicit APPROVED state) are accepted as a clean review that
+ * authorizes squash-and-merge.
+ */
+export const COPILOT_REVIEW_SUCCESS_PATTERN = /generated no comments/i;
+
+export function isFailedCopilotReview(review: {
+  authorLogin?: string | undefined;
+  body?: string | null | undefined;
+}): boolean {
+  if (review.authorLogin?.toLowerCase() !== COPILOT_REVIEWER_LOGIN) {
+    return false;
+  }
+  return COPILOT_REVIEW_FAILURE_PATTERN.test(review.body ?? "");
+}
+
+export function isCleanCopilotReview(review: {
+  authorLogin?: string | undefined;
+  state?: string | undefined;
+  body?: string | null | undefined;
+  reviewCommentCount?: number | undefined;
+}): boolean {
+  if (review.authorLogin?.toLowerCase() !== COPILOT_REVIEWER_LOGIN) {
+    return false;
+  }
+  if (review.state !== "COMMENTED" && review.state !== "APPROVED") {
+    return false;
+  }
+  if ((review.reviewCommentCount ?? 0) !== 0) {
+    return false;
+  }
+  const body = review.body ?? "";
+  if (COPILOT_REVIEW_FAILURE_PATTERN.test(body)) {
+    return false;
+  }
+  if (review.state === "APPROVED") {
+    return true;
+  }
+  return COPILOT_REVIEW_SUCCESS_PATTERN.test(body);
 }
 
 interface GraphQLResponse<T> {
@@ -265,6 +325,7 @@ export class GitHubClient {
       state: "PENDING" | "COMMENTED" | "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED";
       submittedAt: string | null;
       commit: { oid: string } | null;
+      body: string | null;
       comments: { totalCount: number };
     };
     type QueryResult = {
@@ -309,6 +370,7 @@ export class GitHubClient {
                       state
                       submittedAt
                       commit { oid }
+                      body
                       comments { totalCount }
                     }
                   }
@@ -330,21 +392,23 @@ export class GitHubClient {
         const issueNumbers = node.closingIssuesReferences?.nodes.map((reference) => reference.number) ?? [];
         const reviewNodes = node.reviews?.nodes ?? [];
         // A "clean" Copilot review = the Copilot review bot submitted a review
-        // on the current head sha that requested no changes and produced zero
-        // review comments. This is the GraphQL signal that the PR is ready
-        // to merge — no further request-review iterations are needed.
+        // on the current head sha that requested no changes, produced zero
+        // review comments, AND whose body explicitly indicates success
+        // ("generated no comments") — or is an APPROVED review. The body
+        // check is critical: when Copilot posts "Copilot wasn't able to
+        // review any files in this pull request." the GraphQL signals
+        // (COMMENTED + 0 comments) otherwise look identical to a successful
+        // empty review and would incorrectly authorize squash-and-merge.
         const hasCleanCopilotReviewOnHead = reviewNodes.some((review) => {
-          const login = review.author?.login?.toLowerCase();
-          if (login !== "copilot-pull-request-reviewer") {
-            return false;
-          }
           if (review.commit?.oid !== node.headRefOid) {
             return false;
           }
-          if (review.state !== "COMMENTED" && review.state !== "APPROVED") {
-            return false;
-          }
-          return review.comments.totalCount === 0;
+          return isCleanCopilotReview({
+            authorLogin: review.author?.login,
+            state: review.state,
+            body: review.body,
+            reviewCommentCount: review.comments.totalCount,
+          });
         });
         result.set(node.number, {
           closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
@@ -689,14 +753,37 @@ export class GitHubClient {
 
   async listPullRequestReviews(
     pullRequestNumber: number,
-  ): Promise<Array<{ submittedAt: string }>> {
+  ): Promise<
+    Array<{
+      submittedAt: string;
+      authorLogin?: string;
+      state?: string;
+      body?: string | null;
+    }>
+  > {
     const reviews = await this.getAllPages<GitHubPullRequestReviewResponse>(
       `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}/reviews`,
     );
     return reviews
-      .map((review) => review.submitted_at)
-      .filter((submittedAt): submittedAt is string => submittedAt !== null)
-      .map((submittedAt) => ({ submittedAt }));
+      .filter((review): review is GitHubPullRequestReviewResponse & { submitted_at: string } =>
+        review.submitted_at !== null,
+      )
+      .map((review) => {
+        const result: {
+          submittedAt: string;
+          authorLogin?: string;
+          state?: string;
+          body?: string | null;
+        } = { submittedAt: review.submitted_at };
+        if (review.user?.login !== undefined) {
+          result.authorLogin = review.user.login;
+        }
+        if (review.state !== undefined) {
+          result.state = review.state;
+        }
+        result.body = review.body;
+        return result;
+      });
   }
 
   async countUnresolvedPullRequestReviewThreads(pullRequestNumber: number): Promise<number> {

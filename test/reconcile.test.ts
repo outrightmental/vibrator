@@ -165,6 +165,134 @@ test("reconcileSessions completes review sessions with unresolved thread counts"
   ]);
 });
 
+test("reconcileSessions fails review sessions when Copilot replies that it wasn't able to review", async () => {
+  const completedSessions: string[] = [];
+  const failedSessions: string[] = [];
+  const countUnresolvedCalls: number[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "review",
+        createdAt: "2024-01-01T00:30:00.000Z",
+      }),
+    ],
+  };
+
+  const events = await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(
+        pullRequestNumber: number,
+      ): Promise<number> {
+        countUnresolvedCalls.push(pullRequestNumber);
+        return 0;
+      },
+      async listPullRequestReviews() {
+        return [
+          {
+            submittedAt: "2024-01-01T01:00:00.000Z",
+            authorLogin: "Copilot-pull-request-reviewer",
+            state: "COMMENTED",
+            body: "Copilot wasn't able to review any files in this pull request.",
+          },
+        ];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessions.push(sessionId);
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessions.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, []);
+  assert.deepEqual(failedSessions, ["review-1"]);
+  assert.deepEqual(countUnresolvedCalls, []);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.outcome, "failed-stale");
+  assert.equal(events[0]?.staleReason, "copilot-review-failed");
+});
+
+test("reconcileSessions completes review sessions when Copilot replies with a successful empty review", async () => {
+  const completedSessions: Array<{ sessionId: string; reviewCommentCount?: number }> = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "review",
+        createdAt: "2024-01-01T00:30:00.000Z",
+      }),
+    ],
+  };
+
+  await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews() {
+        return [
+          {
+            submittedAt: "2024-01-01T01:00:00.000Z",
+            authorLogin: "copilot-pull-request-reviewer",
+            state: "COMMENTED",
+            body: "Copilot reviewed 3 files in this pull request and generated no comments.",
+          },
+        ];
+      },
+    },
+    {
+      async completeSession(
+        sessionId: string,
+        result,
+      ): Promise<AgentSession | undefined> {
+        const completedSession: { sessionId: string; reviewCommentCount?: number } = {
+          sessionId,
+        };
+        if (result?.reviewCommentCount !== undefined) {
+          completedSession.reviewCommentCount = result.reviewCommentCount;
+        }
+        completedSessions.push(completedSession);
+        return undefined;
+      },
+      async failSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, [
+    { sessionId: "review-1", reviewCommentCount: 0 },
+  ]);
+});
+
 test("reconcileSessions completes final-description sessions from updated PR bodies", async () => {
   const completedSessions: Array<{ sessionId: string; generatedDescription?: string }> = [];
   const snapshot: RepositorySnapshot = {

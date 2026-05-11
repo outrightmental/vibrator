@@ -1,10 +1,18 @@
+import { isFailedCopilotReview, COPILOT_REVIEWER_LOGIN } from "./github.js";
 import type { AgentSession, AgentSessionResult, Issue, PullRequest, RepositorySnapshot } from "./types.js";
 
 export interface ReconcileGitHubClient {
   countUnresolvedPullRequestReviewThreads(pullRequestNumber: number): Promise<number>;
   listPullRequestReviews(
     pullRequestNumber: number,
-  ): Promise<Array<{ submittedAt: string }>>;
+  ): Promise<
+    Array<{
+      submittedAt: string;
+      authorLogin?: string;
+      state?: string;
+      body?: string | null;
+    }>
+  >;
 }
 
 export interface ReconcileSessionStore {
@@ -15,7 +23,10 @@ export interface ReconcileSessionStore {
   failSession(sessionId: string): Promise<AgentSession | undefined>;
 }
 
-export type ReconcileStaleReason = "issue-closed" | "copilot-not-assigned";
+export type ReconcileStaleReason =
+  | "issue-closed"
+  | "copilot-not-assigned"
+  | "copilot-review-failed";
 
 export interface ReconcileSessionEvent {
   session: AgentSession;
@@ -118,20 +129,49 @@ export async function reconcileSessions(
           break;
         }
 
-        if (
-          !(await gitHubClient
-            .listPullRequestReviews(session.pullRequestNumber))
-            .some((review) => Date.parse(review.submittedAt) > Date.parse(session.createdAt))
-        ) {
-          break;
-        }
+        {
+          const reviewsAfterSession = (
+            await gitHubClient.listPullRequestReviews(session.pullRequestNumber)
+          ).filter(
+            (review) => Date.parse(review.submittedAt) > Date.parse(session.createdAt),
+          );
+          if (reviewsAfterSession.length === 0) {
+            break;
+          }
 
-        await sessionStore.completeSession(session.id, {
-          reviewCommentCount: await gitHubClient.countUnresolvedPullRequestReviewThreads(
-            session.pullRequestNumber,
-          ),
-        });
-        events.push({ session, outcome: "completed" });
+          // If Copilot's most recent attempt to review this PR returned the
+          // "wasn't able to review any files" failure message, do NOT treat
+          // that as an approval. Fail the session so the orchestrator
+          // re-requests a Copilot review on the next iteration. Without this
+          // guard the failure review (state=COMMENTED, 0 inline comments) is
+          // indistinguishable from a clean review and the PR would advance
+          // straight to squash-and-merge.
+          const latestCopilotReview = [...reviewsAfterSession]
+            .filter(
+              (review) =>
+                review.authorLogin?.toLowerCase() === COPILOT_REVIEWER_LOGIN,
+            )
+            .sort(
+              (left, right) =>
+                Date.parse(right.submittedAt) - Date.parse(left.submittedAt),
+            )[0];
+          if (latestCopilotReview && isFailedCopilotReview(latestCopilotReview)) {
+            await sessionStore.failSession(session.id);
+            events.push({
+              session,
+              outcome: "failed-stale",
+              staleReason: "copilot-review-failed",
+            });
+            break;
+          }
+
+          await sessionStore.completeSession(session.id, {
+            reviewCommentCount: await gitHubClient.countUnresolvedPullRequestReviewThreads(
+              session.pullRequestNumber,
+            ),
+          });
+          events.push({ session, outcome: "completed" });
+        }
         break;
       case "address-review-comments":
         if (pullRequest && hasUpdatedHeadSha(session, pullRequest)) {
