@@ -187,6 +187,17 @@ export class GitHubClient {
     });
   }
 
+  async assignIssueToCopilot(issueNumber: number): Promise<void> {
+    await this.request(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${issueNumber}/assignees`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignees: ["Copilot"] }),
+      },
+    );
+  }
+
   async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {
     await this.request(`/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}`, {
       method: "PATCH",

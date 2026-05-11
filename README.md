@@ -11,7 +11,7 @@ On each loop it:
 1. Loads open issues, open pull requests, and local agent-session state.
 2. Infers issue ordering from issue age, while respecting `blocked by #123`, `depends on #123`, and `blocks #123` relationships in issue bodies.
 3. Enforces a configurable maximum concurrency (defaults to `3`).
-4. Assigns the next eligible issues to Copilot by posting GitHub comments.
+4. Assigns the next eligible issues to Copilot via the GitHub assignees API.
 5. Watches linked pull requests through a review/fix/re-review loop.
 6. Requests a final PR description, preserves/appends any explicit closing references parsed from the PR title/body, and squash merges the pull request when the review loop is done.
 

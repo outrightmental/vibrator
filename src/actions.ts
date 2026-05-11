@@ -3,6 +3,7 @@ import type { AgentSessionPhase, OrchestratorAction } from "./types.js";
 
 export interface ActionGitHubClient {
   createIssueComment(issueNumber: number, body: string): Promise<void>;
+  assignIssueToCopilot(issueNumber: number): Promise<void>;
   updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void>;
   mergePullRequest(pullRequestNumber: number): Promise<void>;
   resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void>;
@@ -43,10 +44,7 @@ export async function executeAction(
 
   switch (action.type) {
     case "start-implementation":
-      await gitHubClient.createIssueComment(
-        action.issueNumber,
-        "@copilot Please implement this issue in a pull request using automatic model selection.",
-      );
+      await gitHubClient.assignIssueToCopilot(action.issueNumber);
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         phase: "implementation",

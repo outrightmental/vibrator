@@ -4,11 +4,59 @@ import assert from "node:assert/strict";
 import { executeAction } from "../src/actions.js";
 import type { OrchestratorAction } from "../src/types.js";
 
+test("executeAction assigns the issue to Copilot when starting implementation", async () => {
+  const calls: string[] = [];
+  const gitHubClient = {
+    async createIssueComment(issueNumber: number, body: string): Promise<void> {
+      calls.push(`comment:${issueNumber}:${body}`);
+    },
+    async assignIssueToCopilot(issueNumber: number): Promise<void> {
+      calls.push(`assign:${issueNumber}`);
+    },
+    async updatePullRequestBody(): Promise<void> {
+      calls.push("update");
+    },
+    async mergePullRequest(): Promise<void> {
+      calls.push("merge");
+    },
+    async resolvePullRequestReviewThreads(): Promise<void> {
+      calls.push("resolve");
+    },
+  };
+  const sessions: Array<{
+    issueNumber: number;
+    pullRequestNumber?: number;
+    phase: string;
+  }> = [];
+  const sessionStore = {
+    async createSession(input: {
+      issueNumber: number;
+      pullRequestNumber?: number;
+      phase: "implementation" | "review" | "address-review-comments" | "final-description";
+    }): Promise<void> {
+      sessions.push(input);
+    },
+  };
+
+  await executeAction(
+    gitHubClient,
+    sessionStore,
+    { type: "start-implementation", issueNumber: 7 },
+    false,
+  );
+
+  assert.deepEqual(calls, ["assign:7"]);
+  assert.deepEqual(sessions, [{ issueNumber: 7, phase: "implementation" }]);
+});
+
 test("executeAction resolves review threads before requesting another review", async () => {
   const calls: string[] = [];
   const gitHubClient = {
     async createIssueComment(issueNumber: number, body: string): Promise<void> {
       calls.push(`comment:${issueNumber}:${body}`);
+    },
+    async assignIssueToCopilot(issueNumber: number): Promise<void> {
+      calls.push(`assign:${issueNumber}`);
     },
     async updatePullRequestBody(): Promise<void> {
       calls.push("update");
@@ -60,6 +108,9 @@ test("executeAction skips review-thread resolution for a first review request", 
     async createIssueComment(issueNumber: number, body: string): Promise<void> {
       calls.push(`comment:${issueNumber}:${body}`);
     },
+    async assignIssueToCopilot(issueNumber: number): Promise<void> {
+      calls.push(`assign:${issueNumber}`);
+    },
     async updatePullRequestBody(): Promise<void> {
       calls.push("update");
     },
@@ -91,6 +142,9 @@ test("executeAction only requests explicit closing references in final descripti
   const gitHubClient = {
     async createIssueComment(issueNumber: number, body: string): Promise<void> {
       calls.push(`comment:${issueNumber}:${body}`);
+    },
+    async assignIssueToCopilot(issueNumber: number): Promise<void> {
+      calls.push(`assign:${issueNumber}`);
     },
     async updatePullRequestBody(): Promise<void> {
       calls.push("update");
@@ -129,6 +183,9 @@ test("executeAction formats multiple explicit closing references correctly", asy
   const gitHubClient = {
     async createIssueComment(issueNumber: number, body: string): Promise<void> {
       calls.push(`comment:${issueNumber}:${body}`);
+    },
+    async assignIssueToCopilot(issueNumber: number): Promise<void> {
+      calls.push(`assign:${issueNumber}`);
     },
     async updatePullRequestBody(): Promise<void> {
       calls.push("update");
@@ -171,6 +228,7 @@ test("executeAction stores the current PR head sha when requesting review commen
   }> = [];
   const gitHubClient = {
     async createIssueComment(): Promise<void> {},
+    async assignIssueToCopilot(): Promise<void> {},
     async updatePullRequestBody(): Promise<void> {},
     async mergePullRequest(): Promise<void> {},
     async resolvePullRequestReviewThreads(): Promise<void> {},
@@ -218,6 +276,7 @@ test("executeAction stores the current PR body when requesting a final descripti
   }> = [];
   const gitHubClient = {
     async createIssueComment(): Promise<void> {},
+    async assignIssueToCopilot(): Promise<void> {},
     async updatePullRequestBody(): Promise<void> {},
     async mergePullRequest(): Promise<void> {},
     async resolvePullRequestReviewThreads(): Promise<void> {},
