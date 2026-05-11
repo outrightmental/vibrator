@@ -130,25 +130,24 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   const sessionStore = new FileSessionStore(config.sessionStorePath);
 
-  log("Checking for workflow runs awaiting approval...");
+  log("Checking all workflow runs for any awaiting maintainer approval...");
   try {
     const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
-    if (pendingRuns.length === 0) {
-      log("  No workflow runs awaiting approval.");
-    } else {
-      log(`  ${pendingRuns.length} workflow run(s) awaiting approval.`);
-      for (const run of pendingRuns) {
-        const label = `run ${run.id} (${run.name || "unnamed"}) on ${run.headBranch || "?"} [${run.event}]`;
-        if (config.dryRun) {
-          log(`  [dry-run] Would approve ${label}.`);
-          continue;
-        }
-        try {
-          await gitHubClient.approveWorkflowRun(run.id);
-          log(`  Approved ${label}.`);
-        } catch (error) {
-          log(`  Failed to approve ${label}: ${(error as Error).message}`);
-        }
+    log(
+      `  Checked workflow runs awaiting approval: found ${pendingRuns.length}.`,
+    );
+    for (const run of pendingRuns) {
+      const label = `run ${run.id} "${run.name || "unnamed"}" [status=${run.status}, event=${run.event}, branch=${run.headBranch || "?"}] (${run.htmlUrl})`;
+      if (config.dryRun) {
+        log(`  [dry-run] Would approve workflow ${label}.`);
+        continue;
+      }
+      log(`  Approving workflow ${label}...`);
+      try {
+        await gitHubClient.approveWorkflowRun(run.id);
+        log(`  Approved workflow ${label}.`);
+      } catch (error) {
+        log(`  Failed to approve workflow ${label}: ${(error as Error).message}`);
       }
     }
   } catch (error) {

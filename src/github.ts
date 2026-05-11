@@ -329,40 +329,68 @@ export class GitHubClient {
   }
 
   async listWorkflowRunsAwaitingApproval(): Promise<
-    Array<{ id: number; name: string; headBranch: string; event: string }>
+    Array<{
+      id: number;
+      name: string;
+      headBranch: string;
+      event: string;
+      status: string;
+      htmlUrl: string;
+    }>
   > {
-    let response: {
-      workflow_runs?: Array<{
-        id: number;
-        name: string | null;
-        head_branch: string | null;
-        event: string;
-      }>;
-    };
-    try {
-      response = await this.request<{
-        workflow_runs?: Array<{
-          id: number;
-          name: string | null;
-          head_branch: string | null;
-          event: string;
-        }>;
-      }>(
-        `/repos/${this.options.owner}/${this.options.repo}/actions/runs?status=action_required&per_page=100`,
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
-        return [];
-      }
-      throw error;
+    interface WorkflowRunResponse {
+      id: number;
+      name: string | null;
+      head_branch: string | null;
+      event: string;
+      status: string | null;
+      conclusion: string | null;
+      html_url: string | null;
     }
 
-    return (response.workflow_runs ?? []).map((run) => ({
-      id: run.id,
-      name: run.name ?? "",
-      headBranch: run.head_branch ?? "",
-      event: run.event,
-    }));
+    const statusesToQuery = ["action_required", "waiting"] as const;
+    const seenRunIds = new Set<number>();
+    const matches: Array<{
+      id: number;
+      name: string;
+      headBranch: string;
+      event: string;
+      status: string;
+      htmlUrl: string;
+    }> = [];
+
+    for (const status of statusesToQuery) {
+      let response: { workflow_runs?: WorkflowRunResponse[] };
+      try {
+        response = await this.request<{ workflow_runs?: WorkflowRunResponse[] }>(
+          `/repos/${this.options.owner}/${this.options.repo}/actions/runs?status=${status}&per_page=100`,
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
+          continue;
+        }
+        throw error;
+      }
+
+      for (const run of response.workflow_runs ?? []) {
+        if (seenRunIds.has(run.id)) {
+          continue;
+        }
+        seenRunIds.add(run.id);
+        matches.push({
+          id: run.id,
+          name: run.name ?? "",
+          headBranch: run.head_branch ?? "",
+          event: run.event,
+          status: run.status ?? status,
+          htmlUrl:
+            run.html_url ??
+            `${this.repositoryUrl()}/actions/runs/${run.id}`,
+        });
+      }
+    }
+
+    return matches;
   }
 
   async approveWorkflowRun(runId: number): Promise<void> {
