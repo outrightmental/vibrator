@@ -1,5 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 
+import "dotenv/config";
+
 import { executeAction } from "./actions.js";
 import {
   buildDefaultSessionStorePath,

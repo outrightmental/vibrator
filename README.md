@@ -17,11 +17,22 @@ On each loop it:
 
 ## Usage
 
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+# edit .env with your GITHUB_TOKEN and other settings
+```
+
+Then run:
+
 ```bash
 npm install
 npm run build
-GITHUB_TOKEN=... npm start -- owner/repo --dry-run --once
+npm start -- owner/repo --dry-run --once
 ```
+
+The repository slug can be omitted from the CLI if `GITHUB_REPOSITORY` is set in `.env`.
 
 ### Environment variables
 
