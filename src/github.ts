@@ -500,6 +500,16 @@ export class GitHubClient {
     subject: string,
     body: string,
   ): Promise<void> {
+    // Mark the PR ready for review first; draft PRs cannot be merged and
+    // `gh pr merge` returns a "Pull Request is still a draft" GraphQL error
+    // in that case. `gh pr ready` is a no-op on non-draft PRs.
+    await runShellCommand("gh", [
+      "pr",
+      "ready",
+      String(pullRequestNumber),
+      "--repo",
+      `${this.options.owner}/${this.options.repo}`,
+    ]);
     await runShellCommand("gh", [
       "pr",
       "merge",
