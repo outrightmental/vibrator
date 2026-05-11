@@ -543,6 +543,110 @@ test("buildPlan uses sessions from any linked issue on the same pull request", (
   ]);
 });
 
+test("buildPlan resets PR draft state and re-requests review after a failed Copilot review", () => {
+  // Regression test for the "Copilot wasn't able to review any files in
+  // this pull request." failure mode. When reconcile marks a review
+  // session as failed, the next review request must include
+  // resetDraftState so the PR is toggled draft → ready-for-review before
+  // Copilot is re-asked to review — otherwise Copilot tends to ignore the
+  // new request and the orchestrator loops indefinitely.
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 96 })],
+    pullRequests: [
+      createPullRequest({
+        number: 196,
+        linkedIssueNumbers: [96],
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "implementation-1",
+        issueNumber: 96,
+        pullRequestNumber: 196,
+        phase: "implementation",
+        status: "completed",
+        updatedAt: "2024-01-01T00:00:00.000Z",
+      }),
+      createSession({
+        id: "review-failed-1",
+        issueNumber: 96,
+        pullRequestNumber: 196,
+        phase: "review",
+        status: "failed",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "request-review",
+      issueNumber: 96,
+      pullRequestNumber: 196,
+      resetDraftState: true,
+    },
+  ]);
+});
+
+test("buildPlan does not reset PR draft state when the most recent review succeeded", () => {
+  // A previously-failed review should not trigger a reset once a later
+  // review session completed successfully on the same PR.
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 96 })],
+    pullRequests: [
+      createPullRequest({
+        number: 196,
+        linkedIssueNumbers: [96],
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-failed-1",
+        issueNumber: 96,
+        pullRequestNumber: 196,
+        phase: "review",
+        status: "failed",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+      }),
+      createSession({
+        id: "address-1",
+        issueNumber: 96,
+        pullRequestNumber: 196,
+        phase: "address-review-comments",
+        status: "completed",
+        updatedAt: "2024-01-03T00:00:00.000Z",
+      }),
+      createSession({
+        id: "review-ok-1",
+        issueNumber: 96,
+        pullRequestNumber: 196,
+        phase: "review",
+        status: "completed",
+        updatedAt: "2024-01-04T00:00:00.000Z",
+        result: { reviewCommentCount: 0 },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // Latest completed session is the successful review — advance to final
+  // description, no resetDraftState flag involved.
+  assert.deepEqual(plan.actions, [
+    {
+      type: "write-final-description",
+      issueNumber: 96,
+      pullRequestNumber: 196,
+      pullRequestTitle: "PR 196",
+      pullRequestHeadRefName: "branch-196",
+      closingIssueNumbers: [96],
+      pullRequestBody: "",
+    },
+  ]);
+});
+
 test("buildMergedPullRequestBody appends a closing reference once", () => {
   assert.equal(
     buildMergedPullRequestBody("Summary", [42]),

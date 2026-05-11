@@ -685,6 +685,40 @@ export class GitHubClient {
     }
   }
 
+  /**
+   * Toggle a pull request from "Ready for review" → draft → "Ready for review"
+   * to reset GitHub Copilot's pull-request review state. Copilot occasionally
+   * fails a review with "Copilot wasn't able to review any files in this
+   * pull request." (timeout, large diff, transient service issue). GitHub's
+   * documented recovery is to convert the PR to draft and back, which clears
+   * Copilot's cached state and lets a fresh review run. Used by the
+   * orchestrator before re-requesting a Copilot review after a failed
+   * attempt. No-op behaviour on draft PRs: still toggles via draft → ready.
+   */
+  async resetPullRequestForCopilotReview(pullRequestNumber: number): Promise<void> {
+    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
+    await this.graphqlRequest(
+      `
+        mutation ConvertPullRequestToDraft($pullRequestId: ID!) {
+          convertPullRequestToDraft(input: { pullRequestId: $pullRequestId }) {
+            clientMutationId
+          }
+        }
+      `,
+      { pullRequestId: pullRequestNodeId },
+    );
+    await this.graphqlRequest(
+      `
+        mutation MarkPullRequestReadyForReview($pullRequestId: ID!) {
+          markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
+            clientMutationId
+          }
+        }
+      `,
+      { pullRequestId: pullRequestNodeId },
+    );
+  }
+
   async requestCopilotReview(pullRequestNumber: number): Promise<void> {
     const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
 

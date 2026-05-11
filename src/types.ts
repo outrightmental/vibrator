@@ -76,6 +76,13 @@ export type OrchestratorAction =
       issueNumber: number | undefined;
       pullRequestNumber: number;
       resolveReviewThreads?: boolean;
+      /**
+       * Toggle the PR draft → ready-for-review before requesting the
+       * Copilot review. Used to recover from a prior Copilot review that
+       * failed with "Copilot wasn't able to review any files in this pull
+       * request." — GitHub's documented reset for that failure mode.
+       */
+      resetDraftState?: boolean;
     }
   | {
       type: "address-review-comments";

@@ -13,6 +13,7 @@ export interface ActionGitHubClient {
   ): Promise<void>;
   resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void>;
   requestCopilotReview(pullRequestNumber: number): Promise<void>;
+  resetPullRequestForCopilotReview(pullRequestNumber: number): Promise<void>;
 }
 
 export interface ActionLocalCopilotChatClient {
@@ -69,6 +70,13 @@ export async function executeAction(
     case "request-review":
       if (action.resolveReviewThreads) {
         await gitHubClient.resolvePullRequestReviewThreads(action.pullRequestNumber);
+      }
+      if (action.resetDraftState) {
+        // Reset GitHub Copilot's review state via the documented
+        // draft → ready-for-review toggle before re-requesting review.
+        // Required after a "Copilot wasn't able to review any files"
+        // failure — otherwise the new review request can be ignored.
+        await gitHubClient.resetPullRequestForCopilotReview(action.pullRequestNumber);
       }
       await gitHubClient.requestCopilotReview(action.pullRequestNumber);
       await sessionStore.createSession({

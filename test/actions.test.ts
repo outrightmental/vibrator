@@ -60,6 +60,9 @@ function createHarness(overrides: { generatedDescription?: string } = {}): Harne
     async requestCopilotReview(pullRequestNumber: number): Promise<void> {
       calls.push(`request-review:${pullRequestNumber}`);
     },
+    async resetPullRequestForCopilotReview(pullRequestNumber: number): Promise<void> {
+      calls.push(`reset-pr:${pullRequestNumber}`);
+    },
   };
   const sessionStore: ActionSessionStore = {
     async createSession(input: SessionInput): Promise<unknown> {
@@ -132,6 +135,36 @@ test("executeAction skips review-thread resolution for a first review request", 
   });
 
   assert.deepEqual(harness.calls, ["request-review:10"]);
+});
+
+test("executeAction toggles the PR draft state before re-requesting review when reset is requested", async () => {
+  const harness = createHarness();
+
+  await run(harness, {
+    type: "request-review",
+    issueNumber: 3,
+    pullRequestNumber: 10,
+    resetDraftState: true,
+  });
+
+  // The draft/ready toggle must happen before the new review request so
+  // Copilot picks up the reset state. Resolve threads (when present) must
+  // still run first so the reset doesn't leave stale unresolved threads.
+  assert.deepEqual(harness.calls, ["reset-pr:10", "request-review:10"]);
+});
+
+test("executeAction resolves threads, resets draft state, then requests review when both flags are set", async () => {
+  const harness = createHarness();
+
+  await run(harness, {
+    type: "request-review",
+    issueNumber: 3,
+    pullRequestNumber: 10,
+    resolveReviewThreads: true,
+    resetDraftState: true,
+  });
+
+  assert.deepEqual(harness.calls, ["resolve:10", "reset-pr:10", "request-review:10"]);
 });
 
 test("executeAction generates a description via the local copilot CLI and squash-merges the PR", async () => {

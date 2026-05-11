@@ -134,6 +134,25 @@ function getLatestCompletedSession(agentSessions: AgentSession[]): AgentSession 
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
 }
 
+/**
+ * Returns true when the most recent terminal (completed or failed) review
+ * session for this PR ended in failure. Used to detect the "Copilot wasn't
+ * able to review any files" failure mode so the next review request can
+ * include a draft → ready-for-review reset (GitHub's documented recovery).
+ * A subsequent successful (completed) review on the same PR clears the
+ * signal — we only reset when the *latest* review attempt failed.
+ */
+function hasFailedLatestReviewSession(agentSessions: AgentSession[]): boolean {
+  const latestReviewSession = [...agentSessions]
+    .filter(
+      (session) =>
+        session.phase === "review" &&
+        (session.status === "completed" || session.status === "failed"),
+    )
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  return latestReviewSession?.status === "failed";
+}
+
 function planPullRequestAction(
   pullRequest: PullRequest,
   issueNumbers: readonly number[],
@@ -147,6 +166,14 @@ function planPullRequestAction(
   }
 
   const latestCompletedSession = getLatestCompletedSession(relevantSessions);
+  // When the most recent Copilot review attempt failed (typically the
+  // "Copilot wasn't able to review any files in this pull request." message
+  // — reconcile fails those review sessions), the next review request must
+  // first toggle the PR draft → ready-for-review to reset Copilot's review
+  // state. Without this reset Copilot tends to ignore the new review
+  // request and the orchestrator spins re-requesting a review that never
+  // arrives.
+  const shouldResetDraftStateBeforeReview = hasFailedLatestReviewSession(relevantSessions);
   const completedSessionIssueNumber = latestCompletedSession?.issueNumber;
   // Keep PR-level work attached to the issue that most recently advanced this PR when possible.
   // For PRs with no linked issue, actionIssueNumber stays undefined.
@@ -255,6 +282,7 @@ function planPullRequestAction(
       type: "request-review",
       pullRequestNumber: pullRequest.number,
       resolveReviewThreads: true,
+      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
     });
   }
 
@@ -263,6 +291,7 @@ function planPullRequestAction(
     return withIssueNumber({
       type: "request-review",
       pullRequestNumber: pullRequest.number,
+      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
     });
   }
 
@@ -270,6 +299,7 @@ function planPullRequestAction(
     return withIssueNumber({
       type: "request-review",
       pullRequestNumber: pullRequest.number,
+      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
     });
   }
 
@@ -280,6 +310,7 @@ function planPullRequestAction(
     return withIssueNumber({
       type: "request-review",
       pullRequestNumber: pullRequest.number,
+      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
     });
   }
 
