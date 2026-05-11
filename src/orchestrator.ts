@@ -129,6 +129,7 @@ function planPullRequestAction(
 ): OrchestratorAction | undefined {
   const issueNumber = issueNumbers[0];
   if (issueNumber === undefined) {
+    // Defensively ignore PRs without linked issues even if callers already filter them out.
     return undefined;
   }
 
@@ -139,6 +140,7 @@ function planPullRequestAction(
 
   const latestCompletedSession = getLatestCompletedSession(relevantSessions);
   const completedSessionIssueNumber = latestCompletedSession?.issueNumber;
+  // Keep PR-level work attached to the issue that most recently advanced this PR when possible.
   const actionIssueNumber =
     completedSessionIssueNumber !== undefined &&
     issueNumbers.includes(completedSessionIssueNumber)
