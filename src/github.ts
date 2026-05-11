@@ -70,6 +70,13 @@ export class GitHubClient {
       },
     });
 
+    if (response.status === 404) {
+      throw Object.assign(
+        new Error(`GitHub request failed (404 Not Found) for ${path}`),
+        { statusCode: 404 },
+      );
+    }
+
     if (!response.ok) {
       throw new Error(`GitHub request failed (${response.status} ${response.statusText}) for ${path}`);
     }
@@ -114,9 +121,18 @@ export class GitHubClient {
     let page = 1;
     while (true) {
       const separator = path.includes("?") ? "&" : "?";
-      const response = await this.request<T[]>(
-        `${path}${separator}per_page=100&page=${page}`,
-      );
+      let response: T[];
+      try {
+        response = await this.request<T[]>(
+          `${path}${separator}per_page=100&page=${page}`,
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
+          console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check token permissions or repository slug).`);
+          return results;
+        }
+        throw error;
+      }
       results.push(...response);
       if (response.length < 100) {
         return results;

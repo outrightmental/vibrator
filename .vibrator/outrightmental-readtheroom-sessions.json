@@ -1,0 +1,28 @@
+{
+  "sessions": [
+    {
+      "id": "8228a8f1-07b9-4aa9-94ef-867c73c36f3a",
+      "issueNumber": 4,
+      "phase": "implementation",
+      "status": "in_progress",
+      "createdAt": "2026-05-11T08:34:40.603Z",
+      "updatedAt": "2026-05-11T08:34:40.603Z"
+    },
+    {
+      "id": "d42ad835-524d-4ca4-aa28-05acc2dd4b43",
+      "issueNumber": 5,
+      "phase": "implementation",
+      "status": "in_progress",
+      "createdAt": "2026-05-11T08:34:41.522Z",
+      "updatedAt": "2026-05-11T08:34:41.522Z"
+    },
+    {
+      "id": "932ffd6b-1c1f-4bb5-b7b2-22bc0cbe8a52",
+      "issueNumber": 6,
+      "phase": "implementation",
+      "status": "in_progress",
+      "createdAt": "2026-05-11T08:34:42.198Z",
+      "updatedAt": "2026-05-11T08:34:42.198Z"
+    }
+  ]
+}
