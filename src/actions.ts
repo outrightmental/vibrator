@@ -22,9 +22,9 @@ function buildFinalDescriptionPrompt(closingIssueNumbers: readonly number[]): st
   }
 
   const closingReferences = closingIssueNumbers
-    .map((issueNumber) => `Closes #${issueNumber}`)
-    .join('", "');
-  return `@copilot Please write the final pull request description based on the final commits in this pull request and include "${closingReferences}".`;
+    .map((issueNumber) => `"Closes #${issueNumber}"`)
+    .join(", ");
+  return `@copilot Please write the final pull request description based on the final commits in this pull request and include ${closingReferences}.`;
 }
 
 export async function executeAction(
