@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "./types.js";
@@ -20,6 +22,10 @@ interface GitHubPullRequestResponse {
   draft: boolean;
   created_at: string;
   updated_at: string;
+}
+
+interface GitHubPullRequestReviewResponse {
+  submitted_at: string | null;
 }
 
 interface GraphQLResponse<T> {
@@ -180,6 +186,49 @@ export class GitHubClient {
   }
 
   async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
+    const unresolvedThreadIds = await this.listUnresolvedPullRequestReviewThreadIds(
+      pullRequestNumber,
+    );
+
+    for (const threadId of unresolvedThreadIds) {
+      await this.graphqlRequest(
+        `
+          mutation ResolveReviewThread($threadId: ID!) {
+            resolveReviewThread(input: { threadId: $threadId }) {
+              thread {
+                id
+              }
+            }
+          }
+        `,
+        { threadId },
+      );
+    }
+  }
+
+  async listPullRequestReviews(
+    pullRequestNumber: number,
+  ): Promise<Array<{ submittedAt: string }>> {
+    const reviews = await this.getAllPages<GitHubPullRequestReviewResponse>(
+      `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}/reviews`,
+    );
+    return reviews
+      .map((review) => review.submitted_at)
+      .filter((submittedAt): submittedAt is string => submittedAt !== null)
+      .map((submittedAt) => ({ submittedAt }));
+  }
+
+  async countUnresolvedPullRequestReviewThreads(pullRequestNumber: number): Promise<number> {
+    return (
+      await this.listUnresolvedPullRequestReviewThreadIds(
+        pullRequestNumber,
+      )
+    ).length;
+  }
+
+  private async listUnresolvedPullRequestReviewThreadIds(
+    pullRequestNumber: number,
+  ): Promise<string[]> {
     const unresolvedThreadIds: string[] = [];
     let after: string | null = null;
 
@@ -213,7 +262,7 @@ export class GitHubClient {
 
       const reviewThreads = data.repository?.pullRequest?.reviewThreads;
       if (!reviewThreads) {
-        return;
+        return unresolvedThreadIds;
       }
 
       for (const thread of reviewThreads.nodes) {
@@ -225,20 +274,7 @@ export class GitHubClient {
       after = reviewThreads.pageInfo.hasNextPage ? reviewThreads.pageInfo.endCursor : null;
     } while (after);
 
-    for (const threadId of unresolvedThreadIds) {
-      await this.graphqlRequest(
-        `
-          mutation ResolveReviewThread($threadId: ID!) {
-            resolveReviewThread(input: { threadId: $threadId }) {
-              thread {
-                id
-              }
-            }
-          }
-        `,
-        { threadId },
-      );
-    }
+    return unresolvedThreadIds;
   }
 }
 
@@ -256,5 +292,5 @@ export async function loadSnapshot(
 }
 
 export function buildDefaultSessionStorePath(owner: string, repo: string): string {
-  return `${process.cwd()}/.vibrator/${owner}-${repo}-sessions.json`;
+  return join(process.cwd(), ".vibrator", `${owner}-${repo}-sessions.json`);
 }

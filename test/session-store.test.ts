@@ -117,3 +117,19 @@ test("save writes valid JSON to disk", async () => {
   const contents = await readFile(filePath, "utf8");
   assert.doesNotThrow(() => JSON.parse(contents));
 });
+
+test("createSession generates unique ids", async () => {
+  const filePath = await createSessionStorePath();
+  const sessionStore = new FileSessionStore(filePath);
+
+  const first = await sessionStore.createSession({
+    issueNumber: 1,
+    phase: "implementation",
+  });
+  const second = await sessionStore.createSession({
+    issueNumber: 1,
+    phase: "implementation",
+  });
+
+  assert.notEqual(first.id, second.id);
+});

@@ -29,6 +29,7 @@ GITHUB_TOKEN=... npm start -- owner/repo --dry-run --once
 - `GITHUB_REPOSITORY` (optional): default repository slug (`owner/repo`).
 - `MAX_CONCURRENCY` (optional): maximum concurrent work items, default `3`.
 - `LOOP_INTERVAL_MS` (optional): loop interval in milliseconds, default `60000`.
+- `SESSION_TIMEOUT_MS` (optional): mark still-active local sessions as failed after this many milliseconds, default `21600000` (6 hours).
 - `VIBRATOR_SESSION_STORE_PATH` (optional): path for persisted local agent-session state.
 
 ## Development

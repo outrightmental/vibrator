@@ -1,5 +1,5 @@
 import { buildMergedPullRequestBody } from "./orchestrator.js";
-import type { OrchestratorAction } from "./types.js";
+import type { AgentSessionPhase, OrchestratorAction } from "./types.js";
 
 export interface ActionGitHubClient {
   createIssueComment(issueNumber: number, body: string): Promise<void>;
@@ -12,7 +12,7 @@ export interface ActionSessionStore {
   createSession(input: {
     issueNumber: number;
     pullRequestNumber?: number;
-    phase: "implementation" | "review" | "address-review-comments" | "final-description";
+    phase: AgentSessionPhase;
   }): Promise<unknown>;
 }
 

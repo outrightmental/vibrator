@@ -173,6 +173,40 @@ test("buildPlan merges a pull request after a final description has been generat
   ]);
 });
 
+test("buildPlan re-requests the final description if none was captured", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 5 })],
+    pullRequests: [
+      createPullRequest({
+        number: 15,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        body: "Ready to merge.",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "description-1",
+        issueNumber: 5,
+        pullRequestNumber: 15,
+        phase: "final-description",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "write-final-description",
+      issueNumber: 5,
+      pullRequestNumber: 15,
+      closingIssueNumbers: [5],
+    },
+  ]);
+});
+
 test("buildPlan does not append closing references for non-closing issue links", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 6 })],

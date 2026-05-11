@@ -7,6 +7,7 @@ import {
   loadSnapshot,
 } from "./github.js";
 import { buildPlan } from "./orchestrator.js";
+import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 
 const DEFAULT_SESSION_TIMEOUT_MS = 6 * 60 * 60 * 1000;
@@ -82,6 +83,7 @@ async function runIteration(config: Config): Promise<void> {
     token: config.token,
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
+  await reconcileSessions(gitHubClient, sessionStore, await loadSnapshot(gitHubClient, sessionStore));
   await sessionStore.failStaleSessions(config.sessionTimeoutMs);
   const snapshot = await loadSnapshot(gitHubClient, sessionStore);
   const plan = buildPlan(snapshot, config.maxConcurrency);

@@ -178,6 +178,16 @@ function planPullRequestAction(
   }
 
   if (latestCompletedSession?.phase === "final-description") {
+    const generatedDescription = latestCompletedSession.result?.generatedDescription;
+    if (generatedDescription === undefined) {
+      return {
+        type: "write-final-description",
+        issueNumber: actionIssueNumber,
+        pullRequestNumber: pullRequest.number,
+        closingIssueNumbers: [...pullRequest.closingIssueNumbers],
+      };
+    }
+
     return {
       type: "merge-pull-request",
       issueNumber: actionIssueNumber,
@@ -186,7 +196,7 @@ function planPullRequestAction(
       pullRequestBody: buildMergedPullRequestBody(
         pullRequest.body,
         pullRequest.closingIssueNumbers,
-        latestCompletedSession.result?.generatedDescription,
+        generatedDescription,
       ),
     };
   }

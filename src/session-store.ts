@@ -86,7 +86,7 @@ export class FileSessionStore {
     const sessions = await this.load();
     const createdAt = nowIsoString();
     const session: AgentSession = {
-      id: `${input.phase}-${input.issueNumber}-${Date.now()}`,
+      id: randomUUID(),
       issueNumber: input.issueNumber,
       phase: input.phase,
       status: input.status ?? "in_progress",
