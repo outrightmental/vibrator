@@ -121,8 +121,25 @@ export async function reconcileSessions(
     switch (session.phase) {
       case "implementation":
         if (pullRequest) {
-          await sessionStore.completeSession(session.id);
-          events.push({ session, outcome: "completed" });
+          // The Copilot coding agent opens its draft PR at the very start
+          // of an implementation session — long before any code is written.
+          // Treating PR existence as "implementation complete" caused the
+          // orchestrator to request a Copilot review while Copilot was
+          // still actively implementing the change. Use the authoritative
+          // "Copilot finished work" timeline event (the same signal used
+          // by the address-review-comments reconciler) to decide whether
+          // Copilot has actually finished this implementation session.
+          const finishedWorkEvents = await gitHubClient.listCopilotFinishedWorkEvents(
+            pullRequest.number,
+          );
+          const sessionStartMs = Date.parse(session.createdAt);
+          const hasFinishedAfterSession = finishedWorkEvents.some(
+            (event) => Date.parse(event.createdAt) > sessionStartMs,
+          );
+          if (hasFinishedAfterSession) {
+            await sessionStore.completeSession(session.id);
+            events.push({ session, outcome: "completed" });
+          }
           break;
         }
 

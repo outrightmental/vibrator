@@ -105,7 +105,7 @@ function createSession(
   return session;
 }
 
-test("reconcileSessions completes implementation sessions when a linked PR appears", async () => {
+test("reconcileSessions completes implementation sessions when Copilot has finished work after the session started", async () => {
   const completedSessions: Array<{ sessionId: string }> = [];
   const snapshot: RepositorySnapshot = {
     issues: [],
@@ -135,6 +135,9 @@ test("reconcileSessions completes implementation sessions when a linked PR appea
       async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
         return [];
       },
+      async listCopilotFinishedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [{ createdAt: "2024-01-01T00:45:00.000Z" }];
+      },
     },
     {
       async completeSession(sessionId: string): Promise<AgentSession | undefined> {
@@ -149,6 +152,124 @@ test("reconcileSessions completes implementation sessions when a linked PR appea
   );
 
   assert.deepEqual(completedSessions, [{ sessionId: "implementation-1" }]);
+});
+
+test("reconcileSessions keeps implementation sessions in progress while Copilot is still working on the draft PR", async () => {
+  // Regression test: the Copilot coding agent opens its draft PR at the very
+  // start of an implementation session, before any code is written. The
+  // reconciler must not treat the existence of the PR as "implementation
+  // done" — otherwise the orchestrator immediately requests a review while
+  // Copilot is still implementing the change.
+  const completedSessions: Array<{ sessionId: string }> = [];
+  const failedSessions: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({
+        number: 5,
+        assignees: ["copilot-swe-agent"],
+      }),
+    ],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        draft: true,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        updatedAt: "2024-01-01T01:00:00.000Z",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "implementation-1",
+        issueNumber: 5,
+        phase: "implementation",
+        createdAt: "2024-01-01T00:30:00.000Z",
+      }),
+    ],
+  };
+
+  const events = await runReconcile(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
+        return [];
+      },
+      async listCopilotFinishedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        // No finished-work event after the session started — Copilot is
+        // still implementing.
+        return [];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessions.push({ sessionId });
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessions.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, []);
+  assert.deepEqual(failedSessions, []);
+  assert.deepEqual(events, []);
+});
+
+test("reconcileSessions ignores finished-work events that predate the implementation session", async () => {
+  // A "Copilot finished work" event from a prior session (e.g. an earlier
+  // implementation attempt that produced the draft PR) must not mark the
+  // current implementation session as complete.
+  const completedSessions: Array<{ sessionId: string }> = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({
+        number: 5,
+        assignees: ["copilot-swe-agent"],
+      }),
+    ],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        draft: true,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        updatedAt: "2024-01-01T01:00:00.000Z",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "implementation-1",
+        issueNumber: 5,
+        phase: "implementation",
+        createdAt: "2024-01-01T00:30:00.000Z",
+      }),
+    ],
+  };
+
+  await runReconcile(
+    {
+      async listCopilotFinishedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [{ createdAt: "2024-01-01T00:00:00.000Z" }];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessions.push({ sessionId });
+        return undefined;
+      },
+      async failSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, []);
 });
 
 test("reconcileSessions completes review sessions with unresolved thread counts", async () => {
