@@ -191,6 +191,10 @@ function planPullRequestAction(
       };
     }
 
+    if (pullRequest.draft) {
+      return undefined;
+    }
+
     return {
       type: "merge-pull-request",
       issueNumber: actionIssueNumber,

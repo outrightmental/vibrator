@@ -175,6 +175,35 @@ test("buildPlan merges a pull request after a final description has been generat
   ]);
 });
 
+test("buildPlan does not merge a draft pull request after final description completion", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 5 })],
+    pullRequests: [
+      createPullRequest({
+        number: 15,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        body: "Ready to merge.",
+        draft: true,
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "description-draft-1",
+        issueNumber: 5,
+        pullRequestNumber: 15,
+        phase: "final-description",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { generatedDescription: "Final summary." },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, []);
+});
+
 test("buildPlan re-requests the final description if none was captured", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 5 })],
