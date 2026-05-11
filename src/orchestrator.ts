@@ -183,6 +183,7 @@ function planPullRequestAction(
       type: "request-review",
       issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
+      resolveReviewThreads: true,
     };
   }
 

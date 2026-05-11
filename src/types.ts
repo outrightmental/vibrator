@@ -51,7 +51,12 @@ export interface RepositorySnapshot {
 
 export type OrchestratorAction =
   | { type: "start-implementation"; issueNumber: number }
-  | { type: "request-review"; issueNumber: number; pullRequestNumber: number }
+  | {
+      type: "request-review";
+      issueNumber: number;
+      pullRequestNumber: number;
+      resolveReviewThreads?: boolean;
+    }
   | {
       type: "address-review-comments";
       issueNumber: number;

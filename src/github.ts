@@ -25,6 +25,22 @@ interface GitHubPullRequestResponse {
   updated_at: string;
 }
 
+interface GraphQLResponse<T> {
+  data?: T;
+  errors?: Array<{ message: string }>;
+}
+
+interface PullRequestReviewThreadsQueryResponse {
+  repository: {
+    pullRequest: {
+      reviewThreads: {
+        nodes: Array<{ id: string; isResolved: boolean }>;
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      };
+    } | null;
+  } | null;
+}
+
 export interface GitHubClientOptions {
   owner: string;
   repo: string;
@@ -59,6 +75,34 @@ export class GitHubClient {
     }
 
     return (await response.json()) as T;
+  }
+
+  private async graphqlRequest<T>(
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<T> {
+    const response = await fetch(`${this.apiBaseUrl}/graphql`, {
+      method: "POST",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${this.options.token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "vibrator",
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`GitHub request failed (${response.status} ${response.statusText}) for /graphql`);
+    }
+
+    const payload = (await response.json()) as GraphQLResponse<T>;
+    if (!payload.data) {
+      const messages = payload.errors?.map((error) => error.message).join("; ") ?? "Unknown GraphQL error";
+      throw new Error(`GitHub GraphQL request failed: ${messages}`);
+    }
+
+    return payload.data;
   }
 
   private async getAllPages<T>(path: string): Promise<T[]> {
@@ -133,6 +177,68 @@ export class GitHubClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ merge_method: "squash" }),
     });
+  }
+
+  async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
+    const unresolvedThreadIds: string[] = [];
+    let after: string | null = null;
+
+    do {
+      const data: PullRequestReviewThreadsQueryResponse = await this.graphqlRequest(
+        `
+          query ResolveReviewThreads($owner: String!, $repo: String!, $pullRequestNumber: Int!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $pullRequestNumber) {
+                reviewThreads(first: 100, after: $after) {
+                  nodes {
+                    id
+                    isResolved
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+          }
+        `,
+        {
+          owner: this.options.owner,
+          repo: this.options.repo,
+          pullRequestNumber,
+          after,
+        },
+      );
+
+      const reviewThreads = data.repository?.pullRequest?.reviewThreads;
+      if (!reviewThreads) {
+        return;
+      }
+
+      for (const thread of reviewThreads.nodes) {
+        if (!thread.isResolved) {
+          unresolvedThreadIds.push(thread.id);
+        }
+      }
+
+      after = reviewThreads.pageInfo.hasNextPage ? reviewThreads.pageInfo.endCursor : null;
+    } while (after);
+
+    for (const threadId of unresolvedThreadIds) {
+      await this.graphqlRequest(
+        `
+          mutation ResolveReviewThread($threadId: ID!) {
+            resolveReviewThread(input: { threadId: $threadId }) {
+              thread {
+                id
+              }
+            }
+          }
+        `,
+        { threadId },
+      );
+    }
   }
 }
 

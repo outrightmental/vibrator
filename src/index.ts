@@ -1,13 +1,13 @@
 import { setTimeout as delay } from "node:timers/promises";
 
+import { executeAction } from "./actions.js";
 import {
   buildDefaultSessionStorePath,
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
-import { buildMergedPullRequestBody, buildPlan } from "./orchestrator.js";
+import { buildPlan } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
-import type { OrchestratorAction } from "./types.js";
 
 interface Config {
   owner: string;
@@ -65,70 +65,6 @@ function parseArgs(argv: string[]): Config {
     dryRun,
     sessionStorePath,
   };
-}
-
-async function executeAction(
-  gitHubClient: GitHubClient,
-  sessionStore: FileSessionStore,
-  action: OrchestratorAction,
-  dryRun: boolean,
-): Promise<void> {
-  if (dryRun) {
-    return;
-  }
-
-  switch (action.type) {
-    case "start-implementation":
-      await gitHubClient.createIssueComment(
-        action.issueNumber,
-        "@copilot Please implement this issue in a pull request using automatic model selection.",
-      );
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        phase: "implementation",
-      });
-      return;
-    case "request-review":
-      await gitHubClient.createIssueComment(
-        action.pullRequestNumber,
-        "@copilot Please review this pull request using automatic model selection.",
-      );
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        pullRequestNumber: action.pullRequestNumber,
-        phase: "review",
-      });
-      return;
-    case "address-review-comments":
-      await gitHubClient.createIssueComment(
-        action.pullRequestNumber,
-        `@copilot Please address every review comment in this pull request and push the changes. (${action.reviewCommentCount} review comments were found.)`,
-      );
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        pullRequestNumber: action.pullRequestNumber,
-        phase: "address-review-comments",
-      });
-      return;
-    case "write-final-description":
-      await gitHubClient.createIssueComment(
-        action.pullRequestNumber,
-        `@copilot Please write the final pull request description based on the final commits in this pull request and include "Closes #${action.issueNumber}".`,
-      );
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        pullRequestNumber: action.pullRequestNumber,
-        phase: "final-description",
-      });
-      return;
-    case "merge-pull-request":
-      await gitHubClient.updatePullRequestBody(
-        action.pullRequestNumber,
-        buildMergedPullRequestBody(action.pullRequestBody, action.issueNumbers),
-      );
-      await gitHubClient.mergePullRequest(action.pullRequestNumber);
-      return;
-  }
 }
 
 async function runIteration(config: Config): Promise<void> {

@@ -98,7 +98,12 @@ test("buildPlan requests another review after review comments are addressed", ()
   const plan = buildPlan(snapshot, 3);
 
   assert.deepEqual(plan.actions, [
-    { type: "request-review", issueNumber: 9, pullRequestNumber: 12 },
+    {
+      type: "request-review",
+      issueNumber: 9,
+      pullRequestNumber: 12,
+      resolveReviewThreads: true,
+    },
   ]);
 });
 
