@@ -59,6 +59,7 @@ interface RunCommandOptions {
   input?: string;
   // When true, capture stdout and return it; otherwise inherit stdio.
   captureStdout?: boolean;
+  env?: NodeJS.ProcessEnv;
 }
 
 function runCommand(
@@ -69,6 +70,7 @@ function runCommand(
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
+      env: options.env,
       stdio: [
         options.input !== undefined ? "pipe" : "inherit",
         options.captureStdout ? "pipe" : "inherit",
@@ -185,9 +187,18 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
     });
 
     const prompt = buildFinalDescriptionPrompt(params);
+    // Strip GitHub token env vars so the `copilot` CLI falls back to its own
+    // keyring-stored authentication. Inheriting GITHUB_TOKEN/GH_TOKEN from
+    // vibrator's .env causes copilot to use a PAT that typically lacks the
+    // "Copilot Requests" permission, producing an authentication failure.
+    const copilotEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete copilotEnv.GITHUB_TOKEN;
+    delete copilotEnv.GH_TOKEN;
+    delete copilotEnv.COPILOT_GITHUB_TOKEN;
     const stdout = await runCommand(this.copilotCommand, ["-p", prompt], {
       cwd: repoDir,
       captureStdout: true,
+      env: copilotEnv,
     });
 
     return stdout.trim();
