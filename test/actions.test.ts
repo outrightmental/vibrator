@@ -19,6 +19,7 @@ type SessionInput = {
     pullRequestBody?: string;
     pullRequestHeadSha?: string;
     generatedDescription?: string;
+    promptCommentId?: number;
   };
 };
 
@@ -35,11 +36,21 @@ function createHarness(overrides: { generatedDescription?: string } = {}): Harne
   const calls: string[] = [];
   const sessions: SessionInput[] = [];
   const gitHubClient: ActionGitHubClient = {
-    async createIssueComment(issueNumber: number, body: string): Promise<void> {
+    async createIssueComment(issueNumber: number, body: string): Promise<{ id: number }> {
       calls.push(`comment:${issueNumber}:${body}`);
+      return { id: 1000 + issueNumber };
     },
     async assignIssueToCopilot(issueNumber: number): Promise<void> {
       calls.push(`assign:${issueNumber}`);
+    },
+    async unassignIssueFromCopilot(issueNumber: number): Promise<void> {
+      calls.push(`unassign-issue:${issueNumber}`);
+    },
+    async assignPullRequestToCopilot(pullRequestNumber: number): Promise<void> {
+      calls.push(`assign-pr:${pullRequestNumber}`);
+    },
+    async unassignPullRequestFromCopilot(pullRequestNumber: number): Promise<void> {
+      calls.push(`unassign-pr:${pullRequestNumber}`);
     },
     async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {
       calls.push(`update-body:${pullRequestNumber}:${body}`);
@@ -238,7 +249,7 @@ test("executeAction stores the current PR head sha when requesting review commen
       issueNumber: 4,
       pullRequestNumber: 11,
       phase: "address-review-comments",
-      result: { pullRequestHeadSha: "sha-123" },
+      result: { pullRequestHeadSha: "sha-123", promptCommentId: 1011 },
     },
   ]);
 });
@@ -262,4 +273,49 @@ test("executeAction is a no-op when dry-run is enabled", async () => {
 
   assert.deepEqual(harness.calls, []);
   assert.deepEqual(harness.sessions, []);
+});
+
+test("executeAction unassigns and re-assigns Copilot on the issue when start-implementation has reassignCopilot=true", async () => {
+  const harness = createHarness();
+
+  await run(harness, {
+    type: "start-implementation",
+    issueNumber: 7,
+    reassignCopilot: true,
+  });
+
+  assert.deepEqual(harness.calls, ["unassign-issue:7", "assign:7"]);
+});
+
+test("executeAction cycles the Copilot assignee on the PR before re-posting an address-review-comments prompt", async () => {
+  const harness = createHarness();
+
+  await run(harness, {
+    type: "address-review-comments",
+    issueNumber: 4,
+    pullRequestNumber: 11,
+    pullRequestHeadSha: "sha-xyz",
+    reviewCommentCount: 3,
+    reassignCopilot: true,
+  });
+
+  const expectedComment =
+    "comment:11:@copilot Please address every review comment in this pull request and push the changes. (3 review comments were found.)";
+  assert.deepEqual(harness.calls, ["unassign-pr:11", "assign-pr:11", expectedComment]);
+});
+
+test("executeAction cycles the Copilot assignee on the PR before re-posting a resolve-conflicts prompt", async () => {
+  const harness = createHarness();
+
+  await run(harness, {
+    type: "resolve-conflicts",
+    issueNumber: 4,
+    pullRequestNumber: 11,
+    pullRequestHeadSha: "sha-xyz",
+    reassignCopilot: true,
+  });
+
+  assert.equal(harness.calls[0], "unassign-pr:11");
+  assert.equal(harness.calls[1], "assign-pr:11");
+  assert.match(harness.calls[2] ?? "", /^comment:11:@copilot This pull request has merge conflicts/);
 });

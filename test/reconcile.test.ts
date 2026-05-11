@@ -25,6 +25,7 @@ async function runReconcile(
   sessionStore: ReconcileSessionStore,
   snapshot: RepositorySnapshot,
   localCopilotChatClient: ReconcileLocalCopilotChatClient = REJECTING_LOCAL_COPILOT_CHAT_CLIENT,
+  now: number = Date.parse("2024-01-01T00:31:00.000Z"),
 ): Promise<ReconcileSessionEvent[]> {
   const filledGitHubClient: ReconcileGitHubClient = {
     async countUnresolvedPullRequestReviewThreads(): Promise<number> {
@@ -44,6 +45,7 @@ async function runReconcile(
     snapshot,
     localCopilotChatClient,
     DEFAULT_CONTEXT,
+    now,
   );
 }
 
@@ -777,6 +779,9 @@ test("reconcileSessions keeps implementation sessions when Copilot is still assi
         id: "implementation-active-1",
         issueNumber: 8,
         phase: "implementation",
+        // Within the 10-minute ack-timeout window — Copilot may still be
+        // about to open its draft PR.
+        createdAt: "2024-01-01T00:25:00.000Z",
       }),
     ],
   };
@@ -1016,4 +1021,275 @@ test("reconcileSessions waits when no Copilot finished-work event has occurred y
   assert.deepEqual(completedSessionIds, []);
   assert.deepEqual(failedSessionIds, []);
   assert.equal(evaluateCalled, false);
+});
+
+test("reconcileSessions fails address-review-comments sessions when Copilot did not acknowledge before the timeout", async () => {
+  const failedSessionIds: Array<{ id: string; staleReason?: string }> = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-unchanged",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-stale-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "address-review-comments",
+        // Session is older than the 10-minute ack timeout when reconciled.
+        createdAt: "2024-01-01T00:00:00.000Z",
+        result: { pullRequestHeadSha: "sha-unchanged", promptCommentId: 4242 },
+      }),
+    ],
+  };
+
+  const events = await runReconcile(
+    {
+      async listCopilotFinishedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+      async listCopilotStartedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+      async listIssueCommentReactions(): Promise<
+        Array<{ userLogin: string; content: string }>
+      > {
+        return [];
+      },
+    },
+    {
+      async completeSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+      async failSession(
+        sessionId: string,
+        options?: { staleReason?: string },
+      ): Promise<AgentSession | undefined> {
+        const entry: { id: string; staleReason?: string } = { id: sessionId };
+        if (options?.staleReason !== undefined) entry.staleReason = options.staleReason;
+        failedSessionIds.push(entry);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(failedSessionIds, [
+    { id: "address-stale-1", staleReason: "copilot-did-not-acknowledge" },
+  ]);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.outcome, "failed-stale");
+  assert.equal(events[0]?.staleReason, "copilot-did-not-acknowledge");
+});
+
+test("reconcileSessions does not fail address-review-comments sessions when Copilot reacted with eyes on the prompt comment", async () => {
+  const failedSessionIds: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-unchanged",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-acked-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "address-review-comments",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        result: { pullRequestHeadSha: "sha-unchanged", promptCommentId: 4242 },
+      }),
+    ],
+  };
+
+  await runReconcile(
+    {
+      async listCopilotFinishedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+      async listCopilotStartedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+      async listIssueCommentReactions(commentId: number) {
+        assert.equal(commentId, 4242);
+        return [{ userLogin: "Copilot", content: "eyes" }];
+      },
+    },
+    {
+      async completeSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessionIds.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(failedSessionIds, []);
+});
+
+test("reconcileSessions does not fail address-review-comments sessions when a Copilot started-work event followed the session", async () => {
+  const failedSessionIds: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-unchanged",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-started-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "address-review-comments",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        result: { pullRequestHeadSha: "sha-unchanged" },
+      }),
+    ],
+  };
+
+  await runReconcile(
+    {
+      async listCopilotFinishedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+      async listCopilotStartedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [{ createdAt: "2024-01-01T00:05:00.000Z" }];
+      },
+    },
+    {
+      async completeSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+      async failSession(sessionId: string): Promise<AgentSession | undefined> {
+        failedSessionIds.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(failedSessionIds, []);
+});
+
+test("reconcileSessions fails resolve-conflicts sessions when Copilot did not acknowledge before the timeout", async () => {
+  const failedSessionIds: Array<{ id: string; staleReason?: string }> = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-unchanged",
+        hasMergeConflicts: true,
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "resolve-stale-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "resolve-conflicts",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        result: { pullRequestHeadSha: "sha-unchanged", promptCommentId: 9999 },
+      }),
+    ],
+  };
+
+  await runReconcile(
+    {
+      async listCopilotFinishedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+      async listCopilotStartedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+      async listIssueCommentReactions() {
+        return [];
+      },
+    },
+    {
+      async completeSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+      async failSession(
+        sessionId: string,
+        options?: { staleReason?: string },
+      ): Promise<AgentSession | undefined> {
+        const entry: { id: string; staleReason?: string } = { id: sessionId };
+        if (options?.staleReason !== undefined) entry.staleReason = options.staleReason;
+        failedSessionIds.push(entry);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(failedSessionIds, [
+    { id: "resolve-stale-1", staleReason: "copilot-did-not-acknowledge" },
+  ]);
+});
+
+test("reconcileSessions fails implementation sessions when Copilot opened no PR and never acknowledged the assignment", async () => {
+  const failedSessionIds: Array<{ id: string; staleReason?: string }> = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 7, assignees: ["copilot-swe-agent"] })],
+    pullRequests: [],
+    agentSessions: [
+      createSession({
+        id: "implementation-noack-1",
+        issueNumber: 7,
+        phase: "implementation",
+        // Past the 10-minute ack timeout — Copilot should have opened
+        // its draft PR or fired a start-work event long ago.
+        createdAt: "2024-01-01T00:00:00.000Z",
+      }),
+    ],
+  };
+
+  await runReconcile(
+    {
+      async listCopilotFinishedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+      async listCopilotStartedWorkEvents(): Promise<Array<{ createdAt: string }>> {
+        return [];
+      },
+    },
+    {
+      async completeSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+      async failSession(
+        sessionId: string,
+        options?: { staleReason?: string },
+      ): Promise<AgentSession | undefined> {
+        const entry: { id: string; staleReason?: string } = { id: sessionId };
+        if (options?.staleReason !== undefined) entry.staleReason = options.staleReason;
+        failedSessionIds.push(entry);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(failedSessionIds, [
+    { id: "implementation-noack-1", staleReason: "copilot-did-not-acknowledge" },
+  ]);
 });

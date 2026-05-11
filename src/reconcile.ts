@@ -3,7 +3,14 @@ import type {
   EvaluateReviewCommentsAddressedParams,
   ReviewCommentsAddressedEvaluation,
 } from "./local-copilot.js";
-import type { AgentSession, AgentSessionResult, Issue, PullRequest, RepositorySnapshot } from "./types.js";
+import type {
+  AgentSession,
+  AgentSessionResult,
+  AgentSessionStaleReason,
+  Issue,
+  PullRequest,
+  RepositorySnapshot,
+} from "./types.js";
 
 export interface ReconcileGitHubClient {
   countUnresolvedPullRequestReviewThreads(pullRequestNumber: number): Promise<number>;
@@ -20,6 +27,22 @@ export interface ReconcileGitHubClient {
   listCopilotFinishedWorkEvents(
     pullRequestNumber: number,
   ): Promise<Array<{ createdAt: string }>>;
+  /**
+   * Optional — when implemented, the reconciler uses Copilot "started work"
+   * timeline events together with `listCopilotFinishedWorkEvents` and comment
+   * reactions to detect whether Copilot has acknowledged a summon. When not
+   * implemented, acknowledgment-timeout detection is skipped.
+   */
+  listCopilotStartedWorkEvents?(
+    issueOrPullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string }>>;
+  /**
+   * Optional — when implemented, the reconciler treats an "eyes" reaction on
+   * the original prompt comment from Copilot as proof of acknowledgment.
+   */
+  listIssueCommentReactions?(
+    commentId: number,
+  ): Promise<Array<{ userLogin: string; content: string }>>;
 }
 
 export interface ReconcileLocalCopilotChatClient {
@@ -33,14 +56,13 @@ export interface ReconcileSessionStore {
     sessionId: string,
     result?: AgentSessionResult,
   ): Promise<AgentSession | undefined>;
-  failSession(sessionId: string): Promise<AgentSession | undefined>;
+  failSession(
+    sessionId: string,
+    options?: { staleReason?: AgentSessionStaleReason },
+  ): Promise<AgentSession | undefined>;
 }
 
-export type ReconcileStaleReason =
-  | "issue-closed"
-  | "copilot-not-assigned"
-  | "copilot-review-failed"
-  | "copilot-review-comments-not-addressed";
+export type ReconcileStaleReason = AgentSessionStaleReason;
 
 export interface ReconcileSessionEvent {
   session: AgentSession;
@@ -57,7 +79,24 @@ export interface ReconcileSessionEvent {
 export interface ReconcileContext {
   owner: string;
   repo: string;
+  /**
+   * How long the reconciler waits, after an active Copilot-summoning session
+   * begins, before failing it as `copilot-did-not-acknowledge` when no
+   * acknowledgment signal has appeared (no started/finished timeline event,
+   * no eyes reaction on the prompt comment, no head SHA change). Defaults to
+   * 10 minutes when omitted.
+   */
+  acknowledgeTimeoutMs?: number;
 }
+
+const DEFAULT_ACKNOWLEDGE_TIMEOUT_MS = 10 * 60 * 1000;
+
+const COPILOT_REACTION_USER_LOGINS = new Set([
+  "copilot",
+  "copilot-swe-agent",
+  "copilot[bot]",
+  "copilot-swe-agent[bot]",
+]);
 
 const COPILOT_ASSIGNEE_LOGINS = new Set(["copilot", "copilot-swe-agent"]);
 
@@ -99,14 +138,89 @@ function hasUpdatedPullRequestBody(session: AgentSession, pullRequest: PullReque
   );
 }
 
+function isSessionPastAcknowledgeTimeout(
+  session: AgentSession,
+  acknowledgeTimeoutMs: number,
+  now: number,
+): boolean {
+  const createdAtMs = Date.parse(session.createdAt);
+  if (Number.isNaN(createdAtMs)) {
+    return false;
+  }
+  return now - createdAtMs >= acknowledgeTimeoutMs;
+}
+
+/**
+ * Returns true when GitHub has reported a signal proving Copilot picked up
+ * the summon associated with this session. The reconciler considers any of
+ * the following sufficient acknowledgment:
+ *
+ *   - a "Copilot started/picked up/queued" timeline event on the linked
+ *     issue or PR after the session began;
+ *   - a "Copilot finished work" timeline event after the session began
+ *     (proves Copilot ran a session even if it ended without code changes);
+ *   - an "eyes" reaction from a Copilot user account on the prompt comment
+ *     that vibrator posted (when `session.result.promptCommentId` is set).
+ *
+ * `timelineSubjectNumber` is the issue or PR number whose timeline carries
+ * Copilot's start/finish events for this session. Returns `false` when the
+ * GitHub client does not support the relevant lookups (best-effort
+ * detection only).
+ */
+async function hasCopilotAcknowledgedSession(
+  gitHubClient: ReconcileGitHubClient,
+  session: AgentSession,
+  timelineSubjectNumber: number,
+): Promise<boolean> {
+  const sessionStartMs = Date.parse(session.createdAt);
+  if (Number.isNaN(sessionStartMs)) {
+    return true; // be conservative — don't fail sessions with malformed timestamps
+  }
+
+  if (gitHubClient.listCopilotStartedWorkEvents) {
+    const startedEvents = await gitHubClient.listCopilotStartedWorkEvents(
+      timelineSubjectNumber,
+    );
+    if (startedEvents.some((event) => Date.parse(event.createdAt) > sessionStartMs)) {
+      return true;
+    }
+  }
+
+  const finishedEvents = await gitHubClient.listCopilotFinishedWorkEvents(
+    timelineSubjectNumber,
+  );
+  if (finishedEvents.some((event) => Date.parse(event.createdAt) > sessionStartMs)) {
+    return true;
+  }
+
+  const promptCommentId = session.result?.promptCommentId;
+  if (promptCommentId !== undefined && gitHubClient.listIssueCommentReactions) {
+    const reactions = await gitHubClient.listIssueCommentReactions(promptCommentId);
+    if (
+      reactions.some(
+        (reaction) =>
+          reaction.content === "eyes" &&
+          COPILOT_REACTION_USER_LOGINS.has(reaction.userLogin.toLowerCase()),
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export async function reconcileSessions(
   gitHubClient: ReconcileGitHubClient,
   sessionStore: ReconcileSessionStore,
   snapshot: RepositorySnapshot,
   localCopilotChatClient: ReconcileLocalCopilotChatClient,
   context: ReconcileContext,
+  now: number = Date.now(),
 ): Promise<ReconcileSessionEvent[]> {
   const events: ReconcileSessionEvent[] = [];
+  const acknowledgeTimeoutMs =
+    context.acknowledgeTimeoutMs ?? DEFAULT_ACKNOWLEDGE_TIMEOUT_MS;
   const activeSessions = snapshot.agentSessions
     .filter(isActiveSession)
     .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
@@ -139,6 +253,31 @@ export async function reconcileSessions(
           if (hasFinishedAfterSession) {
             await sessionStore.completeSession(session.id);
             events.push({ session, outcome: "completed" });
+            break;
+          }
+
+          // No finished event yet. Copilot may still be working — check for
+          // any acknowledgment signal (start event, finished event, or
+          // "eyes" reaction on the prompt comment, where applicable). If
+          // none has appeared by the acknowledge-timeout, fail the session
+          // so the orchestrator can unassign + re-assign Copilot on the
+          // next planning iteration.
+          if (isSessionPastAcknowledgeTimeout(session, acknowledgeTimeoutMs, now)) {
+            const acknowledged = await hasCopilotAcknowledgedSession(
+              gitHubClient,
+              session,
+              pullRequest.number,
+            );
+            if (!acknowledged) {
+              await sessionStore.failSession(session.id, {
+                staleReason: "copilot-did-not-acknowledge",
+              });
+              events.push({
+                session,
+                outcome: "failed-stale",
+                staleReason: "copilot-did-not-acknowledge",
+              });
+            }
           }
           break;
         }
@@ -149,18 +288,44 @@ export async function reconcileSessions(
           }
           const issue = issuesByNumber.get(session.issueNumber);
           if (!issue) {
-            await sessionStore.failSession(session.id);
+            await sessionStore.failSession(session.id, { staleReason: "issue-closed" });
             events.push({ session, outcome: "failed-stale", staleReason: "issue-closed" });
             break;
           }
 
           if (!isCopilotAssigned(issue)) {
-            await sessionStore.failSession(session.id);
+            await sessionStore.failSession(session.id, {
+              staleReason: "copilot-not-assigned",
+            });
             events.push({
               session,
               outcome: "failed-stale",
               staleReason: "copilot-not-assigned",
             });
+            break;
+          }
+
+          // Copilot is assigned but no PR has appeared yet. The Copilot
+          // coding agent normally opens its draft PR within seconds. If we
+          // pass the acknowledge timeout with no PR and no acknowledgment
+          // signal on the issue timeline, treat the assignment as ignored
+          // and fail so the orchestrator can unassign + re-assign.
+          if (isSessionPastAcknowledgeTimeout(session, acknowledgeTimeoutMs, now)) {
+            const acknowledged = await hasCopilotAcknowledgedSession(
+              gitHubClient,
+              session,
+              session.issueNumber,
+            );
+            if (!acknowledged) {
+              await sessionStore.failSession(session.id, {
+                staleReason: "copilot-did-not-acknowledge",
+              });
+              events.push({
+                session,
+                outcome: "failed-stale",
+                staleReason: "copilot-did-not-acknowledge",
+              });
+            }
           }
         }
         break;
@@ -200,7 +365,9 @@ export async function reconcileSessions(
                 Date.parse(right.submittedAt) - Date.parse(left.submittedAt),
             )[0];
           if (latestCopilotReview && isFailedCopilotReview(latestCopilotReview)) {
-            await sessionStore.failSession(session.id);
+            await sessionStore.failSession(session.id, {
+              staleReason: "copilot-review-failed",
+            });
             events.push({
               session,
               outcome: "failed-stale",
@@ -249,6 +416,28 @@ export async function reconcileSessions(
             (event) => Date.parse(event.createdAt) > sessionStartMs,
           );
           if (!hasFinishedAfterSession) {
+            // No finished event yet. Before just waiting indefinitely,
+            // check whether Copilot has even acknowledged the request.
+            // After the acknowledge timeout with no start/finish event and
+            // no eyes reaction on the prompt comment, fail the session so
+            // the orchestrator can unassign + re-assign + re-post.
+            if (isSessionPastAcknowledgeTimeout(session, acknowledgeTimeoutMs, now)) {
+              const acknowledged = await hasCopilotAcknowledgedSession(
+                gitHubClient,
+                session,
+                session.pullRequestNumber,
+              );
+              if (!acknowledged) {
+                await sessionStore.failSession(session.id, {
+                  staleReason: "copilot-did-not-acknowledge",
+                });
+                events.push({
+                  session,
+                  outcome: "failed-stale",
+                  staleReason: "copilot-did-not-acknowledge",
+                });
+              }
+            }
             break;
           }
 
@@ -266,7 +455,9 @@ export async function reconcileSessions(
               evaluationRationale: evaluation.rationale,
             });
           } else {
-            await sessionStore.failSession(session.id);
+            await sessionStore.failSession(session.id, {
+              staleReason: "copilot-review-comments-not-addressed",
+            });
             events.push({
               session,
               outcome: "failed-stale",
@@ -280,6 +471,31 @@ export async function reconcileSessions(
         if (pullRequest && hasUpdatedHeadSha(session, pullRequest)) {
           await sessionStore.completeSession(session.id);
           events.push({ session, outcome: "completed" });
+          break;
+        }
+        // No head SHA change yet. Check whether Copilot has acknowledged the
+        // resolve-conflicts request; if not within the acknowledge-timeout,
+        // fail so the orchestrator can unassign + re-assign + re-post.
+        if (
+          pullRequest &&
+          session.pullRequestNumber !== undefined &&
+          isSessionPastAcknowledgeTimeout(session, acknowledgeTimeoutMs, now)
+        ) {
+          const acknowledged = await hasCopilotAcknowledgedSession(
+            gitHubClient,
+            session,
+            session.pullRequestNumber,
+          );
+          if (!acknowledged) {
+            await sessionStore.failSession(session.id, {
+              staleReason: "copilot-did-not-acknowledge",
+            });
+            events.push({
+              session,
+              outcome: "failed-stale",
+              staleReason: "copilot-did-not-acknowledge",
+            });
+          }
         }
         break;
       case "final-description":

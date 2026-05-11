@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { AgentSession, AgentSessionPhase, AgentSessionResult, AgentSessionStatus } from "./types.js";
+import type {
+  AgentSession,
+  AgentSessionPhase,
+  AgentSessionResult,
+  AgentSessionStaleReason,
+  AgentSessionStatus,
+} from "./types.js";
 
 interface SessionState {
   sessions: AgentSession[];
@@ -236,7 +242,10 @@ export class FileSessionStore {
     return session;
   }
 
-  async failSession(sessionId: string): Promise<AgentSession | undefined> {
+  async failSession(
+    sessionId: string,
+    options: { staleReason?: AgentSessionStaleReason } = {},
+  ): Promise<AgentSession | undefined> {
     const sessions = await this.load();
     const session = sessions.find((candidate) => candidate.id === sessionId);
     if (!session) {
@@ -247,6 +256,9 @@ export class FileSessionStore {
     session.status = "failed";
     session.updatedAt = failedAt;
     session.completedAt = failedAt;
+    if (options.staleReason !== undefined) {
+      session.staleReason = options.staleReason;
+    }
     await this.save(sessions);
     return session;
   }

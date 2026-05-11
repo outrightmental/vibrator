@@ -2,8 +2,11 @@ import { buildMergedPullRequestBody } from "./orchestrator.js";
 import type { AgentSessionPhase, OrchestratorAction } from "./types.js";
 
 export interface ActionGitHubClient {
-  createIssueComment(issueNumber: number, body: string): Promise<void>;
+  createIssueComment(issueNumber: number, body: string): Promise<{ id: number }>;
   assignIssueToCopilot(issueNumber: number): Promise<void>;
+  unassignIssueFromCopilot(issueNumber: number): Promise<void>;
+  assignPullRequestToCopilot(pullRequestNumber: number): Promise<void>;
+  unassignPullRequestFromCopilot(pullRequestNumber: number): Promise<void>;
   updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void>;
   mergePullRequest(pullRequestNumber: number): Promise<void>;
   squashMergePullRequest(
@@ -38,6 +41,7 @@ export interface ActionSessionStore {
       pullRequestBody?: string;
       pullRequestHeadSha?: string;
       generatedDescription?: string;
+      promptCommentId?: number;
     };
   }): Promise<unknown>;
 }
@@ -61,6 +65,12 @@ export async function executeAction(
 
   switch (action.type) {
     case "start-implementation":
+      if (action.reassignCopilot) {
+        // Unassign first so the re-assignment fires a fresh GitHub
+        // assignment event, nudging the Copilot coding agent to pick up
+        // the issue after a prior `copilot-did-not-acknowledge` failure.
+        await gitHubClient.unassignIssueFromCopilot(action.issueNumber);
+      }
       await gitHubClient.assignIssueToCopilot(action.issueNumber);
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
@@ -85,8 +95,16 @@ export async function executeAction(
         phase: "review",
       });
       return;
-    case "address-review-comments":
-      await gitHubClient.createIssueComment(
+    case "address-review-comments": {
+      if (action.reassignCopilot) {
+        // After a prior `copilot-did-not-acknowledge` failure, cycle the
+        // Copilot assignee on the PR before re-posting the @copilot
+        // prompt comment. This gives the coding agent a fresh trigger
+        // event to pick up the job.
+        await gitHubClient.unassignPullRequestFromCopilot(action.pullRequestNumber);
+        await gitHubClient.assignPullRequestToCopilot(action.pullRequestNumber);
+      }
+      const { id: promptCommentId } = await gitHubClient.createIssueComment(
         action.pullRequestNumber,
         `@copilot Please address every review comment in this pull request and push the changes. (${action.reviewCommentCount} review comments were found.)`,
       );
@@ -94,9 +112,13 @@ export async function executeAction(
         issueNumber: action.issueNumber,
         pullRequestNumber: action.pullRequestNumber,
         phase: "address-review-comments",
-        result: { pullRequestHeadSha: action.pullRequestHeadSha },
+        result: {
+          pullRequestHeadSha: action.pullRequestHeadSha,
+          promptCommentId,
+        },
       });
       return;
+    }
     case "write-final-description": {
       // New flow: run a local Copilot chat session inside a checkout of the
       // PR branch to generate the final description, update the PR body via
@@ -149,8 +171,12 @@ export async function executeAction(
       );
       await gitHubClient.mergePullRequest(action.pullRequestNumber);
       return;
-    case "resolve-conflicts":
-      await gitHubClient.createIssueComment(
+    case "resolve-conflicts": {
+      if (action.reassignCopilot) {
+        await gitHubClient.unassignPullRequestFromCopilot(action.pullRequestNumber);
+        await gitHubClient.assignPullRequestToCopilot(action.pullRequestNumber);
+      }
+      const { id: promptCommentId } = await gitHubClient.createIssueComment(
         action.pullRequestNumber,
         "@copilot This pull request has merge conflicts. Please resolve the conflicts and push the changes.",
       );
@@ -158,8 +184,12 @@ export async function executeAction(
         issueNumber: action.issueNumber,
         pullRequestNumber: action.pullRequestNumber,
         phase: "resolve-conflicts",
-        result: { pullRequestHeadSha: action.pullRequestHeadSha },
+        result: {
+          pullRequestHeadSha: action.pullRequestHeadSha,
+          promptCommentId,
+        },
       });
       return;
+    }
   }
 }

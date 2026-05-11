@@ -60,6 +60,9 @@ function createSession(overrides: Partial<AgentSession> & Pick<AgentSession, "id
   if (overrides.result !== undefined) {
     session.result = overrides.result;
   }
+  if (overrides.staleReason !== undefined) {
+    session.staleReason = overrides.staleReason;
+  }
   return session;
 }
 

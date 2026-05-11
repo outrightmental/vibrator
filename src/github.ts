@@ -464,20 +464,67 @@ export class GitHubClient {
     return result;
   }
 
-  async createIssueComment(issueNumber: number, body: string): Promise<void> {
-    await this.request(`/repos/${this.options.owner}/${this.options.repo}/issues/${issueNumber}/comments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body }),
-    });
+  async createIssueComment(issueNumber: number, body: string): Promise<{ id: number }> {
+    const response = await this.request<{ id: number }>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${issueNumber}/comments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body }),
+      },
+    );
+    return { id: response.id };
   }
 
   async assignIssueToCopilot(issueNumber: number): Promise<void> {
     const issueNodeId = await this.getIssueNodeId(issueNumber);
+    await this.replaceAssignableActorsWithCopilot(issueNodeId, `issue #${issueNumber}`);
+  }
+
+  /**
+   * Unassign Copilot from an issue by replacing the assignee set with an
+   * empty list. Used to "kick" the Copilot coding agent into picking up the
+   * job after a prior assignment failed to result in any acknowledgment.
+   * Note: this also clears any other assignees on the issue — vibrator's
+   * normal flow keeps Copilot as the sole assignee, so this matches the
+   * existing `assignIssueToCopilot` semantics.
+   */
+  async unassignIssueFromCopilot(issueNumber: number): Promise<void> {
+    const issueNodeId = await this.getIssueNodeId(issueNumber);
+    await this.clearAssignableActors(issueNodeId);
+  }
+
+  /**
+   * Assign Copilot as the sole assignee on a pull request. Used as part of
+   * the unassign + re-assign retry path when a prior @copilot prompt comment
+   * on the PR was never acknowledged.
+   */
+  async assignPullRequestToCopilot(pullRequestNumber: number): Promise<void> {
+    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
+    await this.replaceAssignableActorsWithCopilot(
+      pullRequestNodeId,
+      `pull request #${pullRequestNumber}`,
+    );
+  }
+
+  /**
+   * Unassign Copilot from a pull request by replacing the assignee set with
+   * an empty list. Companion to `assignPullRequestToCopilot` for the
+   * unassign + re-assign retry path.
+   */
+  async unassignPullRequestFromCopilot(pullRequestNumber: number): Promise<void> {
+    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
+    await this.clearAssignableActors(pullRequestNodeId);
+  }
+
+  private async replaceAssignableActorsWithCopilot(
+    assignableNodeId: string,
+    label: string,
+  ): Promise<void> {
     const copilotBotId = await this.getCopilotAssigneeId();
     if (!copilotBotId) {
       throw new Error(
-        `Cannot assign issue #${issueNumber} to Copilot: the Copilot coding agent is not available as an assignee on ${this.options.owner}/${this.options.repo}. Enable the Copilot coding agent for this repository and ensure your GITHUB_TOKEN has access.`,
+        `Cannot assign ${label} to Copilot: the Copilot coding agent is not available as an assignee on ${this.options.owner}/${this.options.repo}. Enable the Copilot coding agent for this repository and ensure your GITHUB_TOKEN has access.`,
       );
     }
 
@@ -497,11 +544,16 @@ export class GitHubClient {
                   nodes { login }
                 }
               }
+              ... on PullRequest {
+                assignees(first: 20) {
+                  nodes { login }
+                }
+              }
             }
           }
         }
       `,
-      { assignableId: issueNodeId, actorIds: [copilotBotId] },
+      { assignableId: assignableNodeId, actorIds: [copilotBotId] },
     );
 
     const assignedLogins = data.replaceActorsForAssignable.assignable?.assignees.nodes.map(
@@ -509,9 +561,22 @@ export class GitHubClient {
     ) ?? [];
     if (!assignedLogins.some((login) => login === "copilot" || login === "copilot-swe-agent")) {
       throw new Error(
-        `Assigning issue #${issueNumber} to Copilot did not take effect (final assignees: ${assignedLogins.join(", ") || "none"}).`,
+        `Assigning ${label} to Copilot did not take effect (final assignees: ${assignedLogins.join(", ") || "none"}).`,
       );
     }
+  }
+
+  private async clearAssignableActors(assignableNodeId: string): Promise<void> {
+    await this.graphqlRequest(
+      `
+        mutation ClearAssignees($assignableId: ID!) {
+          replaceActorsForAssignable(input: { assignableId: $assignableId, actorIds: [] }) {
+            clientMutationId
+          }
+        }
+      `,
+      { assignableId: assignableNodeId },
+    );
   }
 
   private cachedCopilotAssigneeId: string | null | undefined;
@@ -881,6 +946,66 @@ export class GitHubClient {
    * over time, so this matches any event whose name contains both
    * "copilot" and a completion verb (finish/complete/end).
    */
+  /**
+   * Returns timestamps of "Copilot started/queued/picked up work" timeline
+   * events on a pull request or issue. These events are emitted by the
+   * Copilot coding agent each time it picks up a job (whether triggered by
+   * an issue assignment, an @copilot prompt comment on a PR, or a review
+   * request). The reconciler uses this signal — together with "finished
+   * work" events and prompt-comment reactions — to detect when Copilot has
+   * acknowledged a request the orchestrator made.
+   *
+   * The exact event name is not stable; this matches any event whose name
+   * contains "copilot" and a start verb (start/begin/pick/queue/dispatch).
+   */
+  async listCopilotStartedWorkEvents(
+    issueOrPullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string }>> {
+    interface TimelineEvent {
+      event?: string;
+      created_at?: string;
+    }
+    const events = await this.getAllPages<TimelineEvent>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${issueOrPullRequestNumber}/timeline`,
+    );
+    return events
+      .filter((event): event is TimelineEvent & { created_at: string } => {
+        if (!event.created_at) return false;
+        const name = (event.event ?? "").toLowerCase();
+        if (!name.includes("copilot")) return false;
+        return (
+          name.includes("start") ||
+          name.includes("begin") ||
+          name.includes("pick") ||
+          name.includes("queue") ||
+          name.includes("dispatch")
+        );
+      })
+      .map((event) => ({ createdAt: event.created_at }));
+  }
+
+  /**
+   * Returns the list of reactions on a specific issue/PR comment. Used by
+   * the reconciler to detect Copilot's "eyes" reaction acknowledging an
+   * @copilot prompt comment.
+   */
+  async listIssueCommentReactions(
+    commentId: number,
+  ): Promise<Array<{ userLogin: string; content: string }>> {
+    interface ReactionResponse {
+      user: { login: string } | null;
+      content: string;
+    }
+    const reactions = await this.getAllPages<ReactionResponse>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/comments/${commentId}/reactions`,
+    );
+    return reactions
+      .filter((reaction): reaction is ReactionResponse & { user: { login: string } } =>
+        reaction.user !== null,
+      )
+      .map((reaction) => ({ userLogin: reaction.user.login, content: reaction.content }));
+  }
+
   async listCopilotFinishedWorkEvents(
     pullRequestNumber: number,
   ): Promise<Array<{ createdAt: string }>> {

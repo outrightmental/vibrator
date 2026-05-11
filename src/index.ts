@@ -20,6 +20,7 @@ import type {
 } from "./types.js";
 
 const DEFAULT_SESSION_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_ACKNOWLEDGE_TIMEOUT_MS = 10 * 60 * 1000;
 const RULE = "─".repeat(80);
 const HEAVY_RULE = "═".repeat(80);
 
@@ -124,6 +125,7 @@ interface Config {
   dryRun: boolean;
   sessionStorePath: string;
   sessionTimeoutMs: number;
+  acknowledgeTimeoutMs: number;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -162,6 +164,10 @@ function parseArgs(argv: string[]): Config {
     process.env.SESSION_TIMEOUT_MS ?? String(DEFAULT_SESSION_TIMEOUT_MS),
     10,
   );
+  const acknowledgeTimeoutMs = Number.parseInt(
+    process.env.COPILOT_ACKNOWLEDGE_TIMEOUT_MS ?? String(DEFAULT_ACKNOWLEDGE_TIMEOUT_MS),
+    10,
+  );
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
 
@@ -175,6 +181,9 @@ function parseArgs(argv: string[]): Config {
     dryRun,
     sessionStorePath,
     sessionTimeoutMs: Number.isNaN(sessionTimeoutMs) ? DEFAULT_SESSION_TIMEOUT_MS : sessionTimeoutMs,
+    acknowledgeTimeoutMs: Number.isNaN(acknowledgeTimeoutMs)
+      ? DEFAULT_ACKNOWLEDGE_TIMEOUT_MS
+      : acknowledgeTimeoutMs,
   };
 }
 
@@ -280,7 +289,11 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     sessionStore,
     snapshot,
     localCopilotChatClient,
-    { owner: config.owner, repo: config.repo },
+    {
+      owner: config.owner,
+      repo: config.repo,
+      acknowledgeTimeoutMs: config.acknowledgeTimeoutMs,
+    },
   );
   const completedEvents = reconcileEvents.filter((e) => e.outcome === "completed");
   const failedStaleEvents = reconcileEvents.filter((e) => e.outcome === "failed-stale");
@@ -305,6 +318,9 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         break;
       case "copilot-review-comments-not-addressed":
         reason = "Copilot ended its turn but review comments are not adequately addressed";
+        break;
+      case "copilot-did-not-acknowledge":
+        reason = "Copilot never acknowledged the request (no start/finish event or eyes reaction)";
         break;
       default:
         reason = "unknown reason";

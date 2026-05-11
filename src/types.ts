@@ -51,7 +51,26 @@ export interface AgentSessionResult {
   generatedDescription?: string;
   pullRequestBody?: string;
   pullRequestHeadSha?: string;
+  /**
+   * ID of the GitHub issue/PR comment vibrator posted to summon Copilot
+   * (e.g. the "@copilot please address every review comment" prompt). Used
+   * by the reconciler to look for a Copilot "eyes" reaction proving the
+   * agent picked up the job.
+   */
+  promptCommentId?: number;
 }
+
+/**
+ * Persistent reason captured when a session ends in `failed` because the
+ * reconciler proactively gave up on it. Used by the orchestrator to adjust
+ * the next retry (e.g. unassign + re-assign Copilot before re-summoning).
+ */
+export type AgentSessionStaleReason =
+  | "issue-closed"
+  | "copilot-not-assigned"
+  | "copilot-review-failed"
+  | "copilot-review-comments-not-addressed"
+  | "copilot-did-not-acknowledge";
 
 export interface AgentSession {
   id: string;
@@ -68,6 +87,13 @@ export interface AgentSession {
   updatedAt: string;
   completedAt?: string;
   result?: AgentSessionResult;
+  /**
+   * When `status === "failed"`, why the reconciler ended the session.
+   * Persisted so subsequent planning iterations can adjust the next retry
+   * (e.g. detect a `copilot-did-not-acknowledge` failure and unassign +
+   * re-assign Copilot before re-summoning).
+   */
+  staleReason?: AgentSessionStaleReason;
 }
 
 export interface RepositorySnapshot {
@@ -77,7 +103,16 @@ export interface RepositorySnapshot {
 }
 
 export type OrchestratorAction =
-  | { type: "start-implementation"; issueNumber: number }
+  | {
+      type: "start-implementation";
+      issueNumber: number;
+      /**
+       * Unassign Copilot from the issue before re-assigning. Used after a
+       * prior `copilot-did-not-acknowledge` failure to give the coding
+       * agent a fresh assignment trigger.
+       */
+      reassignCopilot?: boolean;
+    }
   | {
       type: "request-review";
       issueNumber: number | undefined;
@@ -97,6 +132,12 @@ export type OrchestratorAction =
       pullRequestNumber: number;
       pullRequestHeadSha: string;
       reviewCommentCount: number;
+      /**
+       * Unassign + re-assign Copilot on the PR before posting the @copilot
+       * prompt. Used after a prior `copilot-did-not-acknowledge` failure
+       * to nudge the coding agent into picking up the job.
+       */
+      reassignCopilot?: boolean;
     }
   | {
       type: "write-final-description";
@@ -112,6 +153,12 @@ export type OrchestratorAction =
       issueNumber: number | undefined;
       pullRequestNumber: number;
       pullRequestHeadSha: string;
+      /**
+       * Unassign + re-assign Copilot on the PR before posting the @copilot
+       * prompt. Used after a prior `copilot-did-not-acknowledge` failure
+       * to nudge the coding agent into picking up the job.
+       */
+      reassignCopilot?: boolean;
     }
   | {
       type: "merge-pull-request";

@@ -167,6 +167,30 @@ function hasFailedLatestReviewSession(agentSessions: AgentSession[]): boolean {
   return latestReviewSession?.status === "failed";
 }
 
+/**
+ * Returns true when the most recent terminal session for `phase` failed
+ * with `staleReason === "copilot-did-not-acknowledge"` AND no subsequent
+ * successful (`completed`) session for the same phase has cleared it.
+ * Used to set the `reassignCopilot` flag on the next action so the
+ * executor unassigns + re-assigns Copilot before re-summoning.
+ */
+function shouldReassignCopilotForPhase(
+  agentSessions: readonly AgentSession[],
+  phase: AgentSession["phase"],
+): boolean {
+  const latestTerminalForPhase = [...agentSessions]
+    .filter(
+      (session) =>
+        session.phase === phase &&
+        (session.status === "completed" || session.status === "failed"),
+    )
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  return (
+    latestTerminalForPhase?.status === "failed" &&
+    latestTerminalForPhase.staleReason === "copilot-did-not-acknowledge"
+  );
+}
+
 function planPullRequestAction(
   pullRequest: PullRequest,
   issueNumbers: readonly number[],
@@ -214,10 +238,15 @@ function planPullRequestAction(
   // (Copilot pushed a resolution) the resolve-conflicts session completes and
   // the normal flow resumes on the next iteration.
   if (pullRequest.hasMergeConflicts) {
+    const reassignCopilot = shouldReassignCopilotForPhase(
+      relevantSessions,
+      "resolve-conflicts",
+    );
     return withIssueNumber({
       type: "resolve-conflicts",
       pullRequestNumber: pullRequest.number,
       pullRequestHeadSha: pullRequest.headSha,
+      ...(reassignCopilot ? { reassignCopilot: true } : {}),
     });
   }
 
@@ -244,11 +273,16 @@ function planPullRequestAction(
   if (latestCompletedSession?.phase === "review") {
     const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
     if (reviewCommentCount > 0) {
+      const reassignCopilot = shouldReassignCopilotForPhase(
+        relevantSessions,
+        "address-review-comments",
+      );
       return withIssueNumber({
         type: "address-review-comments",
         pullRequestNumber: pullRequest.number,
         pullRequestHeadSha: pullRequest.headSha,
         reviewCommentCount,
+        ...(reassignCopilot ? { reassignCopilot: true } : {}),
       });
     }
 
@@ -437,7 +471,15 @@ export function buildPlan(
   );
 
   for (const issue of prioritizedEligibleIssues.slice(0, remainingCapacity)) {
-    actions.push({ type: "start-implementation", issueNumber: issue.number });
+    const reassignCopilot = shouldReassignCopilotForPhase(
+      snapshot.agentSessions.filter((session) => session.issueNumber === issue.number),
+      "implementation",
+    );
+    actions.push({
+      type: "start-implementation",
+      issueNumber: issue.number,
+      ...(reassignCopilot ? { reassignCopilot: true } : {}),
+    });
   }
 
   return { actions, blockedIssueNumbers: blockedIssueIndex };
