@@ -107,11 +107,14 @@ function runCommand(
   });
 }
 
+export const FINAL_DESCRIPTION_START_MARKER = "<<<VIBRATOR_PR_BODY_START>>>";
+export const FINAL_DESCRIPTION_END_MARKER = "<<<VIBRATOR_PR_BODY_END>>>";
+
 function buildFinalDescriptionPrompt(params: GenerateFinalDescriptionParams): string {
   const closingReferences =
     params.closingIssueNumbers.length === 0
       ? ""
-      : `\n\nThe final description must end with these closing references on their own lines so GitHub auto-closes the linked issues:\n${params.closingIssueNumbers
+      : `\n\nThe final description must end with these closing references on their own lines (inside the markers, before the end marker) so GitHub auto-closes the linked issues:\n${params.closingIssueNumbers
           .map((issueNumber) => `Closes #${issueNumber}`)
           .join("\n")}`;
 
@@ -128,14 +131,36 @@ function buildFinalDescriptionPrompt(params: GenerateFinalDescriptionParams): st
     "---",
     "",
     "Output requirements:",
-    "- Output ONLY the Markdown body of the new PR description.",
+    `- Emit the final PR description wrapped between the exact sentinel lines \`${FINAL_DESCRIPTION_START_MARKER}\` and \`${FINAL_DESCRIPTION_END_MARKER}\`, each on its own line.`,
+    "- The content between the sentinels MUST be ONLY the Markdown body of the new PR description — no preamble, no recap, no tool transcript, no code fences wrapping the whole thing.",
     "- Do not include the PR title.",
-    "- Do not wrap the output in code fences.",
-    "- Do not include any prose before or after the description.",
+    "- The sentinel markers must appear exactly once each in your entire output.",
+    "- Anything you write outside the sentinels will be discarded, so put the complete final description between them.",
     closingReferences,
   ]
     .filter((line) => line !== "")
     .join("\n");
+}
+
+/**
+ * Extracts the final PR description from raw `copilot` CLI stdout, which
+ * typically also contains the agent's interactive session transcript (tool
+ * invocations, narration, etc.). The CLI is instructed (via the prompt) to
+ * wrap the final description in sentinel markers; this function pulls out
+ * that section. If the markers are missing, the raw output is returned
+ * trimmed so the caller still gets *something* usable.
+ */
+export function extractFinalDescription(rawOutput: string): string {
+  const startIndex = rawOutput.indexOf(FINAL_DESCRIPTION_START_MARKER);
+  const endIndex = rawOutput.lastIndexOf(FINAL_DESCRIPTION_END_MARKER);
+  if (startIndex === -1 || endIndex === -1 || endIndex <= startIndex) {
+    return rawOutput.trim();
+  }
+  const inner = rawOutput.slice(
+    startIndex + FINAL_DESCRIPTION_START_MARKER.length,
+    endIndex,
+  );
+  return inner.replace(/^\s*\r?\n/, "").replace(/\r?\n\s*$/, "").trim();
 }
 
 class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
@@ -201,7 +226,7 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
       env: copilotEnv,
     });
 
-    return stdout.trim();
+    return extractFinalDescription(stdout);
   }
 }
 
