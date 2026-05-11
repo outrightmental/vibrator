@@ -26,7 +26,7 @@ function getSessionSortTimestamp(session: AgentSession): number {
 }
 
 function buildSessionKey(session: AgentSession): string {
-  return `${session.issueNumber}:${session.pullRequestNumber ?? ""}:${session.phase}`;
+  return `${session.issueNumber ?? ""}:${session.pullRequestNumber ?? ""}:${session.phase}`;
 }
 
 function pruneSessions(sessions: AgentSession[]): AgentSession[] {
@@ -129,7 +129,7 @@ export class FileSessionStore {
   }
 
   async createSession(input: {
-    issueNumber: number;
+    issueNumber?: number | undefined;
     pullRequestNumber?: number;
     phase: AgentSessionPhase;
     status?: AgentSessionStatus;

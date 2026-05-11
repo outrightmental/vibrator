@@ -44,6 +44,7 @@ function findPullRequestForSession(
   }
 
   return snapshot.pullRequests.find((pullRequest) =>
+    session.issueNumber !== undefined &&
     pullRequest.linkedIssueNumbers.includes(session.issueNumber),
   );
 }
@@ -88,6 +89,9 @@ export async function reconcileSessions(
         }
 
         {
+          if (session.issueNumber === undefined) {
+            break;
+          }
           const issue = issuesByNumber.get(session.issueNumber);
           if (!issue) {
             await sessionStore.failSession(session.id);

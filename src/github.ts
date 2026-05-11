@@ -1,8 +1,31 @@
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "./types.js";
+
+/**
+ * Runs a shell command, inheriting stderr (so any failure output is visible)
+ * and rejecting on a non-zero exit code.
+ */
+function runShellCommand(command: string, args: readonly string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"] });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            `Command \`${command} ${args.join(" ")}\` exited with non-zero status ${code ?? "unknown"}.`,
+          ),
+        );
+        return;
+      }
+      resolve();
+    });
+  });
+}
 
 function mergeSortedUnique(...sources: ReadonlyArray<readonly number[]>): number[] {
   const merged = new Set<number>();
@@ -29,7 +52,7 @@ interface GitHubPullRequestResponse {
   number: number;
   title: string;
   body: string | null;
-  head: { sha: string };
+  head: { sha: string; ref: string };
   state: "open" | "closed";
   draft: boolean;
   created_at: string;
@@ -214,9 +237,11 @@ export class GitHubClient {
         title: pullRequest.title,
         body: pullRequest.body ?? "",
         headSha: pullRequest.head.sha,
+        headRefName: pullRequest.head.ref,
         state: pullRequest.state,
         draft: pullRequest.draft,
         hasMergeConflicts: graphQLData?.hasMergeConflicts ?? false,
+        hasCleanCopilotReviewOnHead: graphQLData?.hasCleanCopilotReviewOnHead ?? false,
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         linkedIssueNumbers,
@@ -225,21 +250,46 @@ export class GitHubClient {
     });
   }
 
-  private async fetchOpenPullRequestGraphQLData(): Promise<Map<number, { closingIssueNumbers: number[]; hasMergeConflicts: boolean }>> {
+  private async fetchOpenPullRequestGraphQLData(): Promise<
+    Map<
+      number,
+      {
+        closingIssueNumbers: number[];
+        hasMergeConflicts: boolean;
+        hasCleanCopilotReviewOnHead: boolean;
+      }
+    >
+  > {
+    type ReviewNode = {
+      author: { login: string } | null;
+      state: "PENDING" | "COMMENTED" | "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED";
+      submittedAt: string | null;
+      commit: { oid: string } | null;
+      comments: { totalCount: number };
+    };
     type QueryResult = {
       repository: {
         pullRequests: {
           nodes: Array<{
             number: number;
             mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+            headRefOid: string;
             closingIssuesReferences: { nodes: Array<{ number: number }> } | null;
+            reviews: { nodes: ReviewNode[] } | null;
           }>;
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
         };
       } | null;
     };
 
-    const result = new Map<number, { closingIssueNumbers: number[]; hasMergeConflicts: boolean }>();
+    const result = new Map<
+      number,
+      {
+        closingIssueNumbers: number[];
+        hasMergeConflicts: boolean;
+        hasCleanCopilotReviewOnHead: boolean;
+      }
+    >();
     let after: string | null = null;
 
     do {
@@ -251,7 +301,17 @@ export class GitHubClient {
                 nodes {
                   number
                   mergeable
+                  headRefOid
                   closingIssuesReferences(first: 50) { nodes { number } }
+                  reviews(last: 30) {
+                    nodes {
+                      author { login }
+                      state
+                      submittedAt
+                      commit { oid }
+                      comments { totalCount }
+                    }
+                  }
                 }
                 pageInfo { hasNextPage endCursor }
               }
@@ -268,10 +328,29 @@ export class GitHubClient {
 
       for (const node of pullRequests.nodes) {
         const issueNumbers = node.closingIssuesReferences?.nodes.map((reference) => reference.number) ?? [];
+        const reviewNodes = node.reviews?.nodes ?? [];
+        // A "clean" Copilot review = the Copilot review bot submitted a review
+        // on the current head sha that requested no changes and produced zero
+        // review comments. This is the GraphQL signal that the PR is ready
+        // to merge — no further request-review iterations are needed.
+        const hasCleanCopilotReviewOnHead = reviewNodes.some((review) => {
+          const login = review.author?.login?.toLowerCase();
+          if (login !== "copilot-pull-request-reviewer") {
+            return false;
+          }
+          if (review.commit?.oid !== node.headRefOid) {
+            return false;
+          }
+          if (review.state !== "COMMENTED" && review.state !== "APPROVED") {
+            return false;
+          }
+          return review.comments.totalCount === 0;
+        });
         result.set(node.number, {
           closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
           // UNKNOWN means GitHub hasn't computed mergeability yet — treat conservatively as no conflict.
           hasMergeConflicts: node.mergeable === "CONFLICTING",
+          hasCleanCopilotReviewOnHead,
         });
       }
 
@@ -407,6 +486,32 @@ export class GitHubClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ merge_method: "squash" }),
     });
+  }
+
+  /**
+   * Squash-merges a pull request using `gh pr merge --squash`, passing the
+   * provided subject and body as the commit message. We shell out to the
+   * `gh` CLI here (rather than using the REST merge endpoint) so the squashed
+   * commit's title and message body are exactly what the orchestrator
+   * generated for the final pull-request description.
+   */
+  async squashMergePullRequest(
+    pullRequestNumber: number,
+    subject: string,
+    body: string,
+  ): Promise<void> {
+    await runShellCommand("gh", [
+      "pr",
+      "merge",
+      String(pullRequestNumber),
+      "--squash",
+      "--subject",
+      subject,
+      "--body",
+      body,
+      "--repo",
+      `${this.options.owner}/${this.options.repo}`,
+    ]);
   }
 
   async listWorkflowRunsAwaitingApproval(): Promise<

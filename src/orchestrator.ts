@@ -122,7 +122,7 @@ function getRelevantSessions(
   return agentSessions
     .filter(
       (session) =>
-        issueNumberSet.has(session.issueNumber) ||
+        (session.issueNumber !== undefined && issueNumberSet.has(session.issueNumber)) ||
         session.pullRequestNumber === pullRequestNumber,
     )
     .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt));
@@ -139,11 +139,7 @@ function planPullRequestAction(
   issueNumbers: readonly number[],
   agentSessions: AgentSession[],
 ): OrchestratorAction | undefined {
-  const issueNumber = issueNumbers[0];
-  if (issueNumber === undefined) {
-    // Defensively ignore PRs without linked issues even if callers already filter them out.
-    return undefined;
-  }
+  const primaryIssueNumber = issueNumbers[0];
 
   const relevantSessions = getRelevantSessions(agentSessions, issueNumbers, pullRequest.number);
   if (relevantSessions.some(isActiveSession)) {
@@ -153,65 +149,97 @@ function planPullRequestAction(
   const latestCompletedSession = getLatestCompletedSession(relevantSessions);
   const completedSessionIssueNumber = latestCompletedSession?.issueNumber;
   // Keep PR-level work attached to the issue that most recently advanced this PR when possible.
+  // For PRs with no linked issue, actionIssueNumber stays undefined.
   const actionIssueNumber =
     completedSessionIssueNumber !== undefined &&
     issueNumbers.includes(completedSessionIssueNumber)
       ? completedSessionIssueNumber
-      : issueNumber;
+      : primaryIssueNumber;
+
+  type ActionWithoutIssueNumber = Exclude<OrchestratorAction, { type: "start-implementation" }> extends infer A
+    ? A extends { issueNumber: number | undefined }
+      ? Omit<A, "issueNumber">
+      : never
+    : never;
+
+  function withIssueNumber<T extends ActionWithoutIssueNumber>(
+    action: T,
+  ): T & { issueNumber: number | undefined } {
+    return { ...action, issueNumber: actionIssueNumber };
+  }
 
   // Merge conflicts take priority over the normal review/merge flow. We ask
   // Copilot to resolve them before proceeding; once the head SHA changes
   // (Copilot pushed a resolution) the resolve-conflicts session completes and
   // the normal flow resumes on the next iteration.
   if (pullRequest.hasMergeConflicts) {
-    return {
+    return withIssueNumber({
       type: "resolve-conflicts",
-      issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
       pullRequestHeadSha: pullRequest.headSha,
-    };
+    });
+  }
+
+  // Authoritative GraphQL signal: the Copilot review bot has already
+  // submitted a clean review on the current head SHA (no comments, no changes
+  // requested). The PR is ready to merge — never re-request a review, just
+  // advance to the final-description / merge lane. This short-circuits the
+  // request-review fallbacks below and prevents the loop where each
+  // iteration re-asks Copilot to review a PR it has already approved.
+  if (
+    pullRequest.hasCleanCopilotReviewOnHead &&
+    latestCompletedSession?.phase !== "final-description"
+  ) {
+    return withIssueNumber({
+      type: "write-final-description",
+      pullRequestNumber: pullRequest.number,
+      pullRequestTitle: pullRequest.title,
+      pullRequestHeadRefName: pullRequest.headRefName,
+      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
+      pullRequestBody: pullRequest.body,
+    });
   }
 
   if (latestCompletedSession?.phase === "review") {
     const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
     if (reviewCommentCount > 0) {
-      return {
+      return withIssueNumber({
         type: "address-review-comments",
-        issueNumber: actionIssueNumber,
         pullRequestNumber: pullRequest.number,
         pullRequestHeadSha: pullRequest.headSha,
         reviewCommentCount,
-      };
+      });
     }
 
-    return {
+    return withIssueNumber({
       type: "write-final-description",
-      issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
+      pullRequestTitle: pullRequest.title,
+      pullRequestHeadRefName: pullRequest.headRefName,
       closingIssueNumbers: [...pullRequest.closingIssueNumbers],
       pullRequestBody: pullRequest.body,
-    };
+    });
   }
 
   if (latestCompletedSession?.phase === "final-description") {
     const generatedDescription = latestCompletedSession.result?.generatedDescription;
     if (generatedDescription === undefined) {
-      return {
+      return withIssueNumber({
         type: "write-final-description",
-        issueNumber: actionIssueNumber,
         pullRequestNumber: pullRequest.number,
+        pullRequestTitle: pullRequest.title,
+        pullRequestHeadRefName: pullRequest.headRefName,
         closingIssueNumbers: [...pullRequest.closingIssueNumbers],
         pullRequestBody: pullRequest.body,
-      };
+      });
     }
 
     if (pullRequest.draft) {
       return undefined;
     }
 
-    return {
+    return withIssueNumber({
       type: "merge-pull-request",
-      issueNumber: actionIssueNumber,
       closingIssueNumbers: [...pullRequest.closingIssueNumbers],
       pullRequestNumber: pullRequest.number,
       pullRequestBody: buildMergedPullRequestBody(
@@ -219,44 +247,40 @@ function planPullRequestAction(
         pullRequest.closingIssueNumbers,
         generatedDescription,
       ),
-    };
+    });
   }
 
   if (latestCompletedSession?.phase === "address-review-comments") {
-    return {
+    return withIssueNumber({
       type: "request-review",
-      issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
       resolveReviewThreads: true,
-    };
+    });
   }
 
   if (latestCompletedSession?.phase === "resolve-conflicts") {
     // Conflicts were resolved and Copilot pushed new code — start a fresh review.
-    return {
+    return withIssueNumber({
       type: "request-review",
-      issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
-    };
+    });
   }
 
   if (latestCompletedSession?.phase === "implementation") {
-    return {
+    return withIssueNumber({
       type: "request-review",
-      issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
-    };
+    });
   }
 
   if (!latestCompletedSession) {
     // No prior session has touched this PR — kick off a Copilot review. Draft
     // PRs are still eligible: drafts opened by the coding agent need the
     // initial review pass before they're ready to mark non-draft.
-    return {
+    return withIssueNumber({
       type: "request-review",
-      issueNumber,
       pullRequestNumber: pullRequest.number,
-    };
+    });
   }
 
   return undefined;
@@ -272,6 +296,7 @@ function countImplementationSessionsWithoutPullRequests(
     if (
       session.phase === "implementation" &&
       isActiveSession(session) &&
+      session.issueNumber !== undefined &&
       openIssueNumbers.has(session.issueNumber) &&
       !pullRequestIndex.has(session.issueNumber)
     ) {
@@ -309,10 +334,6 @@ export function buildPlan(
 
   const actions: OrchestratorAction[] = [];
   for (const pullRequest of pullRequests) {
-    if (pullRequest.linkedIssueNumbers.length === 0) {
-      continue;
-    }
-
     const action = planPullRequestAction(
       pullRequest,
       pullRequest.linkedIssueNumbers,
@@ -347,7 +368,7 @@ export function buildPlan(
   }
 
   for (const session of snapshot.agentSessions) {
-    if (isActiveSession(session)) {
+    if (isActiveSession(session) && session.issueNumber !== undefined) {
       unavailableIssueNumbers.add(session.issueNumber);
     }
   }

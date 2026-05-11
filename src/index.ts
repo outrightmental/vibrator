@@ -8,6 +8,7 @@ import {
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
+import { createLocalCopilotChatClient } from "./local-copilot.js";
 import { buildPlan } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
@@ -73,22 +74,29 @@ function describeAction(
   snapshot: RepositorySnapshot,
   gitHubClient: GitHubClient,
 ): string {
-  const issueTitle = snapshot.issues.find((i) => i.number === action.issueNumber)?.title;
+  const actionIssueNumber = action.type === "start-implementation" ? action.issueNumber : action.issueNumber;
+  const issueTitle =
+    actionIssueNumber !== undefined
+      ? snapshot.issues.find((i) => i.number === actionIssueNumber)?.title
+      : undefined;
   const issueSuffix = issueTitle ? ` "${issueTitle}"` : "";
-  const issueUrl = gitHubClient.issueUrl(action.issueNumber);
+  const issueContext =
+    actionIssueNumber !== undefined
+      ? ` (issue #${actionIssueNumber}${issueSuffix})`
+      : " (no linked issue)";
   switch (action.type) {
     case "start-implementation":
-      return `Start implementation of issue #${action.issueNumber}${issueSuffix} (${issueUrl})`;
+      return `Start implementation of issue #${action.issueNumber}${issueSuffix} (${gitHubClient.issueUrl(action.issueNumber)})`;
     case "request-review":
-      return `Request review for PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+      return `Request review for PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "address-review-comments":
-      return `Address ${action.reviewCommentCount} review comment(s) on PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+      return `Address ${action.reviewCommentCount} review comment(s) on PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "write-final-description":
-      return `Write final description for PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+      return `Write final description for PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "merge-pull-request":
-      return `Merge PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+      return `Merge PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "resolve-conflicts":
-      return `Resolve merge conflicts in PR #${action.pullRequestNumber} (issue #${action.issueNumber}${issueSuffix}) (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+      return `Resolve merge conflicts in PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
   }
 }
 
@@ -99,7 +107,9 @@ function describeSession(
   const target =
     session.pullRequestNumber !== undefined
       ? `PR #${session.pullRequestNumber} (${gitHubClient.pullRequestUrl(session.pullRequestNumber)})`
-      : `issue #${session.issueNumber} (${gitHubClient.issueUrl(session.issueNumber)})`;
+      : session.issueNumber !== undefined
+        ? `issue #${session.issueNumber} (${gitHubClient.issueUrl(session.issueNumber)})`
+        : "(no linked issue or PR)";
   return `${session.phase} · ${session.status} · ${target} · session ${shortId(session.id)}`;
 }
 
@@ -175,6 +185,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     token: config.token,
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
+  const localCopilotChatClient = createLocalCopilotChatClient();
 
   write(HEAVY_RULE);
   write(`vibrator status update · ${timestamp()} · iteration ${iterationNumber}`);
@@ -297,7 +308,14 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       const action = plan.actions[i]!;
       note(`[${i + 1}/${plan.actions.length}] → ${describeAction(action, snapshot, gitHubClient)}`, 2);
       try {
-        await executeAction(gitHubClient, sessionStore, action, config.dryRun);
+        await executeAction(
+          gitHubClient,
+          sessionStore,
+          action,
+          config.dryRun,
+          localCopilotChatClient,
+          { owner: config.owner, repo: config.repo },
+        );
         note(`[${i + 1}/${plan.actions.length}] ✓ done${config.dryRun ? " (dry-run)" : ""}`, 2);
       } catch (error) {
         note(`[${i + 1}/${plan.actions.length}] ✗ failed: ${(error as Error).message}`, 2);
