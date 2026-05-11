@@ -11,6 +11,7 @@ export interface PullRequest {
   number: number;
   title: string;
   body: string;
+  headSha: string;
   createdAt: string;
   updatedAt: string;
   state: "open" | "closed";
@@ -30,6 +31,8 @@ export type AgentSessionStatus = "queued" | "in_progress" | "completed" | "faile
 export interface AgentSessionResult {
   reviewCommentCount?: number;
   generatedDescription?: string;
+  pullRequestBody?: string;
+  pullRequestHeadSha?: string;
 }
 
 export interface AgentSession {
@@ -62,6 +65,7 @@ export type OrchestratorAction =
       type: "address-review-comments";
       issueNumber: number;
       pullRequestNumber: number;
+      pullRequestHeadSha: string;
       reviewCommentCount: number;
     }
   | {
@@ -69,6 +73,7 @@ export type OrchestratorAction =
       issueNumber: number;
       pullRequestNumber: number;
       closingIssueNumbers: number[];
+      pullRequestBody: string;
     }
   | {
       type: "merge-pull-request";

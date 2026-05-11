@@ -83,9 +83,10 @@ async function runIteration(config: Config): Promise<void> {
     token: config.token,
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
-  await reconcileSessions(gitHubClient, sessionStore, await loadSnapshot(gitHubClient, sessionStore));
-  await sessionStore.failStaleSessions(config.sessionTimeoutMs);
   const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+  await reconcileSessions(gitHubClient, sessionStore, snapshot);
+  await sessionStore.failStaleSessions(config.sessionTimeoutMs);
+  snapshot.agentSessions = await sessionStore.load();
   const plan = buildPlan(snapshot, config.maxConcurrency);
 
   console.log(

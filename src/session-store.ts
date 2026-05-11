@@ -78,10 +78,6 @@ async function replaceFileCrossPlatform(
     }
 
     await rename(tempFilePath, filePath);
-
-    if (backupCreated) {
-      await rm(backupFilePath, { force: true });
-    }
   } catch (error) {
     if (backupCreated) {
       try {
@@ -93,6 +89,14 @@ async function replaceFileCrossPlatform(
 
     await rm(tempFilePath, { force: true });
     throw error;
+  }
+
+  if (backupCreated) {
+    try {
+      await rm(backupFilePath, { force: true });
+    } catch {
+      // Best-effort cleanup after the replacement already succeeded.
+    }
   }
 }
 
@@ -129,6 +133,7 @@ export class FileSessionStore {
     pullRequestNumber?: number;
     phase: AgentSessionPhase;
     status?: AgentSessionStatus;
+    result?: AgentSessionResult;
   }): Promise<AgentSession> {
     const sessions = await this.load();
     const createdAt = nowIsoString();
@@ -142,6 +147,9 @@ export class FileSessionStore {
     };
     if (input.pullRequestNumber !== undefined) {
       session.pullRequestNumber = input.pullRequestNumber;
+    }
+    if (input.result !== undefined) {
+      session.result = input.result;
     }
     sessions.push(session);
     await this.save(sessions);

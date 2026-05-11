@@ -165,6 +165,7 @@ function planPullRequestAction(
         type: "address-review-comments",
         issueNumber: actionIssueNumber,
         pullRequestNumber: pullRequest.number,
+        pullRequestHeadSha: pullRequest.headSha,
         reviewCommentCount,
       };
     }
@@ -174,6 +175,7 @@ function planPullRequestAction(
       issueNumber: actionIssueNumber,
       pullRequestNumber: pullRequest.number,
       closingIssueNumbers: [...pullRequest.closingIssueNumbers],
+      pullRequestBody: pullRequest.body,
     };
   }
 
@@ -185,6 +187,7 @@ function planPullRequestAction(
         issueNumber: actionIssueNumber,
         pullRequestNumber: pullRequest.number,
         closingIssueNumbers: [...pullRequest.closingIssueNumbers],
+        pullRequestBody: pullRequest.body,
       };
     }
 

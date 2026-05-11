@@ -20,12 +20,18 @@ test("executeAction resolves review threads before requesting another review", a
       calls.push(`resolve:${pullRequestNumber}`);
     },
   };
-  const sessions: Array<{ issueNumber: number; pullRequestNumber?: number; phase: string }> = [];
+  const sessions: Array<{
+    issueNumber: number;
+    pullRequestNumber?: number;
+    phase: string;
+    result?: { pullRequestBody?: string; pullRequestHeadSha?: string };
+  }> = [];
   const sessionStore = {
     async createSession(input: {
       issueNumber: number;
       pullRequestNumber?: number;
       phase: "implementation" | "review" | "address-review-comments" | "final-description";
+      result?: { pullRequestBody?: string; pullRequestHeadSha?: string };
     }): Promise<void> {
       sessions.push(input);
     },
@@ -108,6 +114,7 @@ test("executeAction only requests explicit closing references in final descripti
       issueNumber: 3,
       pullRequestNumber: 10,
       closingIssueNumbers: [],
+      pullRequestBody: "Current PR body",
     },
     false,
   );
@@ -145,11 +152,106 @@ test("executeAction formats multiple explicit closing references correctly", asy
       issueNumber: 3,
       pullRequestNumber: 10,
       closingIssueNumbers: [3, 8],
+      pullRequestBody: "Current PR body",
     },
     false,
   );
 
   assert.deepEqual(calls, [
     'comment:10:@copilot Please write the final pull request description based on the final commits in this pull request and include "Closes #3", "Closes #8".',
+  ]);
+});
+
+test("executeAction stores the current PR head sha when requesting review comment fixes", async () => {
+  const sessions: Array<{
+    issueNumber: number;
+    pullRequestNumber?: number;
+    phase: string;
+    result?: { pullRequestHeadSha?: string };
+  }> = [];
+  const gitHubClient = {
+    async createIssueComment(): Promise<void> {},
+    async updatePullRequestBody(): Promise<void> {},
+    async mergePullRequest(): Promise<void> {},
+    async resolvePullRequestReviewThreads(): Promise<void> {},
+  };
+  const sessionStore = {
+    async createSession(input: {
+      issueNumber: number;
+      pullRequestNumber?: number;
+      phase: "implementation" | "review" | "address-review-comments" | "final-description";
+      result?: { pullRequestHeadSha?: string };
+    }): Promise<void> {
+      sessions.push(input);
+    },
+  };
+
+  await executeAction(
+    gitHubClient,
+    sessionStore,
+    {
+      type: "address-review-comments",
+      issueNumber: 4,
+      pullRequestNumber: 11,
+      pullRequestHeadSha: "sha-123",
+      reviewCommentCount: 2,
+    },
+    false,
+  );
+
+  assert.deepEqual(sessions, [
+    {
+      issueNumber: 4,
+      pullRequestNumber: 11,
+      phase: "address-review-comments",
+      result: { pullRequestHeadSha: "sha-123" },
+    },
+  ]);
+});
+
+test("executeAction stores the current PR body when requesting a final description", async () => {
+  const sessions: Array<{
+    issueNumber: number;
+    pullRequestNumber?: number;
+    phase: string;
+    result?: { pullRequestBody?: string };
+  }> = [];
+  const gitHubClient = {
+    async createIssueComment(): Promise<void> {},
+    async updatePullRequestBody(): Promise<void> {},
+    async mergePullRequest(): Promise<void> {},
+    async resolvePullRequestReviewThreads(): Promise<void> {},
+  };
+  const sessionStore = {
+    async createSession(input: {
+      issueNumber: number;
+      pullRequestNumber?: number;
+      phase: "implementation" | "review" | "address-review-comments" | "final-description";
+      result?: { pullRequestBody?: string };
+    }): Promise<void> {
+      sessions.push(input);
+    },
+  };
+
+  await executeAction(
+    gitHubClient,
+    sessionStore,
+    {
+      type: "write-final-description",
+      issueNumber: 4,
+      pullRequestNumber: 11,
+      closingIssueNumbers: [4],
+      pullRequestBody: "Current PR body",
+    },
+    false,
+  );
+
+  assert.deepEqual(sessions, [
+    {
+      issueNumber: 4,
+      pullRequestNumber: 11,
+      phase: "final-description",
+      result: { pullRequestBody: "Current PR body" },
+    },
   ]);
 });

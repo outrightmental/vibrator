@@ -18,10 +18,6 @@ function isActiveSession(session: AgentSession): boolean {
   return session.status === "queued" || session.status === "in_progress";
 }
 
-function updatedAfter(timestamp: string, candidateTimestamp: string): boolean {
-  return Date.parse(candidateTimestamp) > Date.parse(timestamp);
-}
-
 function findPullRequestForSession(
   snapshot: RepositorySnapshot,
   session: AgentSession,
@@ -34,6 +30,20 @@ function findPullRequestForSession(
 
   return snapshot.pullRequests.find((pullRequest) =>
     pullRequest.linkedIssueNumbers.includes(session.issueNumber),
+  );
+}
+
+function hasUpdatedHeadSha(session: AgentSession, pullRequest: PullRequest): boolean {
+  return (
+    session.result?.pullRequestHeadSha !== undefined &&
+    pullRequest.headSha !== session.result.pullRequestHeadSha
+  );
+}
+
+function hasUpdatedPullRequestBody(session: AgentSession, pullRequest: PullRequest): boolean {
+  return (
+    session.result?.pullRequestBody !== undefined &&
+    pullRequest.body !== session.result.pullRequestBody
   );
 }
 
@@ -51,7 +61,7 @@ export async function reconcileSessions(
 
     switch (session.phase) {
       case "implementation":
-        if (pullRequest && updatedAfter(session.createdAt, pullRequest.updatedAt)) {
+        if (pullRequest) {
           await sessionStore.completeSession(session.id);
         }
         break;
@@ -67,7 +77,7 @@ export async function reconcileSessions(
         if (
           !(await gitHubClient
             .listPullRequestReviews(session.pullRequestNumber))
-            .some((review) => updatedAfter(session.createdAt, review.submittedAt))
+            .some((review) => Date.parse(review.submittedAt) > Date.parse(session.createdAt))
         ) {
           break;
         }
@@ -79,12 +89,12 @@ export async function reconcileSessions(
         });
         break;
       case "address-review-comments":
-        if (pullRequest && updatedAfter(session.createdAt, pullRequest.updatedAt)) {
+        if (pullRequest && hasUpdatedHeadSha(session, pullRequest)) {
           await sessionStore.completeSession(session.id);
         }
         break;
       case "final-description":
-        if (pullRequest && updatedAfter(session.createdAt, pullRequest.updatedAt)) {
+        if (pullRequest && hasUpdatedPullRequestBody(session, pullRequest)) {
           await sessionStore.completeSession(session.id, {
             generatedDescription: pullRequest.body,
           });

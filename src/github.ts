@@ -18,6 +18,7 @@ interface GitHubPullRequestResponse {
   number: number;
   title: string;
   body: string | null;
+  head: { sha: string };
   state: "open" | "closed";
   draft: boolean;
   created_at: string;
@@ -148,6 +149,7 @@ export class GitHubClient {
       number: pullRequest.number,
       title: pullRequest.title,
       body: pullRequest.body ?? "",
+      headSha: pullRequest.head.sha,
       state: pullRequest.state,
       draft: pullRequest.draft,
       createdAt: pullRequest.created_at,

@@ -12,6 +12,7 @@ function createPullRequest(
     number: overrides.number,
     title: overrides.title ?? `PR ${overrides.number}`,
     body: overrides.body ?? "",
+    headSha: overrides.headSha ?? `sha-${overrides.number}`,
     state: overrides.state ?? "open",
     draft: overrides.draft ?? false,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
@@ -163,6 +164,7 @@ test("reconcileSessions completes final-description sessions from updated PR bod
         pullRequestNumber: 10,
         phase: "final-description",
         createdAt: "2024-01-01T00:30:00.000Z",
+        result: { pullRequestBody: "Previous final description" },
       }),
     ],
   };
@@ -200,4 +202,149 @@ test("reconcileSessions completes final-description sessions from updated PR bod
       generatedDescription: "Updated final description",
     },
   ]);
+});
+
+test("reconcileSessions does not complete address-review-comments sessions when the PR head sha is unchanged", async () => {
+  const completedSessions: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-1",
+        updatedAt: "2024-01-01T01:00:00.000Z",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-review-comments-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "address-review-comments",
+        createdAt: "2024-01-01T00:30:00.000Z",
+        result: { pullRequestHeadSha: "sha-1" },
+      }),
+    ],
+  };
+
+  await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
+        return [];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessions.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, []);
+});
+
+test("reconcileSessions completes address-review-comments sessions when the PR head sha changes", async () => {
+  const completedSessions: string[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        headSha: "sha-2",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-review-comments-2",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "address-review-comments",
+        result: { pullRequestHeadSha: "sha-1" },
+      }),
+    ],
+  };
+
+  await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
+        return [];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessions.push(sessionId);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, ["address-review-comments-2"]);
+});
+
+test("reconcileSessions does not complete final-description sessions when the PR body is unchanged", async () => {
+  const completedSessions: Array<{ sessionId: string; generatedDescription?: string }> = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        body: "Unchanged final description",
+        updatedAt: "2024-01-01T01:00:00.000Z",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "final-description-unchanged",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "final-description",
+        createdAt: "2024-01-01T00:30:00.000Z",
+        result: { pullRequestBody: "Unchanged final description" },
+      }),
+    ],
+  };
+
+  await reconcileSessions(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 0;
+      },
+      async listPullRequestReviews(): Promise<Array<{ submittedAt: string }>> {
+        return [];
+      },
+    },
+    {
+      async completeSession(
+        sessionId: string,
+        result,
+      ): Promise<AgentSession | undefined> {
+        const completedSession: { sessionId: string; generatedDescription?: string } = {
+          sessionId,
+        };
+        if (result?.generatedDescription !== undefined) {
+          completedSession.generatedDescription = result.generatedDescription;
+        }
+        completedSessions.push(completedSession);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, []);
 });

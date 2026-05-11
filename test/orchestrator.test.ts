@@ -27,6 +27,7 @@ function createPullRequest(
     number: overrides.number,
     title: overrides.title ?? `PR ${overrides.number}`,
     body: overrides.body ?? "",
+    headSha: overrides.headSha ?? `sha-${overrides.number}`,
     state: overrides.state ?? "open",
     draft: overrides.draft ?? false,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
@@ -132,6 +133,7 @@ test("buildPlan asks for review comment fixes when the latest review found issue
       type: "address-review-comments",
       issueNumber: 7,
       pullRequestNumber: 16,
+      pullRequestHeadSha: "sha-16",
       reviewCommentCount: 2,
     },
   ]);
@@ -203,6 +205,7 @@ test("buildPlan re-requests the final description if none was captured", () => {
       issueNumber: 5,
       pullRequestNumber: 15,
       closingIssueNumbers: [5],
+      pullRequestBody: "Ready to merge.",
     },
   ]);
 });
@@ -287,6 +290,7 @@ test("buildPlan uses sessions from any linked issue on the same pull request", (
       type: "address-review-comments",
       issueNumber: 8,
       pullRequestNumber: 20,
+      pullRequestHeadSha: "sha-20",
       reviewCommentCount: 1,
     },
   ]);

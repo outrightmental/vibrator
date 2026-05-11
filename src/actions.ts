@@ -13,6 +13,10 @@ export interface ActionSessionStore {
     issueNumber: number;
     pullRequestNumber?: number;
     phase: AgentSessionPhase;
+    result?: {
+      pullRequestBody?: string;
+      pullRequestHeadSha?: string;
+    };
   }): Promise<unknown>;
 }
 
@@ -71,6 +75,7 @@ export async function executeAction(
         issueNumber: action.issueNumber,
         pullRequestNumber: action.pullRequestNumber,
         phase: "address-review-comments",
+        result: { pullRequestHeadSha: action.pullRequestHeadSha },
       });
       return;
     case "write-final-description":
@@ -82,6 +87,7 @@ export async function executeAction(
         issueNumber: action.issueNumber,
         pullRequestNumber: action.pullRequestNumber,
         phase: "final-description",
+        result: { pullRequestBody: action.pullRequestBody },
       });
       return;
     case "merge-pull-request":
