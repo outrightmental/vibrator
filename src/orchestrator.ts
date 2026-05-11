@@ -225,7 +225,10 @@ function planPullRequestAction(
     };
   }
 
-  if (!latestCompletedSession && !pullRequest.draft) {
+  if (!latestCompletedSession) {
+    // No prior session has touched this PR — kick off a Copilot review. Draft
+    // PRs are still eligible: drafts opened by the coding agent need the
+    // initial review pass before they're ready to mark non-draft.
     return {
       type: "request-review",
       issueNumber,

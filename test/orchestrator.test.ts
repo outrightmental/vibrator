@@ -176,6 +176,26 @@ test("buildPlan merges a pull request after a final description has been generat
   ]);
 });
 
+test("buildPlan requests Copilot review on a draft pull request with no prior session", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 11 })],
+    pullRequests: [
+      createPullRequest({
+        number: 21,
+        linkedIssueNumbers: [11],
+        draft: true,
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "request-review", issueNumber: 11, pullRequestNumber: 21 },
+  ]);
+});
+
 test("buildPlan does not merge a draft pull request after final description completion", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 5 })],

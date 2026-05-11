@@ -4,6 +4,16 @@ import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrato
 import { FileSessionStore } from "./session-store.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "./types.js";
 
+function mergeSortedUnique(...sources: ReadonlyArray<readonly number[]>): number[] {
+  const merged = new Set<number>();
+  for (const source of sources) {
+    for (const value of source) {
+      merged.add(value);
+    }
+  }
+  return [...merged].sort((left, right) => left - right);
+}
+
 interface GitHubIssueResponse {
   number: number;
   title: string;
@@ -179,25 +189,86 @@ export class GitHubClient {
   }
 
   async listOpenPullRequests(): Promise<PullRequest[]> {
-    const pullRequests = await this.getAllPages<GitHubPullRequestResponse>(
-      `/repos/${this.options.owner}/${this.options.repo}/pulls?state=open`,
-    );
-    return pullRequests.map((pullRequest) => ({
-      number: pullRequest.number,
-      title: pullRequest.title,
-      body: pullRequest.body ?? "",
-      headSha: pullRequest.head.sha,
-      state: pullRequest.state,
-      draft: pullRequest.draft,
-      createdAt: pullRequest.created_at,
-      updatedAt: pullRequest.updated_at,
-      linkedIssueNumbers: parseLinkedIssueNumbers(
-        `${pullRequest.title}\n${pullRequest.body ?? ""}`,
+    const [pullRequests, closingIssueNumbersByPullRequest] = await Promise.all([
+      this.getAllPages<GitHubPullRequestResponse>(
+        `/repos/${this.options.owner}/${this.options.repo}/pulls?state=open`,
       ),
-      closingIssueNumbers: parseClosingIssueNumbers(
-        `${pullRequest.title}\n${pullRequest.body ?? ""}`,
-      ),
-    }));
+      this.fetchOpenPullRequestClosingIssueReferences(),
+    ]);
+
+    return pullRequests.map((pullRequest) => {
+      const textForRegex = `${pullRequest.title}\n${pullRequest.body ?? ""}`;
+      // GitHub's "Development" sidebar / closingIssuesReferences is the
+      // authoritative source for which issues a PR closes — PRs opened by
+      // the Copilot coding agent often link via the sidebar rather than
+      // writing "Fixes #N" in the body. Merge it with any in-body keyword
+      // references so we don't miss either source.
+      const linkedFromGitHub = closingIssueNumbersByPullRequest.get(pullRequest.number) ?? [];
+      const linkedFromBody = parseLinkedIssueNumbers(textForRegex);
+      const closingFromBody = parseClosingIssueNumbers(textForRegex);
+      const linkedIssueNumbers = mergeSortedUnique(linkedFromGitHub, linkedFromBody);
+      const closingIssueNumbers = mergeSortedUnique(linkedFromGitHub, closingFromBody);
+      return {
+        number: pullRequest.number,
+        title: pullRequest.title,
+        body: pullRequest.body ?? "",
+        headSha: pullRequest.head.sha,
+        state: pullRequest.state,
+        draft: pullRequest.draft,
+        createdAt: pullRequest.created_at,
+        updatedAt: pullRequest.updated_at,
+        linkedIssueNumbers,
+        closingIssueNumbers,
+      };
+    });
+  }
+
+  private async fetchOpenPullRequestClosingIssueReferences(): Promise<Map<number, number[]>> {
+    const result = new Map<number, number[]>();
+    let after: string | null = null;
+
+    do {
+      const data = await this.graphqlRequest<{
+        repository: {
+          pullRequests: {
+            nodes: Array<{
+              number: number;
+              closingIssuesReferences: { nodes: Array<{ number: number }> } | null;
+            }>;
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
+        } | null;
+      }>(
+        `
+          query OpenPullRequestClosingIssues($owner: String!, $repo: String!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequests(first: 50, states: OPEN, after: $after) {
+                nodes {
+                  number
+                  closingIssuesReferences(first: 50) { nodes { number } }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        `,
+        { owner: this.options.owner, repo: this.options.repo, after },
+      );
+
+      const pullRequests = data.repository?.pullRequests;
+      if (!pullRequests) {
+        return result;
+      }
+
+      for (const node of pullRequests.nodes) {
+        const issueNumbers = node.closingIssuesReferences?.nodes.map((reference) => reference.number) ?? [];
+        result.set(node.number, [...new Set(issueNumbers)].sort((left, right) => left - right));
+      }
+
+      after = pullRequests.pageInfo.hasNextPage ? pullRequests.pageInfo.endCursor : null;
+    } while (after);
+
+    return result;
   }
 
   async createIssueComment(issueNumber: number, body: string): Promise<void> {
