@@ -93,8 +93,6 @@ function section(title: string): void {
       status: "start",
       timestamp: new Date().toISOString(),
     });
-  } else {
-    currentPhase = title;
   }
   write(title);
   console.log(RULE);

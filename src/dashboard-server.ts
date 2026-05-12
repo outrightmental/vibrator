@@ -1233,8 +1233,7 @@ function renderAppJs(): string {
 
     const bodyNode = document.createElement("div");
     bodyNode.className = "tv-card-body";
-    const bodyParts = Array.isArray(seg.body) ? seg.body : [{ text: String(seg.body || "") }];
-    for (const part of bodyParts) appendBodyPart(bodyNode, part);
+    for (const part of seg.body) appendBodyPart(bodyNode, part);
     card.appendChild(bodyNode);
 
     const meta = document.createElement("div");
