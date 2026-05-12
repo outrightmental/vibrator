@@ -222,10 +222,25 @@ function planPullRequestAction(
   // A PR whose title is still `[WIP] …` (or `wip: …`) is not ready for
   // review or merge. Copilot opens its draft PRs with that prefix while
   // it is still pushing commits and removes it once the change is
-  // complete. Skip the PR entirely until the title is cleaned up so we
-  // never request a review against — let alone merge — a work-in-progress
-  // PR.
+  // complete. Normally we skip the PR entirely until the title is
+  // cleaned up so we never request a review against — let alone merge —
+  // a work-in-progress PR.
+  //
+  // Recovery exception: when the most recent Copilot cloud-agent run on
+  // this PR's branch ended in failure (typically rate-limit exhaustion
+  // or a transient infrastructure error) AND no later successful agent
+  // run has happened since, Copilot will never on its own resume work
+  // on the draft. Re-assign Copilot to the primary linked issue so it
+  // picks the existing branch back up and continues. Without this the
+  // PR is stuck in `[WIP] …` state forever.
   if (isWorkInProgressPullRequest(pullRequest)) {
+    if (pullRequest.copilotLastAgentRunFailed && primaryIssueNumber !== undefined) {
+      return {
+        type: "start-implementation",
+        issueNumber: primaryIssueNumber,
+        reassignCopilot: true,
+      };
+    }
     return undefined;
   }
 

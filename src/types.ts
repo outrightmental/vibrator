@@ -33,6 +33,16 @@ export interface PullRequest {
    * orchestrator must not request another review.
    */
   hasCleanCopilotReviewOnHead: boolean;
+  /**
+   * True when the most recent Copilot coding-agent workflow run on this
+   * PR's branch ended in failure AND no later successful Copilot work
+   * has finished since then. Used by the orchestrator to recover a PR
+   * left in a `[WIP] …` state by an aborted Copilot session (typically
+   * rate-limit exhaustion) — instead of skipping the PR forever, the
+   * orchestrator re-assigns Copilot to the linked issue so it can pick
+   * up the existing draft PR and continue.
+   */
+  copilotLastAgentRunFailed: boolean;
   linkedIssueNumbers: number[];
   closingIssueNumbers: number[];
 }

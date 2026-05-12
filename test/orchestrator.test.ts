@@ -35,6 +35,7 @@ function createPullRequest(
     draft: overrides.draft ?? false,
     hasMergeConflicts: overrides.hasMergeConflicts ?? false,
     hasCleanCopilotReviewOnHead: overrides.hasCleanCopilotReviewOnHead ?? false,
+    copilotLastAgentRunFailed: overrides.copilotLastAgentRunFailed ?? false,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,
@@ -853,6 +854,50 @@ test("buildPlan skips PRs whose title is still prefixed with [WIP]", () => {
     plan.actions.filter((a) => "pullRequestNumber" in a && a.pullRequestNumber === 11),
     [],
   );
+  assert.deepEqual(
+    plan.actions.filter((a) => a.type === "start-implementation" && a.issueNumber === 5),
+    [],
+  );
+});
+
+test("buildPlan recovers a [WIP] PR by re-assigning Copilot when its last agent run failed", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 42 })],
+    pullRequests: [
+      createPullRequest({
+        number: 117,
+        title: "[WIP] Add email report delivery with magic link",
+        linkedIssueNumbers: [42],
+        copilotLastAgentRunFailed: true,
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 42, reassignCopilot: true },
+  ]);
+});
+
+test("buildPlan does not recover a [WIP] PR with no linked issue", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 119,
+        title: "[WIP] orphan PR",
+        linkedIssueNumbers: [],
+        copilotLastAgentRunFailed: true,
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, []);
 });
 
 

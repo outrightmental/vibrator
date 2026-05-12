@@ -319,7 +319,40 @@ export class GitHubClient {
       this.fetchOpenPullRequestGraphQLData(),
     ]);
 
-    return pullRequests.map((pullRequest) => {
+    // Per-PR timeline scan for Copilot agent failure state. The
+    // `copilot_work_finished_failure` timeline event is not exposed via
+    // GraphQL's typed `timelineItems(itemTypes:[…])` filter, so we fall
+    // back to REST timeline calls. Done in parallel to minimize latency
+    // for repos with several open PRs.
+    const failureStates = await Promise.all(
+      pullRequests.map(async (pullRequest) => {
+        try {
+          const [finishedEvents, failedFinishEvents] = await Promise.all([
+            this.listCopilotFinishedWorkEvents(pullRequest.number),
+            this.listCopilotFailedFinishEvents(pullRequest.number),
+          ]);
+          // `failedFinishEvents` is a subset of `finishedEvents` (any
+          // failure-finish is also a finish). Compute the most-recent
+          // finish timestamp across each set and report a failure iff the
+          // newest event in `failedFinishEvents` matches the newest event
+          // in `finishedEvents` (i.e. no successful finish has happened
+          // since the failure).
+          const newest = (events: Array<{ createdAt: string }>) =>
+            events.reduce(
+              (max, event) =>
+                Math.max(max, Date.parse(event.createdAt) || 0),
+              0,
+            );
+          const newestFinish = newest(finishedEvents);
+          const newestFailure = newest(failedFinishEvents);
+          return newestFailure > 0 && newestFailure >= newestFinish;
+        } catch {
+          return false;
+        }
+      }),
+    );
+
+    return pullRequests.map((pullRequest, index) => {
       const textForRegex = `${pullRequest.title}\n${pullRequest.body ?? ""}`;
       // GitHub's "Development" sidebar / closingIssuesReferences is the
       // authoritative source for which issues a PR closes — PRs opened by
@@ -342,6 +375,7 @@ export class GitHubClient {
         draft: pullRequest.draft,
         hasMergeConflicts: graphQLData?.hasMergeConflicts ?? false,
         hasCleanCopilotReviewOnHead: graphQLData?.hasCleanCopilotReviewOnHead ?? false,
+        copilotLastAgentRunFailed: failureStates[index] ?? false,
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         linkedIssueNumbers,
