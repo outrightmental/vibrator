@@ -6,9 +6,44 @@ import { FileSessionStore } from "./session-store.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "./types.js";
 
 /**
- * Runs a shell command, inheriting stderr (so any failure output is visible)
- * and rejecting on a non-zero exit code.
+ * Pulls every plausible string field out of a GitHub timeline event so
+ * downstream code can search the combined text for rate-limit phrases
+ * and similar markers. The Copilot coding agent's "stopped work"
+ * timeline events do not have a fixed payload shape — the human-visible
+ * error message has appeared on `message`, `body`, `summary`, and
+ * nested `error.message` at various times. Flatten them all into one
+ * newline-joined string and let pattern matching decide what's
+ * meaningful.
  */
+export function extractEventMessage(event: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 4 || value === null || value === undefined) return;
+    if (typeof value === "string") {
+      parts.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const nested of Object.values(value as Record<string, unknown>)) {
+        visit(nested, depth + 1);
+      }
+    }
+  };
+  for (const [key, value] of Object.entries(event)) {
+    // Skip metadata fields that never carry the user-visible message.
+    if (key === "event" || key === "created_at" || key === "node_id" || key === "id") {
+      continue;
+    }
+    visit(value, 0);
+  }
+  return parts.join("\n");
+}
+
+
 function runShellCommand(command: string, args: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"] });
@@ -46,6 +81,10 @@ interface GitHubIssueResponse {
   updated_at: string;
   pull_request?: object;
   assignees?: Array<{ login: string }> | null;
+  // GitHub's Issue Types feature. The REST API returns the assigned type as
+  // a nested object on the issue payload, or null when the repository has
+  // not assigned a type. Distinct from labels.
+  type?: { name?: string | null } | null;
 }
 
 interface GitHubPullRequestResponse {
@@ -61,6 +100,66 @@ interface GitHubPullRequestResponse {
 
 interface GitHubPullRequestReviewResponse {
   submitted_at: string | null;
+  user: { login: string } | null;
+  state: string;
+  body: string | null;
+}
+
+/**
+ * Login of the GitHub Copilot pull-request review bot.
+ */
+export const COPILOT_REVIEWER_LOGIN = "copilot-pull-request-reviewer";
+
+/**
+ * Pattern matching the failure message Copilot posts as a review body when
+ * it could not analyze the PR (e.g. "Copilot wasn't able to review any files
+ * in this pull request."). A review matching this body must NEVER be
+ * treated as a successful approval.
+ */
+export const COPILOT_REVIEW_FAILURE_PATTERN = /wasn't able to review/i;
+
+/**
+ * Pattern matching the success message Copilot posts when it has reviewed
+ * the PR and found nothing worth commenting on (e.g. "Copilot reviewed N
+ * files... and generated no comments."). Only reviews matching this body
+ * (or an explicit APPROVED state) are accepted as a clean review that
+ * authorizes squash-and-merge.
+ */
+export const COPILOT_REVIEW_SUCCESS_PATTERN = /generated no comments/i;
+
+export function isFailedCopilotReview(review: {
+  authorLogin?: string | undefined;
+  body?: string | null | undefined;
+}): boolean {
+  if (review.authorLogin?.toLowerCase() !== COPILOT_REVIEWER_LOGIN) {
+    return false;
+  }
+  return COPILOT_REVIEW_FAILURE_PATTERN.test(review.body ?? "");
+}
+
+export function isCleanCopilotReview(review: {
+  authorLogin?: string | undefined;
+  state?: string | undefined;
+  body?: string | null | undefined;
+  reviewCommentCount?: number | undefined;
+}): boolean {
+  if (review.authorLogin?.toLowerCase() !== COPILOT_REVIEWER_LOGIN) {
+    return false;
+  }
+  if (review.state !== "COMMENTED" && review.state !== "APPROVED") {
+    return false;
+  }
+  if ((review.reviewCommentCount ?? 0) !== 0) {
+    return false;
+  }
+  const body = review.body ?? "";
+  if (COPILOT_REVIEW_FAILURE_PATTERN.test(body)) {
+    return false;
+  }
+  if (review.state === "APPROVED") {
+    return true;
+  }
+  return COPILOT_REVIEW_SUCCESS_PATTERN.test(body);
 }
 
 interface GraphQLResponse<T> {
@@ -208,6 +307,7 @@ export class GitHubClient {
         createdAt: issue.created_at,
         updatedAt: issue.updated_at,
         assignees: (issue.assignees ?? []).map((assignee) => assignee.login),
+        type: issue.type?.name ?? null,
       }));
   }
 
@@ -265,6 +365,7 @@ export class GitHubClient {
       state: "PENDING" | "COMMENTED" | "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED";
       submittedAt: string | null;
       commit: { oid: string } | null;
+      body: string | null;
       comments: { totalCount: number };
     };
     type QueryResult = {
@@ -309,6 +410,7 @@ export class GitHubClient {
                       state
                       submittedAt
                       commit { oid }
+                      body
                       comments { totalCount }
                     }
                   }
@@ -330,21 +432,23 @@ export class GitHubClient {
         const issueNumbers = node.closingIssuesReferences?.nodes.map((reference) => reference.number) ?? [];
         const reviewNodes = node.reviews?.nodes ?? [];
         // A "clean" Copilot review = the Copilot review bot submitted a review
-        // on the current head sha that requested no changes and produced zero
-        // review comments. This is the GraphQL signal that the PR is ready
-        // to merge — no further request-review iterations are needed.
+        // on the current head sha that requested no changes, produced zero
+        // review comments, AND whose body explicitly indicates success
+        // ("generated no comments") — or is an APPROVED review. The body
+        // check is critical: when Copilot posts "Copilot wasn't able to
+        // review any files in this pull request." the GraphQL signals
+        // (COMMENTED + 0 comments) otherwise look identical to a successful
+        // empty review and would incorrectly authorize squash-and-merge.
         const hasCleanCopilotReviewOnHead = reviewNodes.some((review) => {
-          const login = review.author?.login?.toLowerCase();
-          if (login !== "copilot-pull-request-reviewer") {
-            return false;
-          }
           if (review.commit?.oid !== node.headRefOid) {
             return false;
           }
-          if (review.state !== "COMMENTED" && review.state !== "APPROVED") {
-            return false;
-          }
-          return review.comments.totalCount === 0;
+          return isCleanCopilotReview({
+            authorLogin: review.author?.login,
+            state: review.state,
+            body: review.body,
+            reviewCommentCount: review.comments.totalCount,
+          });
         });
         result.set(node.number, {
           closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
@@ -360,20 +464,67 @@ export class GitHubClient {
     return result;
   }
 
-  async createIssueComment(issueNumber: number, body: string): Promise<void> {
-    await this.request(`/repos/${this.options.owner}/${this.options.repo}/issues/${issueNumber}/comments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body }),
-    });
+  async createIssueComment(issueNumber: number, body: string): Promise<{ id: number }> {
+    const response = await this.request<{ id: number }>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${issueNumber}/comments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body }),
+      },
+    );
+    return { id: response.id };
   }
 
   async assignIssueToCopilot(issueNumber: number): Promise<void> {
     const issueNodeId = await this.getIssueNodeId(issueNumber);
+    await this.replaceAssignableActorsWithCopilot(issueNodeId, `issue #${issueNumber}`);
+  }
+
+  /**
+   * Unassign Copilot from an issue by replacing the assignee set with an
+   * empty list. Used to "kick" the Copilot coding agent into picking up the
+   * job after a prior assignment failed to result in any acknowledgment.
+   * Note: this also clears any other assignees on the issue — vibrator's
+   * normal flow keeps Copilot as the sole assignee, so this matches the
+   * existing `assignIssueToCopilot` semantics.
+   */
+  async unassignIssueFromCopilot(issueNumber: number): Promise<void> {
+    const issueNodeId = await this.getIssueNodeId(issueNumber);
+    await this.clearAssignableActors(issueNodeId);
+  }
+
+  /**
+   * Assign Copilot as the sole assignee on a pull request. Used as part of
+   * the unassign + re-assign retry path when a prior @copilot prompt comment
+   * on the PR was never acknowledged.
+   */
+  async assignPullRequestToCopilot(pullRequestNumber: number): Promise<void> {
+    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
+    await this.replaceAssignableActorsWithCopilot(
+      pullRequestNodeId,
+      `pull request #${pullRequestNumber}`,
+    );
+  }
+
+  /**
+   * Unassign Copilot from a pull request by replacing the assignee set with
+   * an empty list. Companion to `assignPullRequestToCopilot` for the
+   * unassign + re-assign retry path.
+   */
+  async unassignPullRequestFromCopilot(pullRequestNumber: number): Promise<void> {
+    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
+    await this.clearAssignableActors(pullRequestNodeId);
+  }
+
+  private async replaceAssignableActorsWithCopilot(
+    assignableNodeId: string,
+    label: string,
+  ): Promise<void> {
     const copilotBotId = await this.getCopilotAssigneeId();
     if (!copilotBotId) {
       throw new Error(
-        `Cannot assign issue #${issueNumber} to Copilot: the Copilot coding agent is not available as an assignee on ${this.options.owner}/${this.options.repo}. Enable the Copilot coding agent for this repository and ensure your GITHUB_TOKEN has access.`,
+        `Cannot assign ${label} to Copilot: the Copilot coding agent is not available as an assignee on ${this.options.owner}/${this.options.repo}. Enable the Copilot coding agent for this repository and ensure your GITHUB_TOKEN has access.`,
       );
     }
 
@@ -393,11 +544,16 @@ export class GitHubClient {
                   nodes { login }
                 }
               }
+              ... on PullRequest {
+                assignees(first: 20) {
+                  nodes { login }
+                }
+              }
             }
           }
         }
       `,
-      { assignableId: issueNodeId, actorIds: [copilotBotId] },
+      { assignableId: assignableNodeId, actorIds: [copilotBotId] },
     );
 
     const assignedLogins = data.replaceActorsForAssignable.assignable?.assignees.nodes.map(
@@ -405,9 +561,22 @@ export class GitHubClient {
     ) ?? [];
     if (!assignedLogins.some((login) => login === "copilot" || login === "copilot-swe-agent")) {
       throw new Error(
-        `Assigning issue #${issueNumber} to Copilot did not take effect (final assignees: ${assignedLogins.join(", ") || "none"}).`,
+        `Assigning ${label} to Copilot did not take effect (final assignees: ${assignedLogins.join(", ") || "none"}).`,
       );
     }
+  }
+
+  private async clearAssignableActors(assignableNodeId: string): Promise<void> {
+    await this.graphqlRequest(
+      `
+        mutation ClearAssignees($assignableId: ID!) {
+          replaceActorsForAssignable(input: { assignableId: $assignableId, actorIds: [] }) {
+            clientMutationId
+          }
+        }
+      `,
+      { assignableId: assignableNodeId },
+    );
   }
 
   private cachedCopilotAssigneeId: string | null | undefined;
@@ -621,6 +790,40 @@ export class GitHubClient {
     }
   }
 
+  /**
+   * Toggle a pull request from "Ready for review" → draft → "Ready for review"
+   * to reset GitHub Copilot's pull-request review state. Copilot occasionally
+   * fails a review with "Copilot wasn't able to review any files in this
+   * pull request." (timeout, large diff, transient service issue). GitHub's
+   * documented recovery is to convert the PR to draft and back, which clears
+   * Copilot's cached state and lets a fresh review run. Used by the
+   * orchestrator before re-requesting a Copilot review after a failed
+   * attempt. No-op behaviour on draft PRs: still toggles via draft → ready.
+   */
+  async resetPullRequestForCopilotReview(pullRequestNumber: number): Promise<void> {
+    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
+    await this.graphqlRequest(
+      `
+        mutation ConvertPullRequestToDraft($pullRequestId: ID!) {
+          convertPullRequestToDraft(input: { pullRequestId: $pullRequestId }) {
+            clientMutationId
+          }
+        }
+      `,
+      { pullRequestId: pullRequestNodeId },
+    );
+    await this.graphqlRequest(
+      `
+        mutation MarkPullRequestReadyForReview($pullRequestId: ID!) {
+          markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
+            clientMutationId
+          }
+        }
+      `,
+      { pullRequestId: pullRequestNodeId },
+    );
+  }
+
   async requestCopilotReview(pullRequestNumber: number): Promise<void> {
     const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
 
@@ -689,14 +892,37 @@ export class GitHubClient {
 
   async listPullRequestReviews(
     pullRequestNumber: number,
-  ): Promise<Array<{ submittedAt: string }>> {
+  ): Promise<
+    Array<{
+      submittedAt: string;
+      authorLogin?: string;
+      state?: string;
+      body?: string | null;
+    }>
+  > {
     const reviews = await this.getAllPages<GitHubPullRequestReviewResponse>(
       `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}/reviews`,
     );
     return reviews
-      .map((review) => review.submitted_at)
-      .filter((submittedAt): submittedAt is string => submittedAt !== null)
-      .map((submittedAt) => ({ submittedAt }));
+      .filter((review): review is GitHubPullRequestReviewResponse & { submitted_at: string } =>
+        review.submitted_at !== null,
+      )
+      .map((review) => {
+        const result: {
+          submittedAt: string;
+          authorLogin?: string;
+          state?: string;
+          body?: string | null;
+        } = { submittedAt: review.submitted_at };
+        if (review.user?.login !== undefined) {
+          result.authorLogin = review.user.login;
+        }
+        if (review.state !== undefined) {
+          result.state = review.state;
+        }
+        result.body = review.body;
+        return result;
+      });
   }
 
   async countUnresolvedPullRequestReviewThreads(pullRequestNumber: number): Promise<number> {
@@ -705,6 +931,152 @@ export class GitHubClient {
         pullRequestNumber,
       )
     ).length;
+  }
+
+  /**
+   * Returns timestamps of "Copilot finished work" timeline events on a
+   * pull request. These events are emitted by the Copilot coding agent
+   * each time it ends a session (whether it pushed commits or only
+   * replied with a comment such as "no change needed"). The orchestrator
+   * uses this signal to detect when an address-review-comments session is
+   * effectively complete even though no new commits were pushed.
+   *
+   * The GitHub REST timeline endpoint returns events with an `event`
+   * string field; the exact name for Copilot's session events may vary
+   * over time, so this matches any event whose name contains both
+   * "copilot" and a completion verb (finish/complete/end).
+   */
+  /**
+   * Returns timestamps of "Copilot started/queued/picked up work" timeline
+   * events on a pull request or issue. These events are emitted by the
+   * Copilot coding agent each time it picks up a job (whether triggered by
+   * an issue assignment, an @copilot prompt comment on a PR, or a review
+   * request). The reconciler uses this signal — together with "finished
+   * work" events and prompt-comment reactions — to detect when Copilot has
+   * acknowledged a request the orchestrator made.
+   *
+   * The exact event name is not stable; this matches any event whose name
+   * contains "copilot" and a start verb (start/begin/pick/queue/dispatch).
+   */
+  async listCopilotStartedWorkEvents(
+    issueOrPullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string }>> {
+    interface TimelineEvent {
+      event?: string;
+      created_at?: string;
+    }
+    const events = await this.getAllPages<TimelineEvent>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${issueOrPullRequestNumber}/timeline`,
+    );
+    return events
+      .filter((event): event is TimelineEvent & { created_at: string } => {
+        if (!event.created_at) return false;
+        const name = (event.event ?? "").toLowerCase();
+        if (!name.includes("copilot")) return false;
+        return (
+          name.includes("start") ||
+          name.includes("begin") ||
+          name.includes("pick") ||
+          name.includes("queue") ||
+          name.includes("dispatch")
+        );
+      })
+      .map((event) => ({ createdAt: event.created_at }));
+  }
+
+  /**
+   * Returns the list of reactions on a specific issue/PR comment. Used by
+   * the reconciler to detect Copilot's "eyes" reaction acknowledging an
+   * @copilot prompt comment.
+   */
+  async listIssueCommentReactions(
+    commentId: number,
+  ): Promise<Array<{ userLogin: string; content: string }>> {
+    interface ReactionResponse {
+      user: { login: string } | null;
+      content: string;
+    }
+    const reactions = await this.getAllPages<ReactionResponse>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/comments/${commentId}/reactions`,
+    );
+    return reactions
+      .filter((reaction): reaction is ReactionResponse & { user: { login: string } } =>
+        reaction.user !== null,
+      )
+      .map((reaction) => ({ userLogin: reaction.user.login, content: reaction.content }));
+  }
+
+  async listCopilotFinishedWorkEvents(
+    pullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string }>> {
+    interface TimelineEvent {
+      event?: string;
+      created_at?: string;
+      actor?: { login?: string } | null;
+      performed_via_github_app?: { slug?: string } | null;
+    }
+    const events = await this.getAllPages<TimelineEvent>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/timeline`,
+    );
+    return events
+      .filter((event): event is TimelineEvent & { created_at: string } => {
+        if (!event.created_at) return false;
+        const name = (event.event ?? "").toLowerCase();
+        return (
+          name.includes("copilot") &&
+          (name.includes("finish") || name.includes("complete") || name.includes("end"))
+        );
+      })
+      .map((event) => ({ createdAt: event.created_at }));
+  }
+
+  /**
+   * Returns recent "Copilot stopped work due to an error" timeline events
+   * on a pull request, including any message body the event carries.
+   * The Copilot coding agent posts these when it aborts a session for
+   * any reason (rate-limit exhaustion, internal error, etc.). vibrator
+   * inspects the message body to detect rate-limit exhaustion and
+   * temporarily pauses dispatching new work.
+   *
+   * The exact event name is not part of GitHub's public REST spec and
+   * has changed over time; we therefore match any "copilot" event whose
+   * name suggests an abort (stop/error/fail/abort/cancel). We also
+   * surface every plausible text field on the event payload so the
+   * caller can run rate-limit detection across whichever field GitHub
+   * is using today.
+   */
+  async listCopilotStoppedWorkEvents(
+    pullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string; message: string }>> {
+    // The Copilot agent's stopped-work timeline event isn't part of
+    // GitHub's typed REST schema; the message body can land on any of
+    // several string fields (`message`, `body`, nested `error.message`,
+    // etc.). Read pragmatically with an index signature.
+    interface TimelineEvent {
+      event?: string;
+      created_at?: string;
+      [key: string]: unknown;
+    }
+    const events = await this.getAllPages<TimelineEvent>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/timeline`,
+    );
+    return events
+      .filter((event): event is TimelineEvent & { created_at: string } => {
+        if (!event.created_at) return false;
+        const name = (event.event ?? "").toLowerCase();
+        if (!name.includes("copilot")) return false;
+        return (
+          name.includes("stop") ||
+          name.includes("error") ||
+          name.includes("fail") ||
+          name.includes("abort") ||
+          name.includes("cancel")
+        );
+      })
+      .map((event) => ({
+        createdAt: event.created_at,
+        message: extractEventMessage(event),
+      }));
   }
 
   private async listUnresolvedPullRequestReviewThreadIds(

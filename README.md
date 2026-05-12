@@ -134,6 +134,13 @@ blocks #34
 
 `vibrator` will not start an issue while any referenced blocker remains open.
 Older eligible issues start first, up to `MAX_CONCURRENCY`.
+- `GITHUB_TOKEN` (required): GitHub token for repository access.
+- `GITHUB_REPOSITORY` (optional): default repository slug (`owner/repo`).
+- `MAX_CONCURRENCY` (optional): maximum concurrent work items, default `3`.
+- `LOOP_INTERVAL_MS` (optional): loop interval in milliseconds, default `60000`.
+- `SESSION_TIMEOUT_MS` (optional): mark still-active local sessions as failed after this many milliseconds, default `21600000` (6 hours).
+- `COPILOT_ACKNOWLEDGE_TIMEOUT_MS` (optional): fail an active Copilot-summoning session (assignment, address-review-comments comment, resolve-conflicts comment) when no acknowledgment signal — a Copilot start/finish timeline event or an eyes reaction on the prompt comment — appears within this many milliseconds of the session starting. Default `600000` (10 minutes). On failure the orchestrator unassigns + re-assigns Copilot on the next iteration before re-summoning.
+- `VIBRATOR_SESSION_STORE_PATH` (optional): path for persisted local agent-session state.
 
 ## Development
 

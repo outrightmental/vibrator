@@ -2,10 +2,25 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { AgentSession, AgentSessionPhase, AgentSessionResult, AgentSessionStatus } from "./types.js";
+import type {
+  AgentSession,
+  AgentSessionPhase,
+  AgentSessionResult,
+  AgentSessionStaleReason,
+  AgentSessionStatus,
+} from "./types.js";
 
 interface SessionState {
   sessions: AgentSession[];
+  /**
+   * ISO-8601 timestamp until which the orchestrator should pause all
+   * GitHub-side actions because Copilot has reported a rate-limit
+   * exhaustion. `undefined` (or a past timestamp) means "not paused".
+   * Stored alongside sessions so the pause survives process restarts —
+   * the whole point of the feature is to avoid spamming the repo with
+   * requests across iterations.
+   */
+  rateLimitedUntil?: string;
 }
 
 // Keep enough recent terminal history for follow-up planning while preventing
@@ -103,29 +118,77 @@ async function replaceFileCrossPlatform(
 export class FileSessionStore {
   constructor(private readonly filePath: string) {}
 
-  async load(): Promise<AgentSession[]> {
+  private async loadState(): Promise<SessionState> {
     try {
       const contents = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(contents) as SessionState;
-      return parsed.sessions ?? [];
+      return {
+        sessions: parsed.sessions ?? [],
+        ...(parsed.rateLimitedUntil !== undefined
+          ? { rateLimitedUntil: parsed.rateLimitedUntil }
+          : {}),
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return [];
+        return { sessions: [] };
       }
 
       throw error;
     }
   }
 
-  async save(sessions: AgentSession[]): Promise<void> {
+  private async writeState(state: SessionState): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const tempFilePath = `${this.filePath}.${randomUUID()}.tmp`;
-    await writeFile(
-      tempFilePath,
-      `${JSON.stringify({ sessions: pruneSessions(sessions) }, null, 2)}\n`,
-      "utf8",
-    );
+    const payload: SessionState = {
+      sessions: pruneSessions(state.sessions),
+      ...(state.rateLimitedUntil !== undefined
+        ? { rateLimitedUntil: state.rateLimitedUntil }
+        : {}),
+    };
+    await writeFile(tempFilePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     await replaceFileCrossPlatform(tempFilePath, this.filePath);
+  }
+
+  async load(): Promise<AgentSession[]> {
+    return (await this.loadState()).sessions;
+  }
+
+  async save(sessions: AgentSession[]): Promise<void> {
+    const previous = await this.loadState();
+    const next: SessionState = { sessions };
+    if (previous.rateLimitedUntil !== undefined) {
+      next.rateLimitedUntil = previous.rateLimitedUntil;
+    }
+    await this.writeState(next);
+  }
+
+  /**
+   * Returns the rate-limit pause expiry, or `undefined` when not paused.
+   * The orchestrator must skip all GitHub-side actions while the
+   * returned timestamp is in the future.
+   */
+  async getRateLimitedUntil(): Promise<Date | undefined> {
+    const state = await this.loadState();
+    if (state.rateLimitedUntil === undefined) {
+      return undefined;
+    }
+    const parsed = Date.parse(state.rateLimitedUntil);
+    return Number.isNaN(parsed) ? undefined : new Date(parsed);
+  }
+
+  /**
+   * Sets (or clears, when `until` is `undefined`) the rate-limit pause
+   * expiry. Existing sessions are preserved untouched.
+   */
+  async setRateLimitedUntil(until: Date | undefined): Promise<void> {
+    const state = await this.loadState();
+    if (until === undefined) {
+      delete state.rateLimitedUntil;
+    } else {
+      state.rateLimitedUntil = until.toISOString();
+    }
+    await this.writeState(state);
   }
 
   async createSession(input: {
@@ -179,7 +242,10 @@ export class FileSessionStore {
     return session;
   }
 
-  async failSession(sessionId: string): Promise<AgentSession | undefined> {
+  async failSession(
+    sessionId: string,
+    options: { staleReason?: AgentSessionStaleReason } = {},
+  ): Promise<AgentSession | undefined> {
     const sessions = await this.load();
     const session = sessions.find((candidate) => candidate.id === sessionId);
     if (!session) {
@@ -190,6 +256,9 @@ export class FileSessionStore {
     session.status = "failed";
     session.updatedAt = failedAt;
     session.completedAt = failedAt;
+    if (options.staleReason !== undefined) {
+      session.staleReason = options.staleReason;
+    }
     await this.save(sessions);
     return session;
   }

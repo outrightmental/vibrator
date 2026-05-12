@@ -10,6 +10,7 @@ import {
 } from "./github.js";
 import { createLocalCopilotChatClient } from "./local-copilot.js";
 import { buildPlan } from "./orchestrator.js";
+import { detectRateLimitMessage } from "./rate-limit.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import type {
@@ -19,6 +20,7 @@ import type {
 } from "./types.js";
 
 const DEFAULT_SESSION_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_ACKNOWLEDGE_TIMEOUT_MS = 10 * 60 * 1000;
 const RULE = "─".repeat(80);
 const HEAVY_RULE = "═".repeat(80);
 
@@ -123,6 +125,7 @@ interface Config {
   dryRun: boolean;
   sessionStorePath: string;
   sessionTimeoutMs: number;
+  acknowledgeTimeoutMs: number;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -161,6 +164,10 @@ function parseArgs(argv: string[]): Config {
     process.env.SESSION_TIMEOUT_MS ?? String(DEFAULT_SESSION_TIMEOUT_MS),
     10,
   );
+  const acknowledgeTimeoutMs = Number.parseInt(
+    process.env.COPILOT_ACKNOWLEDGE_TIMEOUT_MS ?? String(DEFAULT_ACKNOWLEDGE_TIMEOUT_MS),
+    10,
+  );
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
 
@@ -174,6 +181,9 @@ function parseArgs(argv: string[]): Config {
     dryRun,
     sessionStorePath,
     sessionTimeoutMs: Number.isNaN(sessionTimeoutMs) ? DEFAULT_SESSION_TIMEOUT_MS : sessionTimeoutMs,
+    acknowledgeTimeoutMs: Number.isNaN(acknowledgeTimeoutMs)
+      ? DEFAULT_ACKNOWLEDGE_TIMEOUT_MS
+      : acknowledgeTimeoutMs,
   };
 }
 
@@ -198,6 +208,29 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
   );
   write(HEAVY_RULE);
+
+  // --- Rate-limit pause -------------------------------------------------
+  // If a previous iteration detected a Copilot rate-limit message and
+  // recorded a reset timestamp, refuse to dispatch any GitHub-side work
+  // until that window has elapsed. The whole point is to stop spamming
+  // the repo with requests that Copilot will immediately reject.
+  const rateLimitedUntil = await sessionStore.getRateLimitedUntil();
+  if (rateLimitedUntil && rateLimitedUntil.getTime() > Date.now()) {
+    section("Rate-limited — skipping iteration");
+    bullet(
+      `Copilot rate limit in effect until ${rateLimitedUntil.toISOString()} ` +
+        `(≈${formatDuration(rateLimitedUntil.getTime() - Date.now())} remaining)`,
+    );
+    note(
+      "vibrator will resume automatically once the window elapses. To clear " +
+        "this manually, delete `rateLimitedUntil` from the session store file.",
+    );
+    return;
+  }
+  if (rateLimitedUntil && rateLimitedUntil.getTime() <= Date.now()) {
+    // Window elapsed — clear the marker so the rest of the iteration runs normally.
+    await sessionStore.setRateLimitedUntil(undefined);
+  }
 
   // --- Workflow approvals ------------------------------------------------
   section("Workflow approvals");
@@ -251,7 +284,17 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   // --- Reconciliation ---------------------------------------------------
   section("Reconciliation");
-  const reconcileEvents = await reconcileSessions(gitHubClient, sessionStore, snapshot);
+  const reconcileEvents = await reconcileSessions(
+    gitHubClient,
+    sessionStore,
+    snapshot,
+    localCopilotChatClient,
+    {
+      owner: config.owner,
+      repo: config.repo,
+      acknowledgeTimeoutMs: config.acknowledgeTimeoutMs,
+    },
+  );
   const completedEvents = reconcileEvents.filter((e) => e.outcome === "completed");
   const failedStaleEvents = reconcileEvents.filter((e) => e.outcome === "failed-stale");
   const failedTimedOut = await sessionStore.failStaleSessions(config.sessionTimeoutMs);
@@ -262,11 +305,30 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   }
   bullet(`${failedStaleEvents.length} session(s) failed (stale)`);
   for (const event of failedStaleEvents) {
-    const reason =
-      event.staleReason === "issue-closed"
-        ? "issue no longer open"
-        : "Copilot not assigned to issue";
+    let reason: string;
+    switch (event.staleReason) {
+      case "issue-closed":
+        reason = "issue no longer open";
+        break;
+      case "copilot-not-assigned":
+        reason = "Copilot not assigned to issue";
+        break;
+      case "copilot-review-failed":
+        reason = "Copilot review came back as failed (wasn't able to review)";
+        break;
+      case "copilot-review-comments-not-addressed":
+        reason = "Copilot ended its turn but review comments are not adequately addressed";
+        break;
+      case "copilot-did-not-acknowledge":
+        reason = "Copilot never acknowledged the request (no start/finish event or eyes reaction)";
+        break;
+      default:
+        reason = "unknown reason";
+    }
     note(`◦ ${describeSession(event.session, gitHubClient)} — ${reason}`, 2);
+    if (event.evaluationRationale) {
+      note(`  rationale: ${event.evaluationRationale.split("\n")[0]}`, 4);
+    }
   }
   bullet(`${failedTimedOut.length} session(s) timed out`);
   for (const session of failedTimedOut) {
@@ -281,6 +343,56 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   for (const session of reconciledActiveSessions) {
     note(`◦ ${describeSession(session, gitHubClient)}`, 2);
   }
+
+  // --- Rate-limit detection --------------------------------------------
+  // Scan recent "Copilot stopped work" timeline events on every open PR
+  // for the rate-limit message ("You've hit your rate limit. Please wait
+  // for your limit to reset in N minutes…"). If detected, persist the
+  // reset time and skip plan execution — the next iteration will see the
+  // pause and short-circuit immediately.
+  section("Copilot rate-limit check");
+  let detectedRateLimitResetAt: Date | undefined;
+  for (const pullRequest of snapshot.pullRequests) {
+    try {
+      const stoppedEvents = await gitHubClient.listCopilotStoppedWorkEvents(
+        pullRequest.number,
+      );
+      for (const event of stoppedEvents) {
+        const detection = detectRateLimitMessage(event.message);
+        if (!detection) continue;
+        if (
+          !detectedRateLimitResetAt ||
+          detection.resetAt.getTime() > detectedRateLimitResetAt.getTime()
+        ) {
+          detectedRateLimitResetAt = detection.resetAt;
+        }
+        note(
+          `◦ rate-limit message on PR #${pullRequest.number} (${gitHubClient.pullRequestUrl(pullRequest.number)}) — ` +
+            `reset at ${detection.resetAt.toISOString()}` +
+            (detection.durationWasParsed ? "" : " (fallback window)"),
+          2,
+        );
+      }
+    } catch (error) {
+      note(
+        `◦ failed to scan PR #${pullRequest.number} timeline: ${(error as Error).message}`,
+        2,
+      );
+    }
+  }
+  if (detectedRateLimitResetAt) {
+    await sessionStore.setRateLimitedUntil(detectedRateLimitResetAt);
+    bullet(
+      `pausing until ${detectedRateLimitResetAt.toISOString()} ` +
+        `(≈${formatDuration(detectedRateLimitResetAt.getTime() - Date.now())} from now)`,
+    );
+    note(
+      "Skipping plan execution this iteration. Subsequent iterations will be " +
+        "skipped until the window elapses.",
+    );
+    return;
+  }
+  bullet("no active rate-limit messages detected");
 
   // --- Plan -------------------------------------------------------------
   const plan = buildPlan(snapshot, config.maxConcurrency);
