@@ -719,7 +719,19 @@ async function main(): Promise<void> {
   const shutdownSignals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
   for (const signal of shutdownSignals) {
     process.once(signal, () => {
-      void dashboardServer?.close().finally(() => process.exit(0));
+      // Close the dashboard cleanly so the port is released and SSE
+      // clients see EOF instead of hanging connections. Surface close
+      // errors before exiting so they aren't silently swallowed.
+      const exit = (code: number): void => {
+        process.exit(code);
+      };
+      dashboardServer?.close().then(
+        () => exit(0),
+        (error: unknown) => {
+          console.error(`[dashboard] error while shutting down:`, error);
+          exit(1);
+        },
+      ) ?? exit(0);
     });
   }
 
