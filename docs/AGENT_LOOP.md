@@ -1,28 +1,33 @@
 # Agent loop and PR lifecycle
 
-This document describes the end-to-end loop that `vibrator` runs against a
-GitHub repository.
+This document describes the end-to-end loop that `vibrator` runs against
+a GitHub repository, with Claude (the `claude` CLI / Claude Code) as the
+worker for every coding-agent step.
 
 ## Mental model
 
 Think of `vibrator` as a scheduler plus shepherd:
 
 ```text
-schedule issue work → wait for PR → review → fix → review → describe → merge
+schedule issue work → run Claude locally → open PR → review → fix → review → describe → merge
 ```
 
-Every pass through the loop is allowed to make progress, but it does not assume
-agents respond instantly. Instead, it records sessions, exits or sleeps, then
-observes GitHub again on the next iteration.
+Every pass through the loop is allowed to make progress. Unlike a
+remote coding-agent integration, every step here is synchronous —
+vibrator waits for Claude to finish before moving on. That means
+sessions only ever sit in `in_progress` state inside a single iteration;
+on the next iteration they will be either completed (the agent finished
+and the session was recorded) or failed (the previous process crashed
+mid-action).
 
 ## Loop phases
 
 ### 1. Approve pending workflow runs
 
-The loop first checks recent workflow runs for states that indicate maintainer
-approval is needed. When possible, it approves them through GitHub's workflow
-approval endpoint; when approval is not applicable, it reports the reason and
-continues.
+The loop first checks recent workflow runs for states that indicate
+maintainer approval is needed. When possible, it approves them through
+GitHub's workflow approval endpoint; when approval is not applicable,
+it reports the reason and continues.
 
 ### 2. Load repository snapshot
 
@@ -32,59 +37,57 @@ The snapshot includes:
 - open pull requests,
 - PR merge-conflict status,
 - PR-linked issue references from GitHub and PR text,
-- Copilot review state on each PR head,
+- PR review state on the current head (clean / unresolved comments),
+- PR status-check rollup,
 - local agent sessions.
 
 ### 3. Reconcile sessions
 
-Reconciliation compares local sessions against GitHub:
-
-- An implementation session completes when a linked PR appears.
-- A review session completes when a later PR review exists.
-- A review-fix or conflict-resolution session completes when the PR head SHA
-  changes.
-- A final-description session completes when the PR body changes.
-- Stale implementation sessions fail if the issue closes or Copilot is no
-  longer assigned.
-- Old active sessions can time out through `SESSION_TIMEOUT_MS`.
+Every Claude action runs synchronously, so any `in_progress` session
+observed at the start of an iteration is a leftover from a previous
+vibrator process that crashed mid-action. The reconciler marks each
+such session as `failed` so the planner can re-plan its work cleanly.
 
 ### 4. Build a plan
 
-The planner prefers shepherding existing PRs before starting more issues. That
-keeps the repository from accumulating unfinished work.
+The planner prefers shepherding existing PRs before starting more
+issues. That keeps the repository from accumulating unfinished work.
 
 For issues, the planner:
 
-- sorts by creation time,
+- sorts bugs first, then by creation time,
 - excludes issues already represented by open PRs or active sessions,
 - excludes issues blocked by open blockers,
 - starts only as many as fit inside `MAX_CONCURRENCY`.
 
 ### 5. Execute actions
 
-In dry-run mode, execution is skipped after printing the plan. In normal mode,
-actions call GitHub, `gh`, and the local `copilot` CLI as needed.
+In dry-run mode, execution is skipped after printing the plan. In
+normal mode, actions call GitHub, `gh`, `git`, and the local `claude`
+CLI as needed. Each action records a completed session at the end.
 
 ## Pull-request lifecycle
 
 ```text
-implementation session
+start-implementation
         │
         ▼
-linked PR appears
+Claude implements locally · vibrator opens the PR
         │
         ▼
-request Copilot review
+review-pull-request (Claude)
         │
-        ├── unresolved review comments ──► ask Copilot to fix ──► request review again
+        ├── inline comments ──► address-review-comments (Claude) ──► review again
         │
-        ├── merge conflicts ─────────────► ask Copilot to resolve ─► request review again
+        ├── merge conflicts ─► resolve-conflicts (Claude) ──► review again
+        │
+        ├── failing checks ──► address-failing-checks (Claude) ─► review again
         │
         ▼
-clean review
+clean review on current head
         │
         ▼
-generate final description
+write-final-description (Claude)
         │
         ▼
 update PR body + squash merge
@@ -98,11 +101,12 @@ update PR body + squash merge
 - `depends on #123`
 - `blocks #456`
 
-The first two forms mark the current issue as blocked by another issue. The
-`blocks` form marks the referenced issue as blocked by the current issue.
+The first two forms mark the current issue as blocked by another
+issue. The `blocks` form marks the referenced issue as blocked by the
+current issue.
 
-Only open blockers prevent scheduling. Once the blocker closes, the dependent
-issue can become eligible on the next loop.
+Only open blockers prevent scheduling. Once a blocker closes, the
+dependent issue becomes eligible on the next loop.
 
 ## Closing-reference behavior
 
@@ -112,8 +116,8 @@ The loop collects issue references from:
 - PR titles and bodies with phrases such as `fixes #123`, `closes #123`,
   `resolves #123`, `implements #123`, and `for #123`.
 
-Before merge, missing closing references are appended to the final PR body so
-GitHub can close the intended issues after the squash merge.
+Before merge, missing closing references are appended to the final PR
+body so GitHub can close the intended issues after the squash merge.
 
 ## Recommended operating style
 
@@ -126,11 +130,17 @@ GitHub can close the intended issues after the squash merge.
 
 ## Failure modes to watch
 
-- **Copilot is unavailable as an assignee**: enable the Copilot coding agent for
-  the repository and check token access.
-- **No linked PR appears**: make sure Copilot remains assigned and that the issue
-  has enough context to implement.
-- **Review loop repeats**: inspect unresolved review threads and branch updates.
-- **Final description fails**: confirm `gh` and `copilot` are installed and
-  authenticated locally.
+- **`claude` CLI not found / not authenticated**: install Claude Code
+  and ensure `ANTHROPIC_API_KEY` is set.
+- **`gh` CLI not authenticated for the repo**: vibrator relies on `gh`
+  to clone the repo and check out PR branches. Run `gh auth login`.
+- **No PR appears after start-implementation**: check the iteration
+  log — vibrator opens the PR itself via the REST API after Claude
+  pushes, so an error from either step will surface in the action log.
+- **Review loop repeats**: inspect the unresolved review threads
+  vibrator is asking Claude to address; the planner only advances
+  once a clean (zero-inline-comment) review is recorded against the
+  current head SHA.
+- **Final description fails**: confirm `gh`, `git`, and `claude` are
+  installed and authenticated locally.
 - **Too much parallel work**: lower `MAX_CONCURRENCY`.

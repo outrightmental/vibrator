@@ -22,22 +22,7 @@ const LINKED_ISSUE_PATTERN = new RegExp(
   "gi",
 );
 
-const ACTIVE_STATUSES = new Set(["queued", "in_progress"]);
-
-/**
- * Matches a PR title still flagged as work-in-progress. Copilot opens its
- * draft PRs with a `[WIP] …` title prefix while it is still pushing
- * commits and removes the prefix once it considers the change complete.
- * Accepts case-insensitive `[wip]` bracketed prefixes or a leading `wip:`
- * token (with optional surrounding whitespace). PRs whose titles still
- * match this pattern must NOT be reviewed, approved, or merged — the
- * orchestrator skips them entirely until the prefix is cleaned up.
- */
-const WIP_TITLE_PATTERN = /^\s*(?:\[\s*wip\s*\]|wip\s*:)/i;
-
-export function isWorkInProgressPullRequest(pullRequest: PullRequest): boolean {
-  return WIP_TITLE_PATTERN.test(pullRequest.title);
-}
+const ACTIVE_STATUSES = new Set(["in_progress"]);
 
 function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((left, right) => left - right);
@@ -52,10 +37,8 @@ function sortByCreatedAt<T extends { createdAt: string; number: number }>(items:
 
 /**
  * Lower number = higher priority. Bugs (GitHub issue Type === "Bug",
- * case-insensitively) jump ahead of every other type — features, tasks,
- * chores, untyped issues — because an open bug with no blocking
- * relationships should always be addressed before new feature/task work.
- * Compared on the native issue Type field, NOT labels.
+ * case-insensitively) jump ahead of every other type so an unblocked open
+ * bug is always picked before any feature/task work.
  */
 function issuePriority(issue: Issue): number {
   if (issue.type?.toLowerCase() === "bug") {
@@ -67,10 +50,7 @@ function issuePriority(issue: Issue): number {
 function appendMatches(target: Set<number>, source: string, pattern: RegExp): void {
   for (const match of source.matchAll(pattern)) {
     const capturedIssueNumber = match[1];
-    if (!capturedIssueNumber) {
-      continue;
-    }
-
+    if (!capturedIssueNumber) continue;
     const issueNumber = Number.parseInt(capturedIssueNumber, 10);
     if (!Number.isNaN(issueNumber)) {
       target.add(issueNumber);
@@ -163,50 +143,6 @@ function getLatestCompletedSession(agentSessions: AgentSession[]): AgentSession 
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
 }
 
-/**
- * Returns true when the most recent terminal (completed or failed) review
- * session for this PR ended in failure. Used to detect the "Copilot wasn't
- * able to review any files" failure mode so the next review request can
- * include a draft → ready-for-review reset (GitHub's documented recovery).
- * A subsequent successful (completed) review on the same PR clears the
- * signal — we only reset when the *latest* review attempt failed.
- */
-function hasFailedLatestReviewSession(agentSessions: AgentSession[]): boolean {
-  const latestReviewSession = [...agentSessions]
-    .filter(
-      (session) =>
-        session.phase === "review" &&
-        (session.status === "completed" || session.status === "failed"),
-    )
-    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
-  return latestReviewSession?.status === "failed";
-}
-
-/**
- * Returns true when the most recent terminal session for `phase` failed
- * with `staleReason === "copilot-did-not-acknowledge"` AND no subsequent
- * successful (`completed`) session for the same phase has cleared it.
- * Used to set the `reassignCopilot` flag on the next action so the
- * executor unassigns + re-assigns Copilot before re-summoning.
- */
-function shouldReassignCopilotForPhase(
-  agentSessions: readonly AgentSession[],
-  phase: AgentSession["phase"],
-): boolean {
-  const latestTerminalForPhase = [...agentSessions]
-    .filter(
-      (session) =>
-        session.phase === phase &&
-        (session.status === "completed" || session.status === "failed"),
-    )
-    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
-  return (
-    latestTerminalForPhase?.status === "failed" &&
-    (latestTerminalForPhase.staleReason === "copilot-did-not-acknowledge" ||
-      latestTerminalForPhase.staleReason === "copilot-stopped-with-error")
-  );
-}
-
 function planPullRequestAction(
   pullRequest: PullRequest,
   issueNumbers: readonly number[],
@@ -219,59 +155,8 @@ function planPullRequestAction(
     return undefined;
   }
 
-  // A PR whose title is still `[WIP] …` (or `wip: …`) is not ready for
-  // review or merge. Copilot opens its draft PRs with that prefix while
-  // it is still pushing commits and removes it once the change is
-  // complete. Normally we skip the PR entirely until the title is
-  // cleaned up so we never request a review against — let alone merge —
-  // a work-in-progress PR.
-  //
-  // Recovery exception: when the most recent Copilot cloud-agent run on
-  // this PR's branch ended in failure (typically rate-limit exhaustion
-  // or a transient infrastructure error) AND no later successful agent
-  // run has happened since, Copilot will never on its own resume work
-  // on the draft. Two distinct sub-cases:
-  //
-  //   (a) Zero file changes — Copilot's run aborted before doing any
-  //       implementation work. The branch carries only the stock
-  //       "Initial plan" commit and the PR body is the pre-work
-  //       template. Re-assigning Copilot to the issue with this
-  //       half-built branch in place is unreliable; abandon the empty
-  //       PR and let Copilot start fresh on a clean branch.
-  //
-  //   (b) Some file changes already exist — Copilot made progress
-  //       before crashing. Re-assigning to the linked issue is the
-  //       safer recovery; Copilot picks the existing branch back up.
-  if (isWorkInProgressPullRequest(pullRequest)) {
-    if (pullRequest.copilotLastAgentRunFailed && primaryIssueNumber !== undefined) {
-      if (pullRequest.changedFiles === 0) {
-        return {
-          type: "abandon-empty-pull-request",
-          issueNumber: primaryIssueNumber,
-          pullRequestNumber: pullRequest.number,
-        };
-      }
-      return {
-        type: "start-implementation",
-        issueNumber: primaryIssueNumber,
-        reassignCopilot: true,
-      };
-    }
-    return undefined;
-  }
-
   const latestCompletedSession = getLatestCompletedSession(relevantSessions);
-  // When the most recent Copilot review attempt failed (typically the
-  // "Copilot wasn't able to review any files in this pull request." message
-  // — reconcile fails those review sessions), the next review request must
-  // first toggle the PR draft → ready-for-review to reset Copilot's review
-  // state. Without this reset Copilot tends to ignore the new review
-  // request and the orchestrator spins re-requesting a review that never
-  // arrives.
-  const shouldResetDraftStateBeforeReview = hasFailedLatestReviewSession(relevantSessions);
   const completedSessionIssueNumber = latestCompletedSession?.issueNumber;
-  // Keep PR-level work attached to the issue that most recently advanced this PR when possible.
-  // For PRs with no linked issue, actionIssueNumber stays undefined.
   const actionIssueNumber =
     completedSessionIssueNumber !== undefined &&
     issueNumbers.includes(completedSessionIssueNumber)
@@ -290,50 +175,23 @@ function planPullRequestAction(
     return { ...action, issueNumber: actionIssueNumber };
   }
 
-  // Merge conflicts take priority over the normal review/merge flow. We ask
-  // Copilot to resolve them before proceeding; once the head SHA changes
-  // (Copilot pushed a resolution) the resolve-conflicts session completes and
-  // the normal flow resumes on the next iteration.
+  // Merge conflicts take priority over the normal review/merge flow.
   if (pullRequest.hasMergeConflicts) {
-    const reassignCopilot = shouldReassignCopilotForPhase(
-      relevantSessions,
-      "resolve-conflicts",
-    );
     return withIssueNumber({
       type: "resolve-conflicts",
       pullRequestNumber: pullRequest.number,
       pullRequestHeadSha: pullRequest.headSha,
-      ...(reassignCopilot ? { reassignCopilot: true } : {}),
     });
   }
 
-  // A PR cannot be considered "done" until its status checks (CI workflows,
-  // required status contexts, etc.) have settled green. This gate sits
-  // ahead of every code path that would advance the PR toward merge:
-  //
-  //   - "failure": ask Copilot to investigate and fix the failing checks
-  //     before re-considering the PR for review / merge. Modeled as its
-  //     own session phase so reconciliation can detect a head SHA change
-  //     (Copilot pushed a fix) and resume the normal flow.
-  //   - "pending": at least one check is still running and none have
-  //     failed yet. Wait silently — emitting no action — until the rollup
-  //     settles. Re-reviewing or merging now would race the checks.
-  //   - "success" / "none": proceed normally.
-  //
-  // We intentionally place this gate AFTER the merge-conflicts handling
-  // (Copilot can't run checks against a branch that won't merge) but
-  // BEFORE every merge-bound branch below.
+  // Status-check gate: never advance to final-description / merge while
+  // checks are failing or still running.
   const mergeGateAction = ((): OrchestratorAction | undefined | "proceed" => {
     if (pullRequest.checksStatus === "failure") {
-      const reassignCopilot = shouldReassignCopilotForPhase(
-        relevantSessions,
-        "address-failing-checks",
-      );
       return withIssueNumber({
         type: "address-failing-checks",
         pullRequestNumber: pullRequest.number,
         pullRequestHeadSha: pullRequest.headSha,
-        ...(reassignCopilot ? { reassignCopilot: true } : {}),
       });
     }
     if (pullRequest.checksStatus === "pending") {
@@ -342,29 +200,21 @@ function planPullRequestAction(
     return "proceed";
   })();
 
-  // After Copilot pushed a fix for failing checks, the head SHA has changed
-  // and we want a fresh Copilot review of the updated code. This is the
-  // same treatment given to a completed address-review-comments or
-  // resolve-conflicts phase.
+  // After Claude pushed a fix for failing checks, re-review the updated code.
   if (latestCompletedSession?.phase === "address-failing-checks") {
     if (mergeGateAction !== "proceed") {
       return mergeGateAction;
     }
     return withIssueNumber({
-      type: "request-review",
+      type: "review-pull-request",
       pullRequestNumber: pullRequest.number,
-      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
+      pullRequestHeadSha: pullRequest.headSha,
     });
   }
 
-  // Authoritative GraphQL signal: the Copilot review bot has already
-  // submitted a clean review on the current head SHA (no comments, no changes
-  // requested). The PR is ready to merge — never re-request a review, just
-  // advance to the final-description / merge lane. This short-circuits the
-  // request-review fallbacks below and prevents the loop where each
-  // iteration re-asks Copilot to review a PR it has already approved.
+  // Clean review on the current head SHA → advance to final-description.
   if (
-    pullRequest.hasCleanCopilotReviewOnHead &&
+    pullRequest.hasCleanReviewOnHead &&
     latestCompletedSession?.phase !== "final-description"
   ) {
     if (mergeGateAction !== "proceed") {
@@ -382,17 +232,15 @@ function planPullRequestAction(
 
   if (latestCompletedSession?.phase === "review") {
     const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
-    if (reviewCommentCount > 0) {
-      const reassignCopilot = shouldReassignCopilotForPhase(
-        relevantSessions,
-        "address-review-comments",
-      );
+    if (reviewCommentCount > 0 || pullRequest.unresolvedReviewCommentCount > 0) {
       return withIssueNumber({
         type: "address-review-comments",
         pullRequestNumber: pullRequest.number,
         pullRequestHeadSha: pullRequest.headSha,
-        reviewCommentCount,
-        ...(reassignCopilot ? { reassignCopilot: true } : {}),
+        unresolvedReviewCommentCount: Math.max(
+          reviewCommentCount,
+          pullRequest.unresolvedReviewCommentCount,
+        ),
       });
     }
 
@@ -425,59 +273,43 @@ function planPullRequestAction(
       });
     }
 
-    if (pullRequest.draft) {
-      return undefined;
-    }
-
-    if (mergeGateAction !== "proceed") {
-      return mergeGateAction;
-    }
-    return withIssueNumber({
-      type: "merge-pull-request",
-      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
-      pullRequestNumber: pullRequest.number,
-      pullRequestBody: buildMergedPullRequestBody(
-        pullRequest.body,
-        pullRequest.closingIssueNumbers,
-        generatedDescription,
-      ),
-    });
+    // The squash merge is performed as part of the write-final-description
+    // action itself, so by the time the session is completed there is
+    // nothing left to do. (The PR will disappear from listOpenPullRequests
+    // on the next iteration.)
+    return undefined;
   }
 
   if (latestCompletedSession?.phase === "address-review-comments") {
     return withIssueNumber({
-      type: "request-review",
+      type: "review-pull-request",
       pullRequestNumber: pullRequest.number,
-      resolveReviewThreads: true,
-      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
+      pullRequestHeadSha: pullRequest.headSha,
     });
   }
 
   if (latestCompletedSession?.phase === "resolve-conflicts") {
-    // Conflicts were resolved and Copilot pushed new code — start a fresh review.
     return withIssueNumber({
-      type: "request-review",
+      type: "review-pull-request",
       pullRequestNumber: pullRequest.number,
-      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
+      pullRequestHeadSha: pullRequest.headSha,
     });
   }
 
   if (latestCompletedSession?.phase === "implementation") {
     return withIssueNumber({
-      type: "request-review",
+      type: "review-pull-request",
       pullRequestNumber: pullRequest.number,
-      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
+      pullRequestHeadSha: pullRequest.headSha,
     });
   }
 
   if (!latestCompletedSession) {
-    // No prior session has touched this PR — kick off a Copilot review. Draft
-    // PRs are still eligible: drafts opened by the coding agent need the
-    // initial review pass before they're ready to mark non-draft.
+    // No prior session has touched this PR — request the first review.
     return withIssueNumber({
-      type: "request-review",
+      type: "review-pull-request",
       pullRequestNumber: pullRequest.number,
-      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
+      pullRequestHeadSha: pullRequest.headSha,
     });
   }
 
@@ -580,25 +412,13 @@ export function buildPlan(
     return blockers.every((blocker) => !openIssueNumbers.has(blocker));
   });
 
-  // Prioritize bugs ahead of other issue types. GitHub's native issue Type
-  // (distinct from labels) is the authoritative signal — an unblocked open
-  // bug should always be picked before any feature/task/chore work,
-  // regardless of which was filed first. Within the same priority bucket the
-  // existing createdAt ordering is preserved (oldest first).
+  // Prioritize bugs ahead of other types.
   const prioritizedEligibleIssues = [...eligibleIssues].sort(
     (left, right) => issuePriority(left) - issuePriority(right),
   );
 
   for (const issue of prioritizedEligibleIssues.slice(0, remainingCapacity)) {
-    const reassignCopilot = shouldReassignCopilotForPhase(
-      snapshot.agentSessions.filter((session) => session.issueNumber === issue.number),
-      "implementation",
-    );
-    actions.push({
-      type: "start-implementation",
-      issueNumber: issue.number,
-      ...(reassignCopilot ? { reassignCopilot: true } : {}),
-    });
+    actions.push({ type: "start-implementation", issueNumber: issue.number });
   }
 
   return { actions, blockedIssueNumbers: blockedIssueIndex };
