@@ -93,6 +93,8 @@ function describeAction(
       return `Request review for PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "address-review-comments":
       return `Address ${action.reviewCommentCount} review comment(s) on PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+    case "address-failing-checks":
+      return `Address failing status checks on PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "write-final-description":
       return `Write final description for PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "merge-pull-request":
