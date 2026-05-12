@@ -1031,6 +1031,46 @@ export class GitHubClient {
   }
 
   /**
+   * Returns the subset of Copilot "finished work" timeline events that
+   * indicate a *failure* (e.g. `copilot_work_finished_failure`). Used by
+   * the reconciler to distinguish a clean Copilot turn (where the agent
+   * acknowledged the summon, ran, and finished) from a turn that aborted
+   * — most commonly because the user's premium-request quota was
+   * exhausted. The plain `listCopilotFinishedWorkEvents` method continues
+   * to return *all* finish events (success and failure both) so the
+   * acknowledgment-signal check remains a superset.
+   */
+  async listCopilotFailedFinishEvents(
+    pullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string }>> {
+    interface TimelineEvent {
+      event?: string;
+      created_at?: string;
+    }
+    const events = await this.getAllPages<TimelineEvent>(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/timeline`,
+    );
+    return events
+      .filter((event): event is TimelineEvent & { created_at: string } => {
+        if (!event.created_at) return false;
+        const name = (event.event ?? "").toLowerCase();
+        if (!name.includes("copilot")) return false;
+        // Match `copilot_work_finished_failure` and anything similar that
+        // GitHub introduces — any copilot event whose name carries both a
+        // "finish/complete/end" token and a "fail/error/abort/cancel" token.
+        const finishedToken =
+          name.includes("finish") || name.includes("complete") || name.includes("end");
+        const failureToken =
+          name.includes("fail") ||
+          name.includes("error") ||
+          name.includes("abort") ||
+          name.includes("cancel");
+        return finishedToken && failureToken;
+      })
+      .map((event) => ({ createdAt: event.created_at }));
+  }
+
+  /**
    * Returns recent "Copilot stopped work due to an error" timeline events
    * on a pull request, including any message body the event carries.
    * The Copilot coding agent posts these when it aborts a session for
@@ -1077,6 +1117,135 @@ export class GitHubClient {
         createdAt: event.created_at,
         message: extractEventMessage(event),
       }));
+  }
+
+  /**
+   * Fetches plain-text log content from recent failed Copilot cloud-agent
+   * workflow runs on the given head branch. The Copilot coding agent's
+   * `copilot_work_finished_failure` timeline event does NOT carry the
+   * human-visible error body (e.g. "You've hit your rate limit. Please
+   * wait for your limit to reset in N minutes…"); that text only appears
+   * in the workflow run logs. Returning the raw log text lets the
+   * rate-limit detector apply its existing pattern match.
+   *
+   * Filters by `head_branch` (typically `pullRequest.headRefName`) and
+   * `conclusion === "failure"`. Caller can further constrain by
+   * `sinceIso` (ISO-8601) — runs created strictly before that timestamp
+   * are skipped. Best-effort: returns `[]` on 404 / permission errors,
+   * and silently skips runs whose logs cannot be retrieved.
+   */
+  async listRecentCopilotAgentFailureLogs(
+    headBranch: string,
+    sinceIso?: string,
+  ): Promise<
+    Array<{
+      runId: number;
+      runName: string;
+      createdAt: string;
+      finishedAt: string;
+      logText: string;
+    }>
+  > {
+    interface WorkflowRunResponse {
+      id: number;
+      name: string | null;
+      head_branch: string | null;
+      created_at: string;
+      updated_at: string | null;
+      status: string | null;
+      conclusion: string | null;
+    }
+    interface WorkflowJobResponse {
+      id: number;
+      name: string | null;
+      conclusion: string | null;
+    }
+
+    const sinceMs = sinceIso ? Date.parse(sinceIso) : 0;
+
+    // The Copilot cloud-agent runs are dispatched events. Pull recent
+    // failed runs on this branch; GitHub does not expose a single-branch
+    // filter for failed conclusions, so filter client-side.
+    let response: { workflow_runs?: WorkflowRunResponse[] };
+    try {
+      // `event=dynamic` matches Copilot's dispatched agent runs.
+      const encodedBranch = encodeURIComponent(headBranch);
+      response = await this.request<{ workflow_runs?: WorkflowRunResponse[] }>(
+        `/repos/${this.options.owner}/${this.options.repo}/actions/runs` +
+          `?branch=${encodedBranch}&per_page=20`,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
+        return [];
+      }
+      throw error;
+    }
+
+    const failedRuns = (response.workflow_runs ?? []).filter((run) => {
+      if (run.conclusion !== "failure") return false;
+      if (run.head_branch !== headBranch) return false;
+      if (sinceMs > 0 && Date.parse(run.created_at) < sinceMs) return false;
+      // Only Copilot-agent runs are interesting. GitHub names them
+      // "Running Copilot cloud agent" or "Addressing comment on PR #N".
+      const name = (run.name ?? "").toLowerCase();
+      return name.includes("copilot") || name.includes("addressing comment");
+    });
+
+    const results: Array<{
+      runId: number;
+      runName: string;
+      createdAt: string;
+      finishedAt: string;
+      logText: string;
+    }> = [];
+
+    for (const run of failedRuns) {
+      let jobs: { jobs?: WorkflowJobResponse[] };
+      try {
+        jobs = await this.request<{ jobs?: WorkflowJobResponse[] }>(
+          `/repos/${this.options.owner}/${this.options.repo}/actions/runs/${run.id}/jobs`,
+        );
+      } catch {
+        continue;
+      }
+      // Concatenate logs from every failed job in the run.
+      const failedJobs = (jobs.jobs ?? []).filter((job) => job.conclusion === "failure");
+      let combinedLog = "";
+      for (const job of failedJobs) {
+        try {
+          const logResponse = await fetch(
+            `${this.apiBaseUrl}/repos/${this.options.owner}/${this.options.repo}/actions/jobs/${job.id}/logs`,
+            {
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: `Bearer ${this.options.token}`,
+                "User-Agent": "vibrator",
+              },
+            },
+          );
+          if (!logResponse.ok) continue;
+          combinedLog += "\n" + (await logResponse.text());
+        } catch {
+          // Best-effort — skip jobs whose logs we cannot fetch.
+        }
+      }
+      if (combinedLog.length === 0) continue;
+      results.push({
+        runId: run.id,
+        runName: run.name ?? "",
+        createdAt: run.created_at,
+        // For a completed workflow run, `updated_at` is when GitHub last
+        // wrote to the run — effectively when it finished. The agent's
+        // rate-limit message ("wait N minutes") is emitted near the end
+        // of the run, so anchoring the reset-window calculation here is
+        // far more accurate than `created_at` (which can be many minutes
+        // earlier).
+        finishedAt: run.updated_at ?? run.created_at,
+        logText: combinedLog,
+      });
+    }
+
+    return results;
   }
 
   private async listUnresolvedPullRequestReviewThreadIds(

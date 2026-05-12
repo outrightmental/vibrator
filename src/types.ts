@@ -71,7 +71,18 @@ export type AgentSessionStaleReason =
   | "copilot-review-failed"
   | "copilot-review-incomplete"
   | "copilot-review-comments-not-addressed"
-  | "copilot-did-not-acknowledge";
+  | "copilot-did-not-acknowledge"
+  /**
+   * Copilot emitted a `copilot_work_finished_failure` timeline event for
+   * this session (its cloud-agent workflow run aborted, typically because
+   * the user's premium-request quota was exhausted) AND made no
+   * observable progress (no head SHA change, no PR body change, …)
+   * before doing so. Surfacing this distinctly from
+   * `copilot-did-not-acknowledge` lets the orchestrator retry instead of
+   * waiting out the session-timeout, and lets the rate-limit scanner
+   * decide independently whether to pause the loop.
+   */
+  | "copilot-stopped-with-error";
 
 export interface AgentSession {
   id: string;

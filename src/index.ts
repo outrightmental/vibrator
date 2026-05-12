@@ -326,6 +326,10 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       case "copilot-did-not-acknowledge":
         reason = "Copilot never acknowledged the request (no start/finish event or eyes reaction)";
         break;
+      case "copilot-stopped-with-error":
+        reason =
+          "Copilot's agent run finished with an error (likely rate-limit or transient failure) before making progress";
+        break;
       default:
         reason = "unknown reason";
     }
@@ -380,6 +384,48 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     } catch (error) {
       note(
         `◦ failed to scan PR #${pullRequest.number} timeline: ${(error as Error).message}`,
+        2,
+      );
+    }
+
+    // The "Copilot stopped work due to an error" timeline event no longer
+    // carries the rate-limit message body — GitHub now surfaces it only in
+    // the cloud-agent workflow run logs. Scan recent failed Copilot agent
+    // runs on this PR's head branch and apply the same detector to the
+    // combined log text so the pause actually triggers.
+    try {
+      const failureLogs = await gitHubClient.listRecentCopilotAgentFailureLogs(
+        pullRequest.headRefName,
+      );
+      for (const run of failureLogs) {
+        // Anchor the detector to the workflow run's finishedAt so old
+        // logs don't produce a perpetually-fresh "now + N minutes" window
+        // every iteration. (The rate-limit message is emitted near the
+        // run's end, so `finishedAt` ≈ when the agent reported it.) Skip
+        // detections whose reset instant is already in the past — that
+        // rate-limit window has elapsed and is not actionable.
+        const runFinishedAt = new Date(run.finishedAt);
+        const detection = detectRateLimitMessage(run.logText, runFinishedAt);
+        if (!detection) continue;
+        if (detection.resetAt.getTime() <= Date.now()) {
+          continue;
+        }
+        if (
+          !detectedRateLimitResetAt ||
+          detection.resetAt.getTime() > detectedRateLimitResetAt.getTime()
+        ) {
+          detectedRateLimitResetAt = detection.resetAt;
+        }
+        note(
+          `◦ rate-limit message in workflow run #${run.runId} ("${run.runName}") on PR #${pullRequest.number} — ` +
+            `reset at ${detection.resetAt.toISOString()}` +
+            (detection.durationWasParsed ? "" : " (fallback window)"),
+          2,
+        );
+      }
+    } catch (error) {
+      note(
+        `◦ failed to scan workflow logs for PR #${pullRequest.number}: ${(error as Error).message}`,
         2,
       );
     }
