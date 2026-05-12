@@ -736,6 +736,18 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     );
     await runCommand("git", ["fetch", "origin", "--prune"], { cwd: repoDir });
 
+    // Abort any rebase or merge left in progress by a previous iteration so
+    // that `gh pr checkout --force` can proceed cleanly.
+    if (
+      (await pathExists(join(repoDir, ".git", "rebase-merge"))) ||
+      (await pathExists(join(repoDir, ".git", "rebase-apply")))
+    ) {
+      await runCommand("git", ["rebase", "--abort"], { cwd: repoDir });
+    }
+    if (await pathExists(join(repoDir, ".git", "MERGE_HEAD"))) {
+      await runCommand("git", ["merge", "--abort"], { cwd: repoDir });
+    }
+
     await runCommand(
       this.ghCommand,
       ["pr", "checkout", String(params.pullRequestNumber), "--force"],
