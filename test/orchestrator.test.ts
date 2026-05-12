@@ -36,6 +36,7 @@ function createPullRequest(
     hasMergeConflicts: overrides.hasMergeConflicts ?? false,
     hasCleanCopilotReviewOnHead: overrides.hasCleanCopilotReviewOnHead ?? false,
     copilotLastAgentRunFailed: overrides.copilotLastAgentRunFailed ?? false,
+    changedFiles: overrides.changedFiles ?? 1,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,
@@ -869,6 +870,10 @@ test("buildPlan recovers a [WIP] PR by re-assigning Copilot when its last agent 
         title: "[WIP] Add email report delivery with magic link",
         linkedIssueNumbers: [42],
         copilotLastAgentRunFailed: true,
+        // Some file changes already exist — Copilot got partway through
+        // before crashing. The recovery is to re-assign to the issue
+        // (Copilot picks the existing branch back up).
+        changedFiles: 3,
       }),
     ],
     agentSessions: [],
@@ -878,6 +883,32 @@ test("buildPlan recovers a [WIP] PR by re-assigning Copilot when its last agent 
 
   assert.deepEqual(plan.actions, [
     { type: "start-implementation", issueNumber: 42, reassignCopilot: true },
+  ]);
+});
+
+test("buildPlan abandons an empty [WIP] PR (0 changedFiles) when its last agent run failed", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 42 })],
+    pullRequests: [
+      createPullRequest({
+        number: 117,
+        title: "[WIP] Add email report delivery with magic link",
+        linkedIssueNumbers: [42],
+        copilotLastAgentRunFailed: true,
+        changedFiles: 0,
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "abandon-empty-pull-request",
+      issueNumber: 42,
+      pullRequestNumber: 117,
+    },
   ]);
 });
 

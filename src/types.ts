@@ -43,6 +43,15 @@ export interface PullRequest {
    * up the existing draft PR and continue.
    */
   copilotLastAgentRunFailed: boolean;
+  /**
+   * Total number of files changed by this PR vs its base branch. Zero
+   * means Copilot opened the draft PR (with the stock "Initial plan"
+   * commit) but never managed to push any actual code changes — the
+   * usual fingerprint of a Copilot session that crashed before doing
+   * any work. Used by the orchestrator to abandon and restart such PRs
+   * instead of leaving them stuck in `[WIP] …` state forever.
+   */
+  changedFiles: number;
   linkedIssueNumbers: number[];
   closingIssueNumbers: number[];
 }
@@ -188,6 +197,20 @@ export type OrchestratorAction =
       closingIssueNumbers: number[];
       pullRequestNumber: number;
       pullRequestBody: string;
+    }
+  | {
+      /**
+       * Close a draft pull request that Copilot opened but never made
+       * any file changes on (its cloud-agent run aborted before
+       * implementing anything — typically rate-limit exhaustion). After
+       * closing the PR, Copilot is unassigned and re-assigned to the
+       * linked issue so it starts a fresh attempt with a clean branch.
+       * Only emitted when a `[WIP] …` draft PR has 0 changed files,
+       * `copilotLastAgentRunFailed`, and a linked issue.
+       */
+      type: "abandon-empty-pull-request";
+      issueNumber: number;
+      pullRequestNumber: number;
     };
 
 export interface OrchestratorPlan {

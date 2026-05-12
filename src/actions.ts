@@ -17,6 +17,7 @@ export interface ActionGitHubClient {
   resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void>;
   requestCopilotReview(pullRequestNumber: number): Promise<void>;
   resetPullRequestForCopilotReview(pullRequestNumber: number): Promise<void>;
+  closePullRequest(pullRequestNumber: number): Promise<void>;
 }
 
 export interface ActionLocalCopilotChatClient {
@@ -188,6 +189,27 @@ export async function executeAction(
           pullRequestHeadSha: action.pullRequestHeadSha,
           promptCommentId,
         },
+      });
+      return;
+    }
+    case "abandon-empty-pull-request": {
+      // Post a brief explanatory comment so the trail of why the PR was
+      // closed is visible in the GitHub UI, then close the PR. After
+      // closing, cycle the Copilot assignee on the linked issue so the
+      // coding agent starts a fresh attempt on a clean branch.
+      await gitHubClient.createIssueComment(
+        action.pullRequestNumber,
+        "Closing this draft PR because Copilot's coding-agent run aborted " +
+          "before any file changes were pushed (typically a rate-limit or " +
+          "transient failure). Re-assigning the linked issue so Copilot " +
+          "starts a fresh attempt with a clean branch.",
+      );
+      await gitHubClient.closePullRequest(action.pullRequestNumber);
+      await gitHubClient.unassignIssueFromCopilot(action.issueNumber);
+      await gitHubClient.assignIssueToCopilot(action.issueNumber);
+      await sessionStore.createSession({
+        issueNumber: action.issueNumber,
+        phase: "implementation",
       });
       return;
     }

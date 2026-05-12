@@ -376,6 +376,7 @@ export class GitHubClient {
         hasMergeConflicts: graphQLData?.hasMergeConflicts ?? false,
         hasCleanCopilotReviewOnHead: graphQLData?.hasCleanCopilotReviewOnHead ?? false,
         copilotLastAgentRunFailed: failureStates[index] ?? false,
+        changedFiles: graphQLData?.changedFiles ?? 0,
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         linkedIssueNumbers,
@@ -391,6 +392,7 @@ export class GitHubClient {
         closingIssueNumbers: number[];
         hasMergeConflicts: boolean;
         hasCleanCopilotReviewOnHead: boolean;
+        changedFiles: number;
       }
     >
   > {
@@ -409,6 +411,7 @@ export class GitHubClient {
             number: number;
             mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
             headRefOid: string;
+            changedFiles: number;
             closingIssuesReferences: { nodes: Array<{ number: number }> } | null;
             reviews: { nodes: ReviewNode[] } | null;
           }>;
@@ -423,6 +426,7 @@ export class GitHubClient {
         closingIssueNumbers: number[];
         hasMergeConflicts: boolean;
         hasCleanCopilotReviewOnHead: boolean;
+        changedFiles: number;
       }
     >();
     let after: string | null = null;
@@ -437,6 +441,7 @@ export class GitHubClient {
                   number
                   mergeable
                   headRefOid
+                  changedFiles
                   closingIssuesReferences(first: 50) { nodes { number } }
                   reviews(last: 30) {
                     nodes {
@@ -489,6 +494,7 @@ export class GitHubClient {
           // UNKNOWN means GitHub hasn't computed mergeability yet — treat conservatively as no conflict.
           hasMergeConflicts: node.mergeable === "CONFLICTING",
           hasCleanCopilotReviewOnHead,
+          changedFiles: node.changedFiles,
         });
       }
 
@@ -689,6 +695,25 @@ export class GitHubClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ merge_method: "squash" }),
     });
+  }
+
+  /**
+   * Closes a pull request without merging it. Used by the orchestrator to
+   * abandon a draft PR that Copilot opened but never managed to add any
+   * file changes to (typically because its cloud-agent run aborted before
+   * implementation began — most commonly a rate-limit exhaustion). After
+   * closing, the linked issue is re-assigned to Copilot to trigger a
+   * fresh attempt with a clean branch.
+   */
+  async closePullRequest(pullRequestNumber: number): Promise<void> {
+    await this.request(
+      `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: "closed" }),
+      },
+    );
   }
 
   /**

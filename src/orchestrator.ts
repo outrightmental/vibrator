@@ -230,11 +230,27 @@ function planPullRequestAction(
   // this PR's branch ended in failure (typically rate-limit exhaustion
   // or a transient infrastructure error) AND no later successful agent
   // run has happened since, Copilot will never on its own resume work
-  // on the draft. Re-assign Copilot to the primary linked issue so it
-  // picks the existing branch back up and continues. Without this the
-  // PR is stuck in `[WIP] …` state forever.
+  // on the draft. Two distinct sub-cases:
+  //
+  //   (a) Zero file changes — Copilot's run aborted before doing any
+  //       implementation work. The branch carries only the stock
+  //       "Initial plan" commit and the PR body is the pre-work
+  //       template. Re-assigning Copilot to the issue with this
+  //       half-built branch in place is unreliable; abandon the empty
+  //       PR and let Copilot start fresh on a clean branch.
+  //
+  //   (b) Some file changes already exist — Copilot made progress
+  //       before crashing. Re-assigning to the linked issue is the
+  //       safer recovery; Copilot picks the existing branch back up.
   if (isWorkInProgressPullRequest(pullRequest)) {
     if (pullRequest.copilotLastAgentRunFailed && primaryIssueNumber !== undefined) {
+      if (pullRequest.changedFiles === 0) {
+        return {
+          type: "abandon-empty-pull-request",
+          issueNumber: primaryIssueNumber,
+          pullRequestNumber: pullRequest.number,
+        };
+      }
       return {
         type: "start-implementation",
         issueNumber: primaryIssueNumber,
