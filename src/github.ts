@@ -319,7 +319,40 @@ export class GitHubClient {
       this.fetchOpenPullRequestGraphQLData(),
     ]);
 
-    return pullRequests.map((pullRequest) => {
+    // Per-PR timeline scan for Copilot agent failure state. The
+    // `copilot_work_finished_failure` timeline event is not exposed via
+    // GraphQL's typed `timelineItems(itemTypes:[…])` filter, so we fall
+    // back to REST timeline calls. Done in parallel to minimize latency
+    // for repos with several open PRs.
+    const failureStates = await Promise.all(
+      pullRequests.map(async (pullRequest) => {
+        try {
+          const [finishedEvents, failedFinishEvents] = await Promise.all([
+            this.listCopilotFinishedWorkEvents(pullRequest.number),
+            this.listCopilotFailedFinishEvents(pullRequest.number),
+          ]);
+          // `failedFinishEvents` is a subset of `finishedEvents` (any
+          // failure-finish is also a finish). Compute the most-recent
+          // finish timestamp across each set and report a failure iff the
+          // newest event in `failedFinishEvents` matches the newest event
+          // in `finishedEvents` (i.e. no successful finish has happened
+          // since the failure).
+          const newest = (events: Array<{ createdAt: string }>) =>
+            events.reduce(
+              (max, event) =>
+                Math.max(max, Date.parse(event.createdAt) || 0),
+              0,
+            );
+          const newestFinish = newest(finishedEvents);
+          const newestFailure = newest(failedFinishEvents);
+          return newestFailure > 0 && newestFailure >= newestFinish;
+        } catch {
+          return false;
+        }
+      }),
+    );
+
+    return pullRequests.map((pullRequest, index) => {
       const textForRegex = `${pullRequest.title}\n${pullRequest.body ?? ""}`;
       // GitHub's "Development" sidebar / closingIssuesReferences is the
       // authoritative source for which issues a PR closes — PRs opened by
@@ -342,6 +375,9 @@ export class GitHubClient {
         draft: pullRequest.draft,
         hasMergeConflicts: graphQLData?.hasMergeConflicts ?? false,
         hasCleanCopilotReviewOnHead: graphQLData?.hasCleanCopilotReviewOnHead ?? false,
+        copilotLastAgentRunFailed: failureStates[index] ?? false,
+        changedFiles: graphQLData?.changedFiles ?? 0,
+        checksStatus: graphQLData?.checksStatus ?? "none",
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         linkedIssueNumbers,
@@ -357,6 +393,8 @@ export class GitHubClient {
         closingIssueNumbers: number[];
         hasMergeConflicts: boolean;
         hasCleanCopilotReviewOnHead: boolean;
+        changedFiles: number;
+        checksStatus: "success" | "failure" | "pending" | "none";
       }
     >
   > {
@@ -375,8 +413,17 @@ export class GitHubClient {
             number: number;
             mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
             headRefOid: string;
+            changedFiles: number;
             closingIssuesReferences: { nodes: Array<{ number: number }> } | null;
             reviews: { nodes: ReviewNode[] } | null;
+            commits: {
+              nodes: Array<{
+                commit: {
+                  oid: string;
+                  statusCheckRollup: { state: string } | null;
+                };
+              }>;
+            } | null;
           }>;
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
         };
@@ -389,6 +436,8 @@ export class GitHubClient {
         closingIssueNumbers: number[];
         hasMergeConflicts: boolean;
         hasCleanCopilotReviewOnHead: boolean;
+        changedFiles: number;
+        checksStatus: "success" | "failure" | "pending" | "none";
       }
     >();
     let after: string | null = null;
@@ -403,6 +452,7 @@ export class GitHubClient {
                   number
                   mergeable
                   headRefOid
+                  changedFiles
                   closingIssuesReferences(first: 50) { nodes { number } }
                   reviews(last: 30) {
                     nodes {
@@ -412,6 +462,14 @@ export class GitHubClient {
                       commit { oid }
                       body
                       comments { totalCount }
+                    }
+                  }
+                  commits(last: 1) {
+                    nodes {
+                      commit {
+                        oid
+                        statusCheckRollup { state }
+                      }
                     }
                   }
                 }
@@ -450,11 +508,37 @@ export class GitHubClient {
             reviewCommentCount: review.comments.totalCount,
           });
         });
+        // Translate GitHub's StatusState enum on the head commit's rollup
+        // into the simplified four-state field the orchestrator consumes.
+        // EXPECTED/PENDING → pending; FAILURE/ERROR → failure;
+        // SUCCESS → success; missing rollup (or only the head-commit
+        // node is missing it) → none. We only inspect the rollup on the
+        // last commit returned by the GraphQL query — which is the
+        // head commit — to avoid being misled by older commits whose
+        // checks have since been superseded.
+        const headCommitNode = node.commits?.nodes[0]?.commit;
+        const rollupState = (
+          headCommitNode?.oid === node.headRefOid
+            ? headCommitNode?.statusCheckRollup?.state
+            : undefined
+        )?.toUpperCase();
+        let checksStatus: "success" | "failure" | "pending" | "none";
+        if (rollupState === "FAILURE" || rollupState === "ERROR") {
+          checksStatus = "failure";
+        } else if (rollupState === "PENDING" || rollupState === "EXPECTED") {
+          checksStatus = "pending";
+        } else if (rollupState === "SUCCESS") {
+          checksStatus = "success";
+        } else {
+          checksStatus = "none";
+        }
         result.set(node.number, {
           closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
           // UNKNOWN means GitHub hasn't computed mergeability yet — treat conservatively as no conflict.
           hasMergeConflicts: node.mergeable === "CONFLICTING",
           hasCleanCopilotReviewOnHead,
+          changedFiles: node.changedFiles,
+          checksStatus,
         });
       }
 
@@ -655,6 +739,25 @@ export class GitHubClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ merge_method: "squash" }),
     });
+  }
+
+  /**
+   * Closes a pull request without merging it. Used by the orchestrator to
+   * abandon a draft PR that Copilot opened but never managed to add any
+   * file changes to (typically because its cloud-agent run aborted before
+   * implementation began — most commonly a rate-limit exhaustion). After
+   * closing, the linked issue is re-assigned to Copilot to trigger a
+   * fresh attempt with a clean branch.
+   */
+  async closePullRequest(pullRequestNumber: number): Promise<void> {
+    await this.request(
+      `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: "closed" }),
+      },
+    );
   }
 
   /**

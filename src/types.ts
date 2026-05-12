@@ -33,6 +33,45 @@ export interface PullRequest {
    * orchestrator must not request another review.
    */
   hasCleanCopilotReviewOnHead: boolean;
+  /**
+   * True when the most recent Copilot coding-agent workflow run on this
+   * PR's branch ended in failure AND no later successful Copilot work
+   * has finished since then. Used by the orchestrator to recover a PR
+   * left in a `[WIP] …` state by an aborted Copilot session (typically
+   * rate-limit exhaustion) — instead of skipping the PR forever, the
+   * orchestrator re-assigns Copilot to the linked issue so it can pick
+   * up the existing draft PR and continue.
+   */
+  copilotLastAgentRunFailed: boolean;
+  /**
+   * Total number of files changed by this PR vs its base branch. Zero
+   * means Copilot opened the draft PR (with the stock "Initial plan"
+   * commit) but never managed to push any actual code changes — the
+   * usual fingerprint of a Copilot session that crashed before doing
+   * any work. Used by the orchestrator to abandon and restart such PRs
+   * instead of leaving them stuck in `[WIP] …` state forever.
+   */
+  changedFiles: number;
+  /**
+   * Aggregated state of the head commit's status checks (CI workflows,
+   * required status contexts, etc.) sourced from GitHub's GraphQL
+   * `statusCheckRollup` on the most recent commit.
+   *
+   *   - `"success"`: every check has completed successfully (or no
+   *     checks have run AND none are required — see `"none"`).
+   *   - `"failure"`: at least one check has reported `FAILURE` or
+   *     `ERROR`. The orchestrator must not advance the PR to the
+   *     final-description / merge phase while this is true — it asks
+   *     Copilot to fix the failures instead.
+   *   - `"pending"`: at least one check is still running / queued
+   *     (`EXPECTED` or `PENDING`) and none have failed yet. The
+   *     orchestrator waits silently in this state — no new action is
+   *     emitted until the rollup settles.
+   *   - `"none"`: the PR's head commit has no associated status checks
+   *     at all. Treated as success for gating purposes — there is
+   *     nothing to wait on.
+   */
+  checksStatus: "success" | "failure" | "pending" | "none";
   linkedIssueNumbers: number[];
   closingIssueNumbers: number[];
 }
@@ -41,6 +80,7 @@ export type AgentSessionPhase =
   | "implementation"
   | "review"
   | "address-review-comments"
+  | "address-failing-checks"
   | "resolve-conflicts"
   | "final-description";
 
@@ -152,6 +192,25 @@ export type OrchestratorAction =
       reassignCopilot?: boolean;
     }
   | {
+      /**
+       * Ask Copilot to investigate and fix failing status checks (CI,
+       * required workflows) on this PR before the orchestrator advances
+       * the PR to the final-description / squash-merge phase. Emitted
+       * when `pullRequest.checksStatus === "failure"` at the point where
+       * the planner would otherwise have proceeded to merge.
+       */
+      type: "address-failing-checks";
+      issueNumber: number | undefined;
+      pullRequestNumber: number;
+      pullRequestHeadSha: string;
+      /**
+       * Unassign + re-assign Copilot on the PR before posting the @copilot
+       * prompt. Used after a prior `copilot-did-not-acknowledge` failure
+       * to nudge the coding agent into picking up the job.
+       */
+      reassignCopilot?: boolean;
+    }
+  | {
       type: "write-final-description";
       issueNumber: number | undefined;
       pullRequestNumber: number;
@@ -178,6 +237,20 @@ export type OrchestratorAction =
       closingIssueNumbers: number[];
       pullRequestNumber: number;
       pullRequestBody: string;
+    }
+  | {
+      /**
+       * Close a draft pull request that Copilot opened but never made
+       * any file changes on (its cloud-agent run aborted before
+       * implementing anything — typically rate-limit exhaustion). After
+       * closing the PR, Copilot is unassigned and re-assigned to the
+       * linked issue so it starts a fresh attempt with a clean branch.
+       * Only emitted when a `[WIP] …` draft PR has 0 changed files,
+       * `copilotLastAgentRunFailed`, and a linked issue.
+       */
+      type: "abandon-empty-pull-request";
+      issueNumber: number;
+      pullRequestNumber: number;
     };
 
 export interface OrchestratorPlan {

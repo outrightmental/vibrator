@@ -99,6 +99,13 @@ function describeAction(
       return `Merge PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "resolve-conflicts":
       return `Resolve merge conflicts in PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+    case "abandon-empty-pull-request":
+      return (
+        `Abandon empty draft PR #${action.pullRequestNumber} ` +
+        `(${gitHubClient.pullRequestUrl(action.pullRequestNumber)}) and re-assign ` +
+        `Copilot to issue #${action.issueNumber}${issueSuffix} ` +
+        `(${gitHubClient.issueUrl(action.issueNumber)})`
+      );
   }
 }
 
