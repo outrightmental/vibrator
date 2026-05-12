@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { GitHubClient } from "../src/github.js";
+import { GitHubClient, isCleanCopilotReview } from "../src/github.js";
 
 function countBraceBalance(value: string): number {
   let balance = 0;
@@ -162,4 +162,36 @@ test("listOpenPullRequests merges GitHub closingIssuesReferences with body-keywo
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("isCleanCopilotReview accepts both 'no comments' and 'no new comments' wordings", () => {
+  const base = {
+    authorLogin: "copilot-pull-request-reviewer",
+    state: "COMMENTED",
+    reviewCommentCount: 0,
+  };
+
+  assert.equal(
+    isCleanCopilotReview({
+      ...base,
+      body: "Copilot reviewed 3 files in this pull request and generated no comments.",
+    }),
+    true,
+  );
+
+  assert.equal(
+    isCleanCopilotReview({
+      ...base,
+      body: "Copilot reviewed 3 out of 3 changed files in this pull request and generated no new comments.",
+    }),
+    true,
+  );
+
+  assert.equal(
+    isCleanCopilotReview({
+      ...base,
+      body: "Copilot wasn't able to review any files in this pull request.",
+    }),
+    false,
+  );
 });

@@ -121,11 +121,11 @@ export const COPILOT_REVIEW_FAILURE_PATTERN = /wasn't able to review/i;
 /**
  * Pattern matching the success message Copilot posts when it has reviewed
  * the PR and found nothing worth commenting on (e.g. "Copilot reviewed N
- * files... and generated no comments."). Only reviews matching this body
- * (or an explicit APPROVED state) are accepted as a clean review that
- * authorizes squash-and-merge.
+ * files... and generated no comments." or "...generated no new comments.").
+ * Only reviews matching this body (or an explicit APPROVED state) are
+ * accepted as a clean review that authorizes squash-and-merge.
  */
-export const COPILOT_REVIEW_SUCCESS_PATTERN = /generated no comments/i;
+export const COPILOT_REVIEW_SUCCESS_PATTERN = /generated no (?:new )?comments/i;
 
 export function isFailedCopilotReview(review: {
   authorLogin?: string | undefined;
