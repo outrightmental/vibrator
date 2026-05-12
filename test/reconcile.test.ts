@@ -1293,3 +1293,142 @@ test("reconcileSessions fails implementation sessions when Copilot opened no PR 
     { id: "implementation-noack-1", staleReason: "copilot-did-not-acknowledge" },
   ]);
 });
+
+test("reconcileSessions fails review sessions when no Copilot review is present and no unresolved threads exist", async () => {
+  const completedSessions: string[] = [];
+  const failedSessionIds: Array<{ id: string; staleReason?: string }> = [];
+  const countUnresolvedCalls: number[] = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-incomplete-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "review",
+        createdAt: "2024-01-01T00:30:00.000Z",
+      }),
+    ],
+  };
+
+  const events = await runReconcile(
+    {
+      async countUnresolvedPullRequestReviewThreads(pr: number): Promise<number> {
+        countUnresolvedCalls.push(pr);
+        return 0;
+      },
+      async listPullRequestReviews() {
+        // A non-Copilot review (e.g. a human approver) submitted after the
+        // session began with no inline comment threads. This must NOT
+        // authorize merge because Copilot itself never produced a
+        // clean-review signal.
+        return [
+          {
+            submittedAt: "2024-01-01T01:00:00.000Z",
+            authorLogin: "some-human-reviewer",
+            state: "APPROVED",
+            body: "lgtm",
+          },
+        ];
+      },
+    },
+    {
+      async completeSession(sessionId: string): Promise<AgentSession | undefined> {
+        completedSessions.push(sessionId);
+        return undefined;
+      },
+      async failSession(
+        sessionId: string,
+        options?: { staleReason?: string },
+      ): Promise<AgentSession | undefined> {
+        const entry: { id: string; staleReason?: string } = { id: sessionId };
+        if (options?.staleReason !== undefined) {
+          entry.staleReason = options.staleReason;
+        }
+        failedSessionIds.push(entry);
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, []);
+  assert.deepEqual(failedSessionIds, [
+    { id: "review-incomplete-1", staleReason: "copilot-review-incomplete" },
+  ]);
+  assert.deepEqual(countUnresolvedCalls, [10]);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.outcome, "failed-stale");
+  assert.equal(events[0]?.staleReason, "copilot-review-incomplete");
+});
+
+test("reconcileSessions still routes review sessions to address-review-comments when unresolved threads exist (no Copilot review needed)", async () => {
+  const completedSessions: Array<{ sessionId: string; reviewCommentCount?: number }> = [];
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 10,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-with-threads-1",
+        issueNumber: 5,
+        pullRequestNumber: 10,
+        phase: "review",
+        createdAt: "2024-01-01T00:30:00.000Z",
+      }),
+    ],
+  };
+
+  await runReconcile(
+    {
+      async countUnresolvedPullRequestReviewThreads(): Promise<number> {
+        return 3;
+      },
+      async listPullRequestReviews() {
+        return [
+          {
+            submittedAt: "2024-01-01T01:00:00.000Z",
+            authorLogin: "copilot-pull-request-reviewer",
+            state: "COMMENTED",
+            body: "Copilot reviewed N files and left some suggestions.",
+          },
+        ];
+      },
+    },
+    {
+      async completeSession(
+        sessionId: string,
+        result,
+      ): Promise<AgentSession | undefined> {
+        const completedSession: { sessionId: string; reviewCommentCount?: number } = {
+          sessionId,
+        };
+        if (result?.reviewCommentCount !== undefined) {
+          completedSession.reviewCommentCount = result.reviewCommentCount;
+        }
+        completedSessions.push(completedSession);
+        return undefined;
+      },
+      async failSession(): Promise<AgentSession | undefined> {
+        return undefined;
+      },
+    },
+    snapshot,
+  );
+
+  assert.deepEqual(completedSessions, [
+    { sessionId: "review-with-threads-1", reviewCommentCount: 3 },
+  ]);
+});

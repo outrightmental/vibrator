@@ -316,6 +316,10 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       case "copilot-review-failed":
         reason = "Copilot review came back as failed (wasn't able to review)";
         break;
+      case "copilot-review-incomplete":
+        reason =
+          "Copilot review request completed with no clean-review signal (no Copilot review on the PR — refusing to merge)";
+        break;
       case "copilot-review-comments-not-addressed":
         reason = "Copilot ended its turn but review comments are not adequately addressed";
         break;

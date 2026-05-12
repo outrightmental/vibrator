@@ -1,4 +1,4 @@
-import { isFailedCopilotReview, COPILOT_REVIEWER_LOGIN } from "./github.js";
+import { isFailedCopilotReview, isCleanCopilotReview, COPILOT_REVIEWER_LOGIN } from "./github.js";
 import type {
   EvaluateReviewCommentsAddressedParams,
   ReviewCommentsAddressedEvaluation,
@@ -376,10 +376,45 @@ export async function reconcileSessions(
             break;
           }
 
-          await sessionStore.completeSession(session.id, {
-            reviewCommentCount: await gitHubClient.countUnresolvedPullRequestReviewThreads(
+          const unresolvedReviewCommentCount =
+            await gitHubClient.countUnresolvedPullRequestReviewThreads(
               session.pullRequestNumber,
-            ),
+            );
+
+          // When zero review comments / unresolved threads exist after the
+          // request, we need an *explicit* clean-review signal from the
+          // Copilot reviewer bot before treating the PR as ready for
+          // squash-and-merge. Without this guard, a "completed" review
+          // session with 0 comments (e.g. Copilot never actually reviewed,
+          // or a human submitted a non-Copilot review that left no inline
+          // threads) would flow straight to write-final-description →
+          // merge-pull-request and merge an unreviewed PR — including PRs
+          // still titled `[WIP] …`. Fail the session so the orchestrator
+          // re-requests a Copilot review on the next iteration.
+          if (unresolvedReviewCommentCount === 0) {
+            const hasCleanCopilotReview = reviewsAfterSession.some((review) =>
+              isCleanCopilotReview({
+                authorLogin: review.authorLogin,
+                state: review.state,
+                body: review.body,
+                reviewCommentCount: 0,
+              }),
+            );
+            if (!hasCleanCopilotReview) {
+              await sessionStore.failSession(session.id, {
+                staleReason: "copilot-review-incomplete",
+              });
+              events.push({
+                session,
+                outcome: "failed-stale",
+                staleReason: "copilot-review-incomplete",
+              });
+              break;
+            }
+          }
+
+          await sessionStore.completeSession(session.id, {
+            reviewCommentCount: unresolvedReviewCommentCount,
           });
           events.push({ session, outcome: "completed" });
         }

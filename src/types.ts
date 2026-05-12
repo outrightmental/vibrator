@@ -69,6 +69,7 @@ export type AgentSessionStaleReason =
   | "issue-closed"
   | "copilot-not-assigned"
   | "copilot-review-failed"
+  | "copilot-review-incomplete"
   | "copilot-review-comments-not-addressed"
   | "copilot-did-not-acknowledge";
 
