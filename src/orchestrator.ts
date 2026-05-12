@@ -24,6 +24,21 @@ const LINKED_ISSUE_PATTERN = new RegExp(
 
 const ACTIVE_STATUSES = new Set(["queued", "in_progress"]);
 
+/**
+ * Matches a PR title still flagged as work-in-progress. Copilot opens its
+ * draft PRs with a `[WIP] …` title prefix while it is still pushing
+ * commits and removes the prefix once it considers the change complete.
+ * Accepts case-insensitive `[wip]` bracketed prefixes or a leading `wip:`
+ * token (with optional surrounding whitespace). PRs whose titles still
+ * match this pattern must NOT be reviewed, approved, or merged — the
+ * orchestrator skips them entirely until the prefix is cleaned up.
+ */
+const WIP_TITLE_PATTERN = /^\s*(?:\[\s*wip\s*\]|wip\s*:)/i;
+
+export function isWorkInProgressPullRequest(pullRequest: PullRequest): boolean {
+  return WIP_TITLE_PATTERN.test(pullRequest.title);
+}
+
 function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((left, right) => left - right);
 }
@@ -200,6 +215,16 @@ function planPullRequestAction(
 
   const relevantSessions = getRelevantSessions(agentSessions, issueNumbers, pullRequest.number);
   if (relevantSessions.some(isActiveSession)) {
+    return undefined;
+  }
+
+  // A PR whose title is still `[WIP] …` (or `wip: …`) is not ready for
+  // review or merge. Copilot opens its draft PRs with that prefix while
+  // it is still pushing commits and removes it once the change is
+  // complete. Skip the PR entirely until the title is cleaned up so we
+  // never request a review against — let alone merge — a work-in-progress
+  // PR.
+  if (isWorkInProgressPullRequest(pullRequest)) {
     return undefined;
   }
 

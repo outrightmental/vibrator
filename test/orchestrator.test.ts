@@ -822,3 +822,76 @@ test("buildPlan sets reassignCopilot on start-implementation after a copilot-did
     { type: "start-implementation", issueNumber: 42, reassignCopilot: true },
   ]);
 });
+
+test("buildPlan skips PRs whose title is still prefixed with [WIP]", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 5 })],
+    pullRequests: [
+      createPullRequest({
+        number: 11,
+        title: "[WIP] add new endpoint",
+        linkedIssueNumbers: [5],
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-1",
+        issueNumber: 5,
+        pullRequestNumber: 11,
+        phase: "review",
+        status: "completed",
+        result: { reviewCommentCount: 0 },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // No action at all for the WIP PR; the linked issue is also covered by
+  // the PR so no start-implementation for it either.
+  assert.deepEqual(
+    plan.actions.filter((a) => "pullRequestNumber" in a && a.pullRequestNumber === 11),
+    [],
+  );
+});
+
+
+test("buildPlan skips PRs whose title starts with wip: (lowercase, colon form)", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 12,
+        title: "wip: still iterating",
+        linkedIssueNumbers: [],
+        closingIssueNumbers: [],
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, []);
+});
+
+test("buildPlan does not skip PRs whose title merely contains the substring 'wip' later", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [],
+    pullRequests: [
+      createPullRequest({
+        number: 13,
+        title: "Add swiping UI",
+        linkedIssueNumbers: [],
+        closingIssueNumbers: [],
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "request-review", issueNumber: undefined, pullRequestNumber: 13 },
+  ]);
+});
