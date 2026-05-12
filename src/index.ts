@@ -287,30 +287,54 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   if (plan.actions.length === 0) {
     bullet("0 actions to execute");
   } else {
-    bullet(`${plan.actions.length} action(s) to execute`);
+    bullet(
+      `${plan.actions.length} action(s) to execute` +
+        (plan.actions.length > 1 ? ` — running concurrently` : ""),
+    );
     for (let i = 0; i < plan.actions.length; i++) {
-      const action = plan.actions[i]!;
       note(
-        `[${i + 1}/${plan.actions.length}] → ${describeAction(action, snapshot, gitHubClient)}`,
+        `[${i + 1}/${plan.actions.length}] → ${describeAction(plan.actions[i]!, snapshot, gitHubClient)}`,
         2,
       );
-      try {
-        await executeAction(
-          gitHubClient,
-          sessionStore,
-          claudeAgentClient,
-          action,
-          config.dryRun,
-          {
-            owner: config.owner,
-            repo: config.repo,
-            issues: snapshot.issues,
-            pullRequests: snapshot.pullRequests,
-          },
-        );
-        note(`[${i + 1}/${plan.actions.length}] ✓ done${config.dryRun ? " (dry-run)" : ""}`, 2);
-      } catch (error) {
-        note(`[${i + 1}/${plan.actions.length}] ✗ failed: ${(error as Error).message}`, 2);
+    }
+
+    if (!config.dryRun) {
+      const actionContext = {
+        owner: config.owner,
+        repo: config.repo,
+        issues: snapshot.issues,
+        pullRequests: snapshot.pullRequests,
+      };
+
+      const results = await Promise.allSettled(
+        plan.actions.map((action) =>
+          executeAction(
+            gitHubClient,
+            sessionStore,
+            claudeAgentClient,
+            action,
+            false,
+            actionContext,
+          ),
+        ),
+      );
+
+      blank();
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i]!;
+        if (result.status === "fulfilled") {
+          note(`[${i + 1}/${plan.actions.length}] ✓ done`, 2);
+        } else {
+          note(
+            `[${i + 1}/${plan.actions.length}] ✗ failed: ${(result.reason as Error).message}`,
+            2,
+          );
+        }
+      }
+    } else {
+      blank();
+      for (let i = 0; i < plan.actions.length; i++) {
+        note(`[${i + 1}/${plan.actions.length}] ✓ done (dry-run)`, 2);
       }
     }
   }
