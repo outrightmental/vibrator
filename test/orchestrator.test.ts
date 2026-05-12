@@ -37,6 +37,7 @@ function createPullRequest(
     hasCleanCopilotReviewOnHead: overrides.hasCleanCopilotReviewOnHead ?? false,
     copilotLastAgentRunFailed: overrides.copilotLastAgentRunFailed ?? false,
     changedFiles: overrides.changedFiles ?? 1,
+    checksStatus: overrides.checksStatus ?? "success",
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,
@@ -971,3 +972,149 @@ test("buildPlan does not skip PRs whose title merely contains the substring 'wip
     { type: "request-review", issueNumber: undefined, pullRequestNumber: 13 },
   ]);
 });
+
+test("buildPlan asks Copilot to address failing checks before merging on a clean Copilot review", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 401 })],
+    pullRequests: [
+      createPullRequest({
+        number: 501,
+        linkedIssueNumbers: [401],
+        hasCleanCopilotReviewOnHead: true,
+        checksStatus: "failure",
+        headSha: "sha-501-failing",
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "address-failing-checks",
+      issueNumber: 401,
+      pullRequestNumber: 501,
+      pullRequestHeadSha: "sha-501-failing",
+    },
+  ]);
+});
+
+test("buildPlan asks Copilot to address failing checks after a clean review session completes", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 402 })],
+    pullRequests: [
+      createPullRequest({
+        number: 502,
+        linkedIssueNumbers: [402],
+        checksStatus: "failure",
+        headSha: "sha-502-failing",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-502",
+        issueNumber: 402,
+        pullRequestNumber: 502,
+        phase: "review",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { reviewCommentCount: 0 },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "address-failing-checks",
+      issueNumber: 402,
+      pullRequestNumber: 502,
+      pullRequestHeadSha: "sha-502-failing",
+    },
+  ]);
+});
+
+test("buildPlan waits silently when checks are still pending before merge", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 403 })],
+    pullRequests: [
+      createPullRequest({
+        number: 503,
+        linkedIssueNumbers: [403],
+        hasCleanCopilotReviewOnHead: true,
+        checksStatus: "pending",
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, []);
+});
+
+test("buildPlan blocks merge-pull-request when checks have failed after final description", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 404 })],
+    pullRequests: [
+      createPullRequest({
+        number: 504,
+        linkedIssueNumbers: [404],
+        closingIssueNumbers: [404],
+        checksStatus: "failure",
+        headSha: "sha-504-failing",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "description-504",
+        issueNumber: 404,
+        pullRequestNumber: 504,
+        phase: "final-description",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { generatedDescription: "All done." },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "address-failing-checks",
+      issueNumber: 404,
+      pullRequestNumber: 504,
+      pullRequestHeadSha: "sha-504-failing",
+    },
+  ]);
+});
+
+test("buildPlan requests a fresh review after failing checks have been addressed", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 405 })],
+    pullRequests: [
+      createPullRequest({
+        number: 505,
+        linkedIssueNumbers: [405],
+        checksStatus: "success",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "address-checks-505",
+        issueNumber: 405,
+        pullRequestNumber: 505,
+        phase: "address-failing-checks",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "request-review", issueNumber: 405, pullRequestNumber: 505 },
+  ]);
+});
+

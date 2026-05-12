@@ -120,6 +120,28 @@ export async function executeAction(
       });
       return;
     }
+    case "address-failing-checks": {
+      if (action.reassignCopilot) {
+        await gitHubClient.unassignPullRequestFromCopilot(action.pullRequestNumber);
+        await gitHubClient.assignPullRequestToCopilot(action.pullRequestNumber);
+      }
+      const { id: promptCommentId } = await gitHubClient.createIssueComment(
+        action.pullRequestNumber,
+        "@copilot One or more status checks (e.g. CI, tests) are failing on " +
+          "this pull request. Please investigate the failing checks, fix " +
+          "the underlying problems, and push the changes so the checks pass.",
+      );
+      await sessionStore.createSession({
+        issueNumber: action.issueNumber,
+        pullRequestNumber: action.pullRequestNumber,
+        phase: "address-failing-checks",
+        result: {
+          pullRequestHeadSha: action.pullRequestHeadSha,
+          promptCommentId,
+        },
+      });
+      return;
+    }
     case "write-final-description": {
       // New flow: run a local Copilot chat session inside a checkout of the
       // PR branch to generate the final description, update the PR body via

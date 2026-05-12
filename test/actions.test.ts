@@ -307,8 +307,48 @@ test("executeAction cycles the Copilot assignee on the PR before re-posting an a
   assert.deepEqual(harness.calls, ["unassign-pr:11", "assign-pr:11", expectedComment]);
 });
 
-test("executeAction cycles the Copilot assignee on the PR before re-posting a resolve-conflicts prompt", async () => {
+test("executeAction posts an address-failing-checks prompt and records the head sha", async () => {
   const harness = createHarness();
+
+  await run(harness, {
+    type: "address-failing-checks",
+    issueNumber: 4,
+    pullRequestNumber: 11,
+    pullRequestHeadSha: "sha-xyz",
+  });
+
+  assert.equal(harness.calls.length, 1);
+  assert.match(
+    harness.calls[0] ?? "",
+    /^comment:11:@copilot One or more status checks /,
+  );
+  assert.deepEqual(harness.sessions, [
+    {
+      issueNumber: 4,
+      pullRequestNumber: 11,
+      phase: "address-failing-checks",
+      result: { pullRequestHeadSha: "sha-xyz", promptCommentId: 1011 },
+    },
+  ]);
+});
+
+test("executeAction cycles the Copilot assignee on the PR before re-posting an address-failing-checks prompt", async () => {
+  const harness = createHarness();
+
+  await run(harness, {
+    type: "address-failing-checks",
+    issueNumber: 4,
+    pullRequestNumber: 11,
+    pullRequestHeadSha: "sha-xyz",
+    reassignCopilot: true,
+  });
+
+  assert.equal(harness.calls[0], "unassign-pr:11");
+  assert.equal(harness.calls[1], "assign-pr:11");
+  assert.match(harness.calls[2] ?? "", /^comment:11:@copilot One or more status checks /);
+});
+
+test("executeAction cycles the Copilot assignee on the PR before re-posting a resolve-conflicts prompt", async () => {  const harness = createHarness();
 
   await run(harness, {
     type: "resolve-conflicts",

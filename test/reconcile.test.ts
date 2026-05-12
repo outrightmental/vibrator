@@ -78,6 +78,7 @@ function createPullRequest(
     hasCleanCopilotReviewOnHead: overrides.hasCleanCopilotReviewOnHead ?? false,
     copilotLastAgentRunFailed: overrides.copilotLastAgentRunFailed ?? false,
     changedFiles: overrides.changedFiles ?? 1,
+    checksStatus: overrides.checksStatus ?? "success",
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,

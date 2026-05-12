@@ -580,6 +580,7 @@ export async function reconcileSessions(
         }
         break;
       case "resolve-conflicts":
+      case "address-failing-checks":
         if (pullRequest && hasUpdatedHeadSha(session, pullRequest)) {
           await sessionStore.completeSession(session.id);
           events.push({ session, outcome: "completed" });

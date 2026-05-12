@@ -377,6 +377,7 @@ export class GitHubClient {
         hasCleanCopilotReviewOnHead: graphQLData?.hasCleanCopilotReviewOnHead ?? false,
         copilotLastAgentRunFailed: failureStates[index] ?? false,
         changedFiles: graphQLData?.changedFiles ?? 0,
+        checksStatus: graphQLData?.checksStatus ?? "none",
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         linkedIssueNumbers,
@@ -393,6 +394,7 @@ export class GitHubClient {
         hasMergeConflicts: boolean;
         hasCleanCopilotReviewOnHead: boolean;
         changedFiles: number;
+        checksStatus: "success" | "failure" | "pending" | "none";
       }
     >
   > {
@@ -414,6 +416,14 @@ export class GitHubClient {
             changedFiles: number;
             closingIssuesReferences: { nodes: Array<{ number: number }> } | null;
             reviews: { nodes: ReviewNode[] } | null;
+            commits: {
+              nodes: Array<{
+                commit: {
+                  oid: string;
+                  statusCheckRollup: { state: string } | null;
+                };
+              }>;
+            } | null;
           }>;
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
         };
@@ -427,6 +437,7 @@ export class GitHubClient {
         hasMergeConflicts: boolean;
         hasCleanCopilotReviewOnHead: boolean;
         changedFiles: number;
+        checksStatus: "success" | "failure" | "pending" | "none";
       }
     >();
     let after: string | null = null;
@@ -451,6 +462,14 @@ export class GitHubClient {
                       commit { oid }
                       body
                       comments { totalCount }
+                    }
+                  }
+                  commits(last: 1) {
+                    nodes {
+                      commit {
+                        oid
+                        statusCheckRollup { state }
+                      }
                     }
                   }
                 }
@@ -489,12 +508,37 @@ export class GitHubClient {
             reviewCommentCount: review.comments.totalCount,
           });
         });
+        // Translate GitHub's StatusState enum on the head commit's rollup
+        // into the simplified four-state field the orchestrator consumes.
+        // EXPECTED/PENDING → pending; FAILURE/ERROR → failure;
+        // SUCCESS → success; missing rollup (or only the head-commit
+        // node is missing it) → none. We only inspect the rollup on the
+        // last commit returned by the GraphQL query — which is the
+        // head commit — to avoid being misled by older commits whose
+        // checks have since been superseded.
+        const headCommitNode = node.commits?.nodes[0]?.commit;
+        const rollupState = (
+          headCommitNode?.oid === node.headRefOid
+            ? headCommitNode?.statusCheckRollup?.state
+            : undefined
+        )?.toUpperCase();
+        let checksStatus: "success" | "failure" | "pending" | "none";
+        if (rollupState === "FAILURE" || rollupState === "ERROR") {
+          checksStatus = "failure";
+        } else if (rollupState === "PENDING" || rollupState === "EXPECTED") {
+          checksStatus = "pending";
+        } else if (rollupState === "SUCCESS") {
+          checksStatus = "success";
+        } else {
+          checksStatus = "none";
+        }
         result.set(node.number, {
           closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
           // UNKNOWN means GitHub hasn't computed mergeability yet — treat conservatively as no conflict.
           hasMergeConflicts: node.mergeable === "CONFLICTING",
           hasCleanCopilotReviewOnHead,
           changedFiles: node.changedFiles,
+          checksStatus,
         });
       }
 

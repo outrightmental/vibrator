@@ -52,6 +52,26 @@ export interface PullRequest {
    * instead of leaving them stuck in `[WIP] …` state forever.
    */
   changedFiles: number;
+  /**
+   * Aggregated state of the head commit's status checks (CI workflows,
+   * required status contexts, etc.) sourced from GitHub's GraphQL
+   * `statusCheckRollup` on the most recent commit.
+   *
+   *   - `"success"`: every check has completed successfully (or no
+   *     checks have run AND none are required — see `"none"`).
+   *   - `"failure"`: at least one check has reported `FAILURE` or
+   *     `ERROR`. The orchestrator must not advance the PR to the
+   *     final-description / merge phase while this is true — it asks
+   *     Copilot to fix the failures instead.
+   *   - `"pending"`: at least one check is still running / queued
+   *     (`EXPECTED` or `PENDING`) and none have failed yet. The
+   *     orchestrator waits silently in this state — no new action is
+   *     emitted until the rollup settles.
+   *   - `"none"`: the PR's head commit has no associated status checks
+   *     at all. Treated as success for gating purposes — there is
+   *     nothing to wait on.
+   */
+  checksStatus: "success" | "failure" | "pending" | "none";
   linkedIssueNumbers: number[];
   closingIssueNumbers: number[];
 }
@@ -60,6 +80,7 @@ export type AgentSessionPhase =
   | "implementation"
   | "review"
   | "address-review-comments"
+  | "address-failing-checks"
   | "resolve-conflicts"
   | "final-description";
 
@@ -163,6 +184,25 @@ export type OrchestratorAction =
       pullRequestNumber: number;
       pullRequestHeadSha: string;
       reviewCommentCount: number;
+      /**
+       * Unassign + re-assign Copilot on the PR before posting the @copilot
+       * prompt. Used after a prior `copilot-did-not-acknowledge` failure
+       * to nudge the coding agent into picking up the job.
+       */
+      reassignCopilot?: boolean;
+    }
+  | {
+      /**
+       * Ask Copilot to investigate and fix failing status checks (CI,
+       * required workflows) on this PR before the orchestrator advances
+       * the PR to the final-description / squash-merge phase. Emitted
+       * when `pullRequest.checksStatus === "failure"` at the point where
+       * the planner would otherwise have proceeded to merge.
+       */
+      type: "address-failing-checks";
+      issueNumber: number | undefined;
+      pullRequestNumber: number;
+      pullRequestHeadSha: string;
       /**
        * Unassign + re-assign Copilot on the PR before posting the @copilot
        * prompt. Used after a prior `copilot-did-not-acknowledge` failure
