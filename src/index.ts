@@ -279,7 +279,43 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     token: config.token,
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
-  const localCopilotChatClient = createLocalCopilotChatClient();
+  const localCopilotChatClient = createLocalCopilotChatClient({
+    // Surface every `copilot` CLI request to the CLI output AND the
+    // dashboard so a streamed audience sees the show pause on Copilot
+    // and resume once it answers.
+    onCallStart: (info) => {
+      const message = `📡 calling Copilot CLI: ${info.description} — waiting for a response…`;
+      note(message);
+      if (dashboard) {
+        dashboard.publish({
+          type: "copilot-call",
+          status: "start",
+          kind: info.kind,
+          description: info.description,
+          pullRequestNumber: info.pullRequestNumber,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    },
+    onCallEnd: (info) => {
+      const message = info.ok
+        ? `✓ Copilot CLI responded after ${formatDuration(info.durationMs)}`
+        : `✗ Copilot CLI failed after ${formatDuration(info.durationMs)}`;
+      note(message);
+      if (dashboard) {
+        dashboard.publish({
+          type: "copilot-call",
+          status: "end",
+          kind: info.kind,
+          description: info.description,
+          pullRequestNumber: info.pullRequestNumber,
+          timestamp: new Date().toISOString(),
+          durationMs: info.durationMs,
+          ok: info.ok,
+        });
+      }
+    },
+  });
 
   write(HEAVY_RULE);
   write(`vibrator status update · ${timestamp()} · iteration ${iterationNumber}`);

@@ -47,7 +47,28 @@ export interface LocalCopilotChatClient {
   ): Promise<ReviewCommentsAddressedEvaluation>;
 }
 
-interface LocalCopilotChatClientOptions {
+/**
+ * Details about a single `copilot` CLI invocation, surfaced to the
+ * orchestrator (and through it to the live broadcast dashboard) so the
+ * UI can show "📡 awaiting response from Copilot CLI…" while the agent
+ * is thinking.
+ */
+export interface CopilotCallInfo {
+  /**
+   * High-level reason for this CLI invocation, e.g.
+   * `"generate-final-description"` or `"evaluate-review-comments-addressed"`.
+   * Stable across releases so callers can switch on it.
+   */
+  kind: "generate-final-description" | "evaluate-review-comments-addressed";
+  /** Human-readable summary suitable for a one-line log message. */
+  description: string;
+  /** Repository + PR context the call is operating on. */
+  owner: string;
+  repo: string;
+  pullRequestNumber: number;
+}
+
+export interface LocalCopilotChatClientOptions {
   /**
    * Root directory under which per-PR checkouts are created.
    * Defaults to `~/.vibrator/checkouts`.
@@ -57,6 +78,18 @@ interface LocalCopilotChatClientOptions {
   copilotCommand?: string;
   /** Path / command for the `gh` CLI used to fetch the PR. */
   ghCommand?: string;
+  /**
+   * Invoked immediately before each `copilot` CLI subprocess is spawned,
+   * so the caller can announce that we are about to call out and are now
+   * waiting for a response. Errors thrown by the callback are swallowed
+   * so a misbehaving notifier cannot break the orchestrator.
+   */
+  onCallStart?: (info: CopilotCallInfo) => void;
+  /**
+   * Invoked after the `copilot` CLI subprocess settles (success or
+   * failure). `durationMs` is wall-clock from the matching `onCallStart`.
+   */
+  onCallEnd?: (info: CopilotCallInfo & { durationMs: number; ok: boolean }) => void;
 }
 
 function defaultCheckoutRootDir(): string {
@@ -239,11 +272,17 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
   private readonly checkoutRootDir: string;
   private readonly copilotCommand: string;
   private readonly ghCommand: string;
+  private readonly onCallStart: ((info: CopilotCallInfo) => void) | undefined;
+  private readonly onCallEnd:
+    | ((info: CopilotCallInfo & { durationMs: number; ok: boolean }) => void)
+    | undefined;
 
   constructor(options: LocalCopilotChatClientOptions = {}) {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
     this.copilotCommand = options.copilotCommand ?? "copilot";
     this.ghCommand = options.ghCommand ?? "gh";
+    this.onCallStart = options.onCallStart;
+    this.onCallEnd = options.onCallEnd;
   }
 
   async generateFinalDescription(params: GenerateFinalDescriptionParams): Promise<string> {
@@ -254,7 +293,17 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
     });
 
     const prompt = buildFinalDescriptionPrompt(params);
-    const stdout = await this.runCopilot(prompt, repoDir);
+    const stdout = await this.callCopilot(
+      {
+        kind: "generate-final-description",
+        description: `generate final PR description for PR #${params.pullRequestNumber}`,
+        owner: params.owner,
+        repo: params.repo,
+        pullRequestNumber: params.pullRequestNumber,
+      },
+      prompt,
+      repoDir,
+    );
     return extractFinalDescription(stdout);
   }
 
@@ -263,7 +312,17 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
   ): Promise<ReviewCommentsAddressedEvaluation> {
     const repoDir = await this.checkoutPullRequest(params);
     const prompt = buildReviewCommentsEvaluationPrompt(params);
-    const stdout = await this.runCopilot(prompt, repoDir);
+    const stdout = await this.callCopilot(
+      {
+        kind: "evaluate-review-comments-addressed",
+        description: `evaluate whether review comments on PR #${params.pullRequestNumber} are addressed`,
+        owner: params.owner,
+        repo: params.repo,
+        pullRequestNumber: params.pullRequestNumber,
+      },
+      prompt,
+      repoDir,
+    );
     return extractReviewCommentsVerdict(stdout);
   }
 
@@ -309,6 +368,41 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
     });
 
     return repoDir;
+  }
+
+  /**
+   * Notifies listeners that a `copilot` CLI request is about to start
+   * (and again when it settles), then delegates to {@link runCopilot} to
+   * actually spawn the subprocess. Notifier exceptions are intentionally
+   * swallowed so a broken dashboard hook cannot break orchestration.
+   */
+  private async callCopilot(
+    info: CopilotCallInfo,
+    prompt: string,
+    cwd: string,
+  ): Promise<string> {
+    const startedAt = Date.now();
+    if (this.onCallStart) {
+      try {
+        this.onCallStart(info);
+      } catch {
+        // intentionally swallowed — see method doc.
+      }
+    }
+    let ok = false;
+    try {
+      const stdout = await this.runCopilot(prompt, cwd);
+      ok = true;
+      return stdout;
+    } finally {
+      if (this.onCallEnd) {
+        try {
+          this.onCallEnd({ ...info, durationMs: Date.now() - startedAt, ok });
+        } catch {
+          // intentionally swallowed.
+        }
+      }
+    }
   }
 
   private async runCopilot(prompt: string, cwd: string): Promise<string> {

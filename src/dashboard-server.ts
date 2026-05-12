@@ -18,7 +18,24 @@ export type DashboardEvent =
   | { type: "snapshot"; iteration: number; summary: SnapshotSummary; timestamp: string }
   | { type: "action"; iteration: number; index: number; total: number; description: string; status: "start" | "done" | "failed"; error?: string; timestamp: string }
   | { type: "rate-limit"; iteration: number; resetAt: string | null; timestamp: string }
-  | { type: "countdown"; nextCycleAt: string | null };
+  | { type: "countdown"; nextCycleAt: string | null }
+  /**
+   * Emitted when the orchestrator is about to call out to the local
+   * `copilot` CLI ({@link kind} === "start") and again when the call
+   * settles ({@link kind} === "end"). The dashboard turns this into a
+   * full-screen "AWAITING RESPONSE FROM COPILOT CLI" overlay so a
+   * streamed audience can see when the show is paused on Copilot.
+   */
+  | {
+      type: "copilot-call";
+      status: "start" | "end";
+      kind: string;
+      description: string;
+      pullRequestNumber: number;
+      timestamp: string;
+      durationMs?: number;
+      ok?: boolean;
+    };
 
 export interface SnapshotSummary {
   /** All open pull requests, as rendered by the front-end's "now playing" carousel. */
@@ -419,6 +436,20 @@ function renderIndexHtml(): string {
         </div>
         <div class="tv-scoreboard" id="tv-scoreboard"></div>
       </section>
+
+      <section class="copilot-overlay" id="copilot-overlay" hidden>
+        <div class="copilot-bg"></div>
+        <div class="copilot-card">
+          <div class="copilot-kicker" id="copilot-kicker">📡 OUTBOUND TRANSMISSION</div>
+          <div class="copilot-title">AWAITING RESPONSE<br/>FROM COPILOT CLI</div>
+          <div class="copilot-sub" id="copilot-sub">—</div>
+          <div class="copilot-bars">
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div class="copilot-elapsed" id="copilot-elapsed">00:00</div>
+        </div>
+      </section>
     </main>
 
     <footer class="lower-third">
@@ -765,6 +796,104 @@ html, body {
 .score.danger .score-value { color: var(--danger); text-shadow: 0 0 8px var(--danger); }
 .score.ok .score-value { color: var(--neon-green); text-shadow: 0 0 8px var(--neon-green); }
 
+/* COPILOT CALL OVERLAY (broadcast pause while we wait on the CLI) */
+.copilot-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  animation: copilotIn 400ms ease-out;
+}
+.copilot-overlay.exit { animation: copilotOut 400ms ease-in forwards; }
+.copilot-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at center, rgba(0,240,255,0.25), rgba(0,0,0,0.85) 70%),
+    repeating-linear-gradient(0deg, rgba(0,240,255,0.06) 0 2px, transparent 2px 6px);
+  backdrop-filter: blur(2px);
+}
+.copilot-card {
+  position: relative;
+  text-align: center;
+  padding: 40px 64px;
+  border: 2px solid var(--neon-cyan);
+  background: linear-gradient(180deg, rgba(0,240,255,0.10), rgba(0,0,0,0.6));
+  box-shadow: 0 0 40px rgba(0,240,255,0.5), 0 0 80px rgba(0,240,255,0.25) inset;
+  min-width: 600px;
+}
+.copilot-kicker {
+  letter-spacing: 8px;
+  color: var(--neon-magenta);
+  font-size: 16px;
+  text-shadow: 0 0 8px var(--neon-magenta);
+  margin-bottom: 16px;
+  animation: copilotPulse 1.2s ease-in-out infinite;
+}
+.copilot-title {
+  font-size: 64px;
+  font-weight: 800;
+  letter-spacing: 10px;
+  line-height: 1.05;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 18px var(--neon-cyan), 0 0 36px rgba(0,240,255,0.5);
+  animation: glitch 900ms infinite;
+}
+.copilot-sub {
+  margin-top: 18px;
+  color: var(--text);
+  font-size: 15px;
+  letter-spacing: 3px;
+  opacity: 0.9;
+}
+.copilot-bars {
+  margin-top: 22px;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+.copilot-bars span {
+  width: 8px;
+  height: 24px;
+  background: var(--neon-cyan);
+  box-shadow: 0 0 6px var(--neon-cyan);
+  animation: copilotBar 900ms ease-in-out infinite;
+}
+.copilot-bars span:nth-child(2) { animation-delay: 80ms; background: var(--neon-magenta); box-shadow: 0 0 6px var(--neon-magenta); }
+.copilot-bars span:nth-child(3) { animation-delay: 160ms; }
+.copilot-bars span:nth-child(4) { animation-delay: 240ms; background: var(--neon-magenta); box-shadow: 0 0 6px var(--neon-magenta); }
+.copilot-bars span:nth-child(5) { animation-delay: 320ms; }
+.copilot-bars span:nth-child(6) { animation-delay: 400ms; background: var(--neon-magenta); box-shadow: 0 0 6px var(--neon-magenta); }
+.copilot-bars span:nth-child(7) { animation-delay: 480ms; }
+.copilot-bars span:nth-child(8) { animation-delay: 560ms; background: var(--neon-magenta); box-shadow: 0 0 6px var(--neon-magenta); }
+.copilot-bars span:nth-child(9) { animation-delay: 640ms; }
+.copilot-bars span:nth-child(10) { animation-delay: 720ms; background: var(--neon-magenta); box-shadow: 0 0 6px var(--neon-magenta); }
+.copilot-elapsed {
+  margin-top: 18px;
+  color: var(--neon-yellow);
+  letter-spacing: 6px;
+  font-size: 22px;
+  text-shadow: 0 0 8px var(--neon-yellow);
+}
+@keyframes copilotIn {
+  0% { opacity: 0; transform: scale(0.98); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes copilotOut {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes copilotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes copilotBar {
+  0%, 100% { transform: scaleY(0.4); }
+  50% { transform: scaleY(1.6); }
+}
+
 /* LOWER THIRD TICKER */
 .lower-third {
   position: relative;
@@ -1085,6 +1214,38 @@ function renderAppJs(): string {
     return String(s).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c]));
   }
 
+  // ── Copilot CLI call overlay ────────────────────────────────────────────
+  let copilotElapsedTimer = null;
+  let copilotStartedAt = 0;
+  function showCopilotOverlay(d) {
+    const overlay = el("copilot-overlay");
+    el("copilot-kicker").textContent = "📡 OUTBOUND TRANSMISSION // " + (d.kind || "copilot-cli").toUpperCase();
+    el("copilot-sub").textContent = (d.description || "") + (d.pullRequestNumber ? "  ·  PR #" + d.pullRequestNumber : "");
+    el("copilot-elapsed").textContent = "00:00";
+    overlay.hidden = false;
+    overlay.classList.remove("exit");
+    copilotStartedAt = Date.now();
+    if (copilotElapsedTimer) clearInterval(copilotElapsedTimer);
+    copilotElapsedTimer = setInterval(() => {
+      const s = Math.floor((Date.now() - copilotStartedAt) / 1000);
+      const mm = String(Math.floor(s / 60)).padStart(2, "0");
+      const ss = String(s % 60).padStart(2, "0");
+      el("copilot-elapsed").textContent = mm + ":" + ss;
+    }, 1000);
+  }
+  function hideCopilotOverlay(d) {
+    if (copilotElapsedTimer) { clearInterval(copilotElapsedTimer); copilotElapsedTimer = null; }
+    const overlay = el("copilot-overlay");
+    if (d && d.durationMs !== undefined) {
+      const s = Math.floor(d.durationMs / 1000);
+      const mm = String(Math.floor(s / 60)).padStart(2, "0");
+      const ss = String(s % 60).padStart(2, "0");
+      el("copilot-elapsed").textContent = (d.ok === false ? "✗ " : "✓ ") + mm + ":" + ss;
+    }
+    overlay.classList.add("exit");
+    setTimeout(() => { overlay.hidden = true; overlay.classList.remove("exit"); }, 400);
+  }
+
   // ── SSE wiring ───────────────────────────────────────────────────────────
   function connect() {
     const source = new EventSource("/events");
@@ -1153,6 +1314,13 @@ function renderAppJs(): string {
     });
     source.addEventListener("rate-limit", (e) => {
       try { state.rateLimitedUntil = JSON.parse(e.data).resetAt; updateTicker(); } catch (err) {}
+    });
+    source.addEventListener("copilot-call", (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.status === "start") showCopilotOverlay(d);
+        else hideCopilotOverlay(d);
+      } catch (err) {}
     });
     source.onerror = () => {
       // EventSource auto-reconnects; we just surface a tiny status hint.
