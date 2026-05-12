@@ -21,8 +21,8 @@ export type DashboardEvent =
   | { type: "countdown"; nextCycleAt: string | null }
   /**
    * Emitted when the orchestrator is about to call out to the local
-   * `copilot` CLI ({@link kind} === "start") and again when the call
-   * settles ({@link kind} === "end"). The dashboard turns this into a
+   * `copilot` CLI ({@link status} === "start") and again when the call
+   * settles ({@link status} === "end"). The dashboard turns this into a
    * full-screen "AWAITING RESPONSE FROM COPILOT CLI" overlay so a
    * streamed audience can see when the show is paused on Copilot.
    */
