@@ -312,6 +312,8 @@ class DefaultLocalCopilotChatClient implements LocalCopilotChatClient {
   }
 
   private async runCopilot(prompt: string, cwd: string): Promise<string> {
+    console.log(`Sending request to Copilot CLI (waiting for response)…`);
+
     // Strip GitHub token env vars so the `copilot` CLI falls back to its own
     // keyring-stored authentication. Inheriting GITHUB_TOKEN/GH_TOKEN from
     // vibrator's .env causes copilot to use a PAT that typically lacks the
