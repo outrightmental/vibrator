@@ -422,7 +422,7 @@ test("executeAction asks Claude to resolve merge conflicts", async () => {
   ]);
 });
 
-test("executeAction generates the final description, updates the PR body, and squash-merges", async () => {
+test("executeAction generates the final description and updates the PR body without merging", async () => {
   const pullRequest = createPullRequest({
     number: 15,
     linkedIssueNumbers: [3],
@@ -447,7 +447,6 @@ test("executeAction generates the final description, updates the PR body, and sq
   assert.deepEqual(harness.calls, [
     "generate-desc:15",
     `update-body:15:${expectedBody}`,
-    `squash-merge:15:Add widget:${expectedBody}`,
   ]);
   assert.deepEqual(harness.sessions, [
     {
@@ -486,7 +485,41 @@ test("executeAction appends missing closing references to the generated descript
 
   const expectedBody = "Summary.\n\nCloses #3\n\nCloses #8";
   assert.equal(harness.calls[1], `update-body:16:${expectedBody}`);
-  assert.equal(harness.calls[2], `squash-merge:16:Fix:${expectedBody}`);
+  assert.equal(harness.calls.length, 2);
+});
+
+test("executeAction squash-merges a PR", async () => {
+  const pullRequest = createPullRequest({
+    number: 15,
+    linkedIssueNumbers: [3],
+    closingIssueNumbers: [3],
+  });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+  });
+
+  await run(harness, {
+    type: "squash-merge",
+    issueNumber: 3,
+    pullRequestNumber: 15,
+    pullRequestTitle: "Add widget",
+    closingIssueNumbers: [3],
+    pullRequestBody: "Final description",
+  });
+
+  const expectedBody = "Final description\n\nCloses #3";
+  assert.deepEqual(harness.calls, [
+    `squash-merge:15:Add widget:${expectedBody}`,
+  ]);
+  assert.deepEqual(harness.sessions, [
+    {
+      issueNumber: 3,
+      pullRequestNumber: 15,
+      phase: "squash-merge",
+      status: "completed",
+      result: { pullRequestBody: expectedBody },
+    },
+  ]);
 });
 
 test("executeAction is a no-op when dry-run is enabled", async () => {

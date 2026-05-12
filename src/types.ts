@@ -66,7 +66,8 @@ export type AgentSessionPhase =
   | "address-review-comments"
   | "address-failing-checks"
   | "resolve-conflicts"
-  | "final-description";
+  | "final-description"
+  | "squash-merge";
 
 export type AgentSessionStatus = "in_progress" | "completed" | "failed";
 
@@ -135,6 +136,14 @@ export type OrchestratorAction =
       pullRequestNumber: number;
       pullRequestTitle: string;
       pullRequestHeadRefName: string;
+      closingIssueNumbers: number[];
+      pullRequestBody: string;
+    }
+  | {
+      type: "squash-merge";
+      issueNumber: number | undefined;
+      pullRequestNumber: number;
+      pullRequestTitle: string;
       closingIssueNumbers: number[];
       pullRequestBody: string;
     };

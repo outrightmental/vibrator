@@ -490,6 +490,12 @@ export class GitHubClient {
    * Submit a pull-request review. When `inlineComments` is empty, the
    * review is approved; when present, it is submitted as
    * REQUEST_CHANGES so the author knows action is required.
+   *
+   * If the GitHub API rejects inline comments with 422 "Line could not
+   * be resolved" (i.e. the comment targets a line not visible in the
+   * diff), we fall back to posting a REQUEST_CHANGES review with all
+   * inline comments folded into the review body text so no feedback is
+   * lost.
    */
   async createPullRequestReview(input: {
     pullRequestNumber: number;
@@ -500,24 +506,64 @@ export class GitHubClient {
     const event =
       input.inlineComments.length === 0 ? "APPROVE" : "REQUEST_CHANGES";
     const bodyWithMarker = `${VIBRATOR_REVIEW_MARKER}\n\n${input.body}`.trim();
-    await this.request(
-      `/repos/${this.options.owner}/${this.options.repo}/pulls/${input.pullRequestNumber}/reviews`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          commit_id: input.commitId,
-          body: bodyWithMarker,
-          event,
-          comments: input.inlineComments.map((comment) => ({
-            path: comment.path,
-            line: comment.line,
-            side: "RIGHT",
-            body: comment.body,
-          })),
-        }),
-      },
-    );
+    try {
+      await this.request(
+        `/repos/${this.options.owner}/${this.options.repo}/pulls/${input.pullRequestNumber}/reviews`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            commit_id: input.commitId,
+            body: bodyWithMarker,
+            event,
+            comments: input.inlineComments.map((comment) => ({
+              path: comment.path,
+              line: comment.line,
+              side: "RIGHT",
+              body: comment.body,
+            })),
+          }),
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // If the error is a 422 with "Line could not be resolved" and we
+      // actually had inline comments, fall back to a body-only review
+      // with the inline comments formatted into the review body.
+      if (
+        input.inlineComments.length > 0 &&
+        message.includes("422") &&
+        message.includes("Line could not be resolved")
+      ) {
+        console.warn(
+          `[vibrator] Review inline comments could not be resolved to diff lines on PR #${input.pullRequestNumber}. ` +
+          `Falling back to body-only REQUEST_CHANGES review with ${input.inlineComments.length} comment(s) in body.`,
+        );
+        const commentSection = input.inlineComments
+          .map(
+            (comment) =>
+              `**\`${comment.path}\`** (line ${comment.line})\n${comment.body}`,
+          )
+          .join("\n\n---\n\n");
+        const fallbackBody =
+          `${bodyWithMarker}\n\n---\n\n### Inline comments\n\n${commentSection}`;
+        await this.request(
+          `/repos/${this.options.owner}/${this.options.repo}/pulls/${input.pullRequestNumber}/reviews`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              commit_id: input.commitId,
+              body: fallbackBody,
+              event: "REQUEST_CHANGES",
+              comments: [],
+            }),
+          },
+        );
+        return;
+      }
+      throw error;
+    }
   }
 
   async createIssueComment(issueNumber: number, body: string): Promise<{ id: number }> {

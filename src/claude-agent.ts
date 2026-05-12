@@ -267,12 +267,53 @@ export function extractReviewPayload(
     REVIEW_PAYLOAD_END_MARKER,
   );
   if (!inner) {
-    // No marker found — treat the whole output as a free-text summary
-    // with zero inline comments (i.e. clean review).
+    // No markers found — try to find a JSON object that looks like a
+    // review payload (has "summary" and "comments" keys) anywhere in
+    // the raw output. This guards against Claude omitting the sentinel
+    // markers while still producing the expected JSON.
+    const fallback = tryExtractReviewJsonFromRawOutput(rawOutput);
+    if (fallback) {
+      return fallback;
+    }
+    // Genuinely free-text output with no JSON review structure.
+    // Treat as a clean review (LGTM).
     return { summary: rawOutput.trim(), inlineComments: [] };
   }
   const parsed = parseReviewJson(inner);
   return parsed;
+}
+
+/**
+ * Best-effort extraction of a review JSON object from raw Claude output
+ * when sentinel markers are missing. Looks for a top-level JSON object
+ * that contains both "summary" and "comments" keys.
+ */
+function tryExtractReviewJsonFromRawOutput(
+  rawOutput: string,
+): ReviewPullRequestResult | undefined {
+  // Find the outermost { ... } that contains "summary" and "comments".
+  let braceDepth = 0;
+  let startIndex = -1;
+  for (let i = 0; i < rawOutput.length; i++) {
+    if (rawOutput[i] === "{") {
+      if (braceDepth === 0) startIndex = i;
+      braceDepth++;
+    } else if (rawOutput[i] === "}") {
+      braceDepth--;
+      if (braceDepth === 0 && startIndex !== -1) {
+        const candidate = rawOutput.slice(startIndex, i + 1);
+        if (candidate.includes('"summary"') && candidate.includes('"comments"')) {
+          const parsed = parseReviewJson(candidate);
+          // Only accept if it actually parsed into a meaningful review.
+          if (parsed.summary.length > 0) {
+            return parsed;
+          }
+        }
+        startIndex = -1;
+      }
+    }
+  }
+  return undefined;
 }
 
 function parseReviewJson(payload: string): ReviewPullRequestResult {

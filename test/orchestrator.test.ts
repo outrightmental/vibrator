@@ -232,6 +232,75 @@ test("buildPlan advances to final-description after a clean (zero-comment) revie
   ]);
 });
 
+test("buildPlan re-reviews when the review session recorded zero comments but hasCleanReviewOnHead is false", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 7 })],
+    pullRequests: [
+      createPullRequest({
+        number: 16,
+        linkedIssueNumbers: [7],
+        hasCleanReviewOnHead: false,
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "review-ghost",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "review",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { reviewCommentCount: 0 },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "review-pull-request",
+      issueNumber: 7,
+      pullRequestNumber: 16,
+      pullRequestHeadSha: "sha-16",
+    },
+  ]);
+});
+
+test("buildPlan addresses unresolved review comments even when latest session is not review phase", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 7 })],
+    pullRequests: [
+      createPullRequest({
+        number: 16,
+        linkedIssueNumbers: [7],
+        unresolvedReviewCommentCount: 3,
+        hasCleanReviewOnHead: false,
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "impl-1",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "implementation",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "address-review-comments",
+      issueNumber: 7,
+      pullRequestNumber: 16,
+      pullRequestHeadSha: "sha-16",
+      unresolvedReviewCommentCount: 3,
+    },
+  ]);
+});
+
 test("buildPlan requests another review after review comments are addressed", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 9 })],
@@ -399,7 +468,44 @@ test("buildPlan re-requests the final description if none was captured", () => {
   ]);
 });
 
-test("buildPlan emits no action after the final description session has completed (merge already done)", () => {
+test("buildPlan emits squash-merge after the final description session has completed", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 5 })],
+    pullRequests: [
+      createPullRequest({
+        number: 15,
+        linkedIssueNumbers: [5],
+        closingIssueNumbers: [5],
+        body: "Final summary.",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "description-done",
+        issueNumber: 5,
+        pullRequestNumber: 15,
+        phase: "final-description",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { generatedDescription: "Final summary.", pullRequestBody: "Final summary.\n\nCloses #5" },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "squash-merge",
+      issueNumber: 5,
+      pullRequestNumber: 15,
+      pullRequestTitle: "PR 15",
+      closingIssueNumbers: [5],
+      pullRequestBody: "Final summary.\n\nCloses #5",
+    },
+  ]);
+});
+
+test("buildPlan emits no action after squash-merge session has completed", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 5 })],
     pullRequests: [
@@ -411,12 +517,12 @@ test("buildPlan emits no action after the final description session has complete
     ],
     agentSessions: [
       createSession({
-        id: "description-done",
+        id: "merge-done",
         issueNumber: 5,
         pullRequestNumber: 15,
-        phase: "final-description",
-        updatedAt: "2024-01-02T00:00:00.000Z",
-        result: { generatedDescription: "Final summary." },
+        phase: "squash-merge",
+        updatedAt: "2024-01-03T00:00:00.000Z",
+        result: { pullRequestBody: "Final summary." },
       }),
     ],
   };

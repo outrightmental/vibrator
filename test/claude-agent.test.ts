@@ -97,6 +97,38 @@ test("extractReviewPayload treats unmarked output as a free-text approval", () =
   assert.deepEqual(result.inlineComments, []);
 });
 
+test("extractReviewPayload extracts JSON review from unmarked output when sentinels are missing", () => {
+  const json = JSON.stringify({
+    summary: "Two issues found.",
+    comments: [
+      { path: "src/a.ts", line: 12, body: "Rename this." },
+      { path: "src/b.ts", line: 7, body: "Add test." },
+    ],
+  });
+  const stdout = `Some chatter from Claude tool use\n${json}\nMore chatter`;
+
+  const result = extractReviewPayload(stdout);
+  assert.equal(result.summary, "Two issues found.");
+  assert.equal(result.inlineComments.length, 2);
+  assert.deepEqual(result.inlineComments[0], {
+    path: "src/a.ts",
+    line: 12,
+    body: "Rename this.",
+  });
+});
+
+test("extractReviewPayload extracts clean review JSON from unmarked output", () => {
+  const json = JSON.stringify({
+    summary: "LGTM — everything looks correct.",
+    comments: [],
+  });
+  const stdout = `Thinking about the code…\n${json}\nDone.`;
+
+  const result = extractReviewPayload(stdout);
+  assert.equal(result.summary, "LGTM — everything looks correct.");
+  assert.deepEqual(result.inlineComments, []);
+});
+
 test("extractImplementationPayload parses the JSON body between markers", () => {
   const json = JSON.stringify({
     title: "Add widget",

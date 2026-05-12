@@ -212,35 +212,45 @@ function planPullRequestAction(
     });
   }
 
-  // Clean review on the current head SHA → advance to final-description.
-  if (
-    pullRequest.hasCleanReviewOnHead &&
-    latestCompletedSession?.phase !== "final-description"
-  ) {
-    if (mergeGateAction !== "proceed") {
-      return mergeGateAction;
-    }
+  // Unresolved review comments must be addressed before any merge-path
+  // action, regardless of what the latest session phase is.
+  if (pullRequest.unresolvedReviewCommentCount > 0) {
+    const reviewCommentCount =
+      latestCompletedSession?.phase === "review"
+        ? (latestCompletedSession.result?.reviewCommentCount ?? 0)
+        : 0;
     return withIssueNumber({
-      type: "write-final-description",
+      type: "address-review-comments",
       pullRequestNumber: pullRequest.number,
-      pullRequestTitle: pullRequest.title,
-      pullRequestHeadRefName: pullRequest.headRefName,
-      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
-      pullRequestBody: pullRequest.body,
+      pullRequestHeadSha: pullRequest.headSha,
+      unresolvedReviewCommentCount: Math.max(
+        reviewCommentCount,
+        pullRequest.unresolvedReviewCommentCount,
+      ),
     });
   }
 
   if (latestCompletedSession?.phase === "review") {
     const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
-    if (reviewCommentCount > 0 || pullRequest.unresolvedReviewCommentCount > 0) {
+    if (reviewCommentCount > 0) {
       return withIssueNumber({
         type: "address-review-comments",
         pullRequestNumber: pullRequest.number,
         pullRequestHeadSha: pullRequest.headSha,
-        unresolvedReviewCommentCount: Math.max(
-          reviewCommentCount,
-          pullRequest.unresolvedReviewCommentCount,
-        ),
+        unresolvedReviewCommentCount: reviewCommentCount,
+      });
+    }
+
+    // The review session recorded zero comments. Require confirmation
+    // from GitHub as well: hasCleanReviewOnHead must be true so we
+    // know the APPROVE review actually landed on the current head SHA.
+    if (!pullRequest.hasCleanReviewOnHead) {
+      // The review session said zero comments but GitHub doesn't see a
+      // clean review on the head — re-review to reconcile.
+      return withIssueNumber({
+        type: "review-pull-request",
+        pullRequestNumber: pullRequest.number,
+        pullRequestHeadSha: pullRequest.headSha,
       });
     }
 
@@ -273,11 +283,41 @@ function planPullRequestAction(
       });
     }
 
-    // The squash merge is performed as part of the write-final-description
-    // action itself, so by the time the session is completed there is
-    // nothing left to do. (The PR will disappear from listOpenPullRequests
-    // on the next iteration.)
+    // write-final-description completed with a description but merge
+    // hasn't happened yet — emit the squash-merge action.
+    return withIssueNumber({
+      type: "squash-merge",
+      pullRequestNumber: pullRequest.number,
+      pullRequestTitle: pullRequest.title,
+      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
+      pullRequestBody:
+        latestCompletedSession.result?.pullRequestBody ?? pullRequest.body,
+    });
+  }
+
+  if (latestCompletedSession?.phase === "squash-merge") {
+    // The squash merge has been completed — nothing left to do.
+    // (The PR will disappear from listOpenPullRequests on the next iteration.)
     return undefined;
+  }
+
+  // Clean review on the current head SHA with no prior review session
+  // (e.g. an externally-posted clean review). Only advance to
+  // final-description when both the GitHub-side flag AND our own
+  // session history agree. If we have no session but see a clean
+  // review, trust it and advance.
+  if (pullRequest.hasCleanReviewOnHead && !latestCompletedSession) {
+    if (mergeGateAction !== "proceed") {
+      return mergeGateAction;
+    }
+    return withIssueNumber({
+      type: "write-final-description",
+      pullRequestNumber: pullRequest.number,
+      pullRequestTitle: pullRequest.title,
+      pullRequestHeadRefName: pullRequest.headRefName,
+      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
+      pullRequestBody: pullRequest.body,
+    });
   }
 
   if (latestCompletedSession?.phase === "address-review-comments") {

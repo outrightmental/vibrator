@@ -352,11 +352,6 @@ export async function executeAction(
       );
 
       await gitHubClient.updatePullRequestBody(action.pullRequestNumber, mergedBody);
-      await gitHubClient.squashMergePullRequest(
-        action.pullRequestNumber,
-        action.pullRequestTitle,
-        mergedBody,
-      );
 
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
@@ -367,6 +362,28 @@ export async function executeAction(
           pullRequestBody: mergedBody,
           generatedDescription: description,
         },
+      });
+      return {};
+    }
+
+    case "squash-merge": {
+      const mergedBody = buildMergedPullRequestBody(
+        action.pullRequestBody,
+        action.closingIssueNumbers,
+      );
+
+      await gitHubClient.squashMergePullRequest(
+        action.pullRequestNumber,
+        action.pullRequestTitle,
+        mergedBody,
+      );
+
+      await sessionStore.createSession({
+        issueNumber: action.issueNumber,
+        pullRequestNumber: action.pullRequestNumber,
+        phase: "squash-merge",
+        status: "completed",
+        result: { pullRequestBody: mergedBody },
       });
       return {};
     }
