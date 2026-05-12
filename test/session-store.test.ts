@@ -164,3 +164,57 @@ test("save replaces an existing session file on repeated writes", async () => {
   const persistedSessions = await sessionStore.load();
   assert.deepEqual(persistedSessions.map((session) => session.id), ["session-2"]);
 });
+
+test("getRateLimitedUntil returns undefined when no pause has been recorded", async () => {
+  const filePath = await createSessionStorePath();
+  const sessionStore = new FileSessionStore(filePath);
+
+  // Missing file is treated as "no pause".
+  assert.equal(await sessionStore.getRateLimitedUntil(), undefined);
+
+  // Saving sessions without any pause must not introduce a pause.
+  await sessionStore.save([]);
+  assert.equal(await sessionStore.getRateLimitedUntil(), undefined);
+});
+
+test("setRateLimitedUntil persists across reads and survives save()", async () => {
+  const filePath = await createSessionStorePath();
+  const sessionStore = new FileSessionStore(filePath);
+
+  const until = new Date("2026-05-11T13:00:00.000Z");
+  await sessionStore.setRateLimitedUntil(until);
+
+  assert.equal(
+    (await sessionStore.getRateLimitedUntil())?.toISOString(),
+    until.toISOString(),
+  );
+
+  // save() must not clobber the persisted rate-limit marker — the
+  // orchestrator routinely calls save() during normal operation and the
+  // pause needs to outlive those writes.
+  await sessionStore.save([
+    {
+      id: "session-1",
+      issueNumber: 1,
+      phase: "implementation",
+      status: "in_progress",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    },
+  ]);
+
+  assert.equal(
+    (await sessionStore.getRateLimitedUntil())?.toISOString(),
+    until.toISOString(),
+  );
+});
+
+test("setRateLimitedUntil(undefined) clears a previously persisted pause", async () => {
+  const filePath = await createSessionStorePath();
+  const sessionStore = new FileSessionStore(filePath);
+
+  await sessionStore.setRateLimitedUntil(new Date("2026-05-11T13:00:00.000Z"));
+  await sessionStore.setRateLimitedUntil(undefined);
+
+  assert.equal(await sessionStore.getRateLimitedUntil(), undefined);
+});

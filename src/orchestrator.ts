@@ -35,6 +35,20 @@ function sortByCreatedAt<T extends { createdAt: string; number: number }>(items:
   });
 }
 
+/**
+ * Lower number = higher priority. Bugs (GitHub issue Type === "Bug",
+ * case-insensitively) jump ahead of every other type — features, tasks,
+ * chores, untyped issues — because an open bug with no blocking
+ * relationships should always be addressed before new feature/task work.
+ * Compared on the native issue Type field, NOT labels.
+ */
+function issuePriority(issue: Issue): number {
+  if (issue.type?.toLowerCase() === "bug") {
+    return 0;
+  }
+  return 1;
+}
+
 function appendMatches(target: Set<number>, source: string, pattern: RegExp): void {
   for (const match of source.matchAll(pattern)) {
     const capturedIssueNumber = match[1];
@@ -134,6 +148,49 @@ function getLatestCompletedSession(agentSessions: AgentSession[]): AgentSession 
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
 }
 
+/**
+ * Returns true when the most recent terminal (completed or failed) review
+ * session for this PR ended in failure. Used to detect the "Copilot wasn't
+ * able to review any files" failure mode so the next review request can
+ * include a draft → ready-for-review reset (GitHub's documented recovery).
+ * A subsequent successful (completed) review on the same PR clears the
+ * signal — we only reset when the *latest* review attempt failed.
+ */
+function hasFailedLatestReviewSession(agentSessions: AgentSession[]): boolean {
+  const latestReviewSession = [...agentSessions]
+    .filter(
+      (session) =>
+        session.phase === "review" &&
+        (session.status === "completed" || session.status === "failed"),
+    )
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  return latestReviewSession?.status === "failed";
+}
+
+/**
+ * Returns true when the most recent terminal session for `phase` failed
+ * with `staleReason === "copilot-did-not-acknowledge"` AND no subsequent
+ * successful (`completed`) session for the same phase has cleared it.
+ * Used to set the `reassignCopilot` flag on the next action so the
+ * executor unassigns + re-assigns Copilot before re-summoning.
+ */
+function shouldReassignCopilotForPhase(
+  agentSessions: readonly AgentSession[],
+  phase: AgentSession["phase"],
+): boolean {
+  const latestTerminalForPhase = [...agentSessions]
+    .filter(
+      (session) =>
+        session.phase === phase &&
+        (session.status === "completed" || session.status === "failed"),
+    )
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  return (
+    latestTerminalForPhase?.status === "failed" &&
+    latestTerminalForPhase.staleReason === "copilot-did-not-acknowledge"
+  );
+}
+
 function planPullRequestAction(
   pullRequest: PullRequest,
   issueNumbers: readonly number[],
@@ -147,6 +204,14 @@ function planPullRequestAction(
   }
 
   const latestCompletedSession = getLatestCompletedSession(relevantSessions);
+  // When the most recent Copilot review attempt failed (typically the
+  // "Copilot wasn't able to review any files in this pull request." message
+  // — reconcile fails those review sessions), the next review request must
+  // first toggle the PR draft → ready-for-review to reset Copilot's review
+  // state. Without this reset Copilot tends to ignore the new review
+  // request and the orchestrator spins re-requesting a review that never
+  // arrives.
+  const shouldResetDraftStateBeforeReview = hasFailedLatestReviewSession(relevantSessions);
   const completedSessionIssueNumber = latestCompletedSession?.issueNumber;
   // Keep PR-level work attached to the issue that most recently advanced this PR when possible.
   // For PRs with no linked issue, actionIssueNumber stays undefined.
@@ -173,10 +238,15 @@ function planPullRequestAction(
   // (Copilot pushed a resolution) the resolve-conflicts session completes and
   // the normal flow resumes on the next iteration.
   if (pullRequest.hasMergeConflicts) {
+    const reassignCopilot = shouldReassignCopilotForPhase(
+      relevantSessions,
+      "resolve-conflicts",
+    );
     return withIssueNumber({
       type: "resolve-conflicts",
       pullRequestNumber: pullRequest.number,
       pullRequestHeadSha: pullRequest.headSha,
+      ...(reassignCopilot ? { reassignCopilot: true } : {}),
     });
   }
 
@@ -203,11 +273,16 @@ function planPullRequestAction(
   if (latestCompletedSession?.phase === "review") {
     const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
     if (reviewCommentCount > 0) {
+      const reassignCopilot = shouldReassignCopilotForPhase(
+        relevantSessions,
+        "address-review-comments",
+      );
       return withIssueNumber({
         type: "address-review-comments",
         pullRequestNumber: pullRequest.number,
         pullRequestHeadSha: pullRequest.headSha,
         reviewCommentCount,
+        ...(reassignCopilot ? { reassignCopilot: true } : {}),
       });
     }
 
@@ -255,6 +330,7 @@ function planPullRequestAction(
       type: "request-review",
       pullRequestNumber: pullRequest.number,
       resolveReviewThreads: true,
+      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
     });
   }
 
@@ -263,6 +339,7 @@ function planPullRequestAction(
     return withIssueNumber({
       type: "request-review",
       pullRequestNumber: pullRequest.number,
+      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
     });
   }
 
@@ -270,6 +347,7 @@ function planPullRequestAction(
     return withIssueNumber({
       type: "request-review",
       pullRequestNumber: pullRequest.number,
+      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
     });
   }
 
@@ -280,6 +358,7 @@ function planPullRequestAction(
     return withIssueNumber({
       type: "request-review",
       pullRequestNumber: pullRequest.number,
+      ...(shouldResetDraftStateBeforeReview ? { resetDraftState: true } : {}),
     });
   }
 
@@ -382,8 +461,25 @@ export function buildPlan(
     return blockers.every((blocker) => !openIssueNumbers.has(blocker));
   });
 
-  for (const issue of eligibleIssues.slice(0, remainingCapacity)) {
-    actions.push({ type: "start-implementation", issueNumber: issue.number });
+  // Prioritize bugs ahead of other issue types. GitHub's native issue Type
+  // (distinct from labels) is the authoritative signal — an unblocked open
+  // bug should always be picked before any feature/task/chore work,
+  // regardless of which was filed first. Within the same priority bucket the
+  // existing createdAt ordering is preserved (oldest first).
+  const prioritizedEligibleIssues = [...eligibleIssues].sort(
+    (left, right) => issuePriority(left) - issuePriority(right),
+  );
+
+  for (const issue of prioritizedEligibleIssues.slice(0, remainingCapacity)) {
+    const reassignCopilot = shouldReassignCopilotForPhase(
+      snapshot.agentSessions.filter((session) => session.issueNumber === issue.number),
+      "implementation",
+    );
+    actions.push({
+      type: "start-implementation",
+      issueNumber: issue.number,
+      ...(reassignCopilot ? { reassignCopilot: true } : {}),
+    });
   }
 
   return { actions, blockedIssueNumbers: blockedIssueIndex };
