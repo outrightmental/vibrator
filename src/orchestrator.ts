@@ -202,7 +202,8 @@ function shouldReassignCopilotForPhase(
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   return (
     latestTerminalForPhase?.status === "failed" &&
-    latestTerminalForPhase.staleReason === "copilot-did-not-acknowledge"
+    (latestTerminalForPhase.staleReason === "copilot-did-not-acknowledge" ||
+      latestTerminalForPhase.staleReason === "copilot-stopped-with-error")
   );
 }
 

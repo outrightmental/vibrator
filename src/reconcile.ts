@@ -28,6 +28,18 @@ export interface ReconcileGitHubClient {
     pullRequestNumber: number,
   ): Promise<Array<{ createdAt: string }>>;
   /**
+   * Optional — when implemented, returns the subset of Copilot "finished
+   * work" timeline events that ended in failure (typically
+   * `copilot_work_finished_failure`, emitted when the cloud-agent
+   * workflow run aborts — most commonly because the user's premium-request
+   * quota was exhausted). The reconciler uses this to distinguish a
+   * clean Copilot turn from an aborted one, so an aborted turn fails
+   * the active session instead of leaving it stuck in_progress.
+   */
+  listCopilotFailedFinishEvents?(
+    issueOrPullRequestNumber: number,
+  ): Promise<Array<{ createdAt: string }>>;
+  /**
    * Optional — when implemented, the reconciler uses Copilot "started work"
    * timeline events together with `listCopilotFinishedWorkEvents` and comment
    * reactions to detect whether Copilot has acknowledged a summon. When not
@@ -167,6 +179,34 @@ function isSessionPastAcknowledgeTimeout(
  * GitHub client does not support the relevant lookups (best-effort
  * detection only).
  */
+/**
+ * Returns true when Copilot's cloud-agent run for this session aborted
+ * with a `copilot_work_finished_failure` (or similarly-named failure)
+ * timeline event AFTER the session began. Used by the reconciler to fail
+ * a stuck session whose Copilot turn ended with an error (e.g. rate-limit
+ * exhaustion) — the underlying agent run is done, so waiting longer can
+ * never produce progress.
+ */
+async function hasCopilotStoppedWithFailureAfterSession(
+  gitHubClient: ReconcileGitHubClient,
+  session: AgentSession,
+  timelineSubjectNumber: number,
+): Promise<boolean> {
+  if (!gitHubClient.listCopilotFailedFinishEvents) {
+    return false;
+  }
+  const sessionStartMs = Date.parse(session.createdAt);
+  if (Number.isNaN(sessionStartMs)) {
+    return false;
+  }
+  const failureEvents = await gitHubClient.listCopilotFailedFinishEvents(
+    timelineSubjectNumber,
+  );
+  return failureEvents.some(
+    (event) => Date.parse(event.createdAt) > sessionStartMs,
+  );
+}
+
 async function hasCopilotAcknowledgedSession(
   gitHubClient: ReconcileGitHubClient,
   session: AgentSession,
@@ -247,6 +287,27 @@ export async function reconcileSessions(
             pullRequest.number,
           );
           const sessionStartMs = Date.parse(session.createdAt);
+          // A `copilot_work_finished_failure` event is in `finishedWorkEvents`
+          // (its name still contains "finish"), so we must check for it
+          // explicitly before treating the session as completed. Without
+          // this guard a Copilot run aborted by a rate-limit would be
+          // recorded as a successful implementation.
+          const stoppedWithFailure = await hasCopilotStoppedWithFailureAfterSession(
+            gitHubClient,
+            session,
+            pullRequest.number,
+          );
+          if (stoppedWithFailure && pullRequest.headSha === session.result?.pullRequestHeadSha) {
+            await sessionStore.failSession(session.id, {
+              staleReason: "copilot-stopped-with-error",
+            });
+            events.push({
+              session,
+              outcome: "failed-stale",
+              staleReason: "copilot-stopped-with-error",
+            });
+            break;
+          }
           const hasFinishedAfterSession = finishedWorkEvents.some(
             (event) => Date.parse(event.createdAt) > sessionStartMs,
           );
@@ -447,6 +508,22 @@ export async function reconcileSessions(
             session.pullRequestNumber,
           );
           const sessionStartMs = Date.parse(session.createdAt);
+          const stoppedWithFailure = await hasCopilotStoppedWithFailureAfterSession(
+            gitHubClient,
+            session,
+            session.pullRequestNumber,
+          );
+          if (stoppedWithFailure) {
+            await sessionStore.failSession(session.id, {
+              staleReason: "copilot-stopped-with-error",
+            });
+            events.push({
+              session,
+              outcome: "failed-stale",
+              staleReason: "copilot-stopped-with-error",
+            });
+            break;
+          }
           const hasFinishedAfterSession = finishedWorkEvents.some(
             (event) => Date.parse(event.createdAt) > sessionStartMs,
           );
@@ -508,6 +585,30 @@ export async function reconcileSessions(
           events.push({ session, outcome: "completed" });
           break;
         }
+        // If Copilot's cloud-agent workflow run aborted (e.g. rate-limit
+        // exhaustion), the resolve-conflicts session can never make
+        // progress on its own — the agent already finished, just
+        // unsuccessfully. Fail the session so the orchestrator can
+        // re-request resolve-conflicts on the next iteration (after any
+        // active rate-limit pause clears).
+        if (pullRequest && session.pullRequestNumber !== undefined) {
+          const stoppedWithFailure = await hasCopilotStoppedWithFailureAfterSession(
+            gitHubClient,
+            session,
+            session.pullRequestNumber,
+          );
+          if (stoppedWithFailure) {
+            await sessionStore.failSession(session.id, {
+              staleReason: "copilot-stopped-with-error",
+            });
+            events.push({
+              session,
+              outcome: "failed-stale",
+              staleReason: "copilot-stopped-with-error",
+            });
+            break;
+          }
+        }
         // No head SHA change yet. Check whether Copilot has acknowledged the
         // resolve-conflicts request; if not within the acknowledge-timeout,
         // fail so the orchestrator can unassign + re-assign + re-post.
@@ -539,6 +640,24 @@ export async function reconcileSessions(
             generatedDescription: pullRequest.body,
           });
           events.push({ session, outcome: "completed" });
+          break;
+        }
+        if (pullRequest && session.pullRequestNumber !== undefined) {
+          const stoppedWithFailure = await hasCopilotStoppedWithFailureAfterSession(
+            gitHubClient,
+            session,
+            session.pullRequestNumber,
+          );
+          if (stoppedWithFailure) {
+            await sessionStore.failSession(session.id, {
+              staleReason: "copilot-stopped-with-error",
+            });
+            events.push({
+              session,
+              outcome: "failed-stale",
+              staleReason: "copilot-stopped-with-error",
+            });
+          }
         }
         break;
     }
