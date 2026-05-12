@@ -160,6 +160,8 @@ interface ClaudeAgentClientOptions {
   ghCommand?: string;
   /** Anthropic API key. When omitted, falls back to ANTHROPIC_API_KEY env. */
   anthropicApiKey?: string;
+  /** Model to pass to the claude CLI via --model. When omitted, falls back to CLAUDE_MODEL env. */
+  claudeModel?: string;
 }
 
 function defaultCheckoutRootDir(): string {
@@ -511,12 +513,14 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly claudeCommand: string;
   private readonly ghCommand: string;
   private readonly anthropicApiKey: string | undefined;
+  private readonly claudeModel: string | undefined;
 
   constructor(options: ClaudeAgentClientOptions = {}) {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
     this.claudeCommand = options.claudeCommand ?? "claude";
     this.ghCommand = options.ghCommand ?? "gh";
     this.anthropicApiKey = options.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY;
+    this.claudeModel = options.claudeModel ?? process.env.CLAUDE_MODEL;
   }
 
   async implementIssue(params: ImplementIssueParams): Promise<ImplementIssueResult> {
@@ -733,12 +737,14 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // own GitHub token (which may have different permissions than the
     // user's `gh auth` setup).
     delete env.GH_TOKEN;
+    const modelArgs = this.claudeModel ? ["--model", this.claudeModel] : [];
     return runCommand(
       this.claudeCommand,
       [
         "--print",
         "--permission-mode",
         "acceptEdits",
+        ...modelArgs,
         prompt,
       ],
       {

@@ -118,6 +118,7 @@ interface Config {
   repo: string;
   token: string;
   anthropicApiKey: string;
+  claudeModel: string | undefined;
   maxConcurrency: number;
   intervalMs: number;
   once: boolean;
@@ -163,12 +164,14 @@ function parseArgs(argv: string[]): Config {
   const dryRun = argv.includes("--dry-run");
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
+  const claudeModel = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
 
   return {
     owner,
     repo,
     token,
     anthropicApiKey,
+    claudeModel,
     maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
     intervalMs: Number.isNaN(intervalMs) ? 60000 : intervalMs,
     once,
@@ -187,6 +190,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   const sessionStore = new FileSessionStore(config.sessionStorePath);
   const claudeAgentClient = createClaudeAgentClient({
     anthropicApiKey: config.anthropicApiKey,
+    ...(config.claudeModel !== undefined && { claudeModel: config.claudeModel }),
   });
 
   write(HEAVY_RULE);
