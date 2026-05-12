@@ -148,6 +148,15 @@ function findPullRequest(
   return pullRequest;
 }
 
+export interface ExecuteActionResult {
+  /**
+   * True when a branch-modifying action (address-review-comments,
+   * address-failing-checks, resolve-conflicts) completed but the branch HEAD
+   * SHA did not change — i.e. Claude ran but pushed no new commits.
+   */
+  noCommitsPushed?: boolean;
+}
+
 export async function executeAction(
   gitHubClient: ActionGitHubClient,
   sessionStore: ActionSessionStore,
@@ -155,9 +164,9 @@ export async function executeAction(
   action: OrchestratorAction,
   dryRun: boolean,
   context: ExecuteActionContext,
-): Promise<void> {
+): Promise<ExecuteActionResult> {
   if (dryRun) {
-    return;
+    return {};
   }
 
   switch (action.type) {
@@ -188,7 +197,7 @@ export async function executeAction(
           pullRequestBody: implementation.pullRequestBody,
         },
       });
-      return;
+      return {};
     }
 
     case "review-pull-request": {
@@ -218,7 +227,7 @@ export async function executeAction(
           pullRequestHeadSha: pullRequest.headSha,
         },
       });
-      return;
+      return {};
     }
 
     case "address-review-comments": {
@@ -236,9 +245,24 @@ export async function executeAction(
         baseRefName: pullRequest.baseRefName,
         reviewComments,
       });
-      // After Claude has pushed fixes, resolve the review threads so the
-      // next review request starts clean.
-      await gitHubClient.resolvePullRequestReviewThreads(pullRequest.number);
+      // Resolve review threads only if new commits were actually pushed to the
+      // branch. If the head SHA didn't change (Claude made no commits) we leave
+      // the threads open so a GitHub user isn't confused by threads being
+      // resolved without any new code on the branch.
+      const addressReviewNoCommits = update.headSha === pullRequest.headSha;
+      if (!addressReviewNoCommits) {
+        await gitHubClient.resolvePullRequestReviewThreads(pullRequest.number);
+      } else {
+        console.warn(
+          `[vibrator] WARNING: address-review-comments on PR #${pullRequest.number} ` +
+          `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
+          `Claude ran but pushed no new commits. ` +
+          `Review comments that were sent to Claude:\n` +
+          reviewComments
+            .map((c, i) => `  ${i + 1}. ${c.path}${c.line !== null ? `:${c.line}` : ""} @${c.author}: ${c.body}`)
+            .join("\n"),
+        );
+      }
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         pullRequestNumber: pullRequest.number,
@@ -246,7 +270,7 @@ export async function executeAction(
         status: "completed",
         result: { pullRequestHeadSha: update.headSha },
       });
-      return;
+      return { noCommitsPushed: addressReviewNoCommits };
     }
 
     case "address-failing-checks": {
@@ -263,6 +287,15 @@ export async function executeAction(
         baseRefName: pullRequest.baseRefName,
         failingChecks,
       });
+      const checksNoCommits = update.headSha === pullRequest.headSha;
+      if (checksNoCommits) {
+        console.warn(
+          `[vibrator] WARNING: address-failing-checks on PR #${pullRequest.number} ` +
+          `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
+          `Claude ran but pushed no new commits. ` +
+          `Failing checks that were sent to Claude: ${failingChecks.map((c) => c.name).join(", ") || "(none)"}`,
+        );
+      }
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         pullRequestNumber: pullRequest.number,
@@ -270,7 +303,7 @@ export async function executeAction(
         status: "completed",
         result: { pullRequestHeadSha: update.headSha },
       });
-      return;
+      return { noCommitsPushed: checksNoCommits };
     }
 
     case "resolve-conflicts": {
@@ -282,6 +315,14 @@ export async function executeAction(
         headRefName: pullRequest.headRefName,
         baseRefName: pullRequest.baseRefName,
       });
+      const conflictsNoCommits = update.headSha === pullRequest.headSha;
+      if (conflictsNoCommits) {
+        console.warn(
+          `[vibrator] WARNING: resolve-conflicts on PR #${pullRequest.number} ` +
+          `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
+          `Claude ran but pushed no new commits.`,
+        );
+      }
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         pullRequestNumber: pullRequest.number,
@@ -289,7 +330,7 @@ export async function executeAction(
         status: "completed",
         result: { pullRequestHeadSha: update.headSha },
       });
-      return;
+      return { noCommitsPushed: conflictsNoCommits };
     }
 
     case "write-final-description": {
@@ -327,7 +368,7 @@ export async function executeAction(
           generatedDescription: description,
         },
       });
-      return;
+      return {};
     }
   }
 }

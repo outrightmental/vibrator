@@ -126,7 +126,8 @@ export class GitHubClient {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${this.apiBaseUrl}${path}`, {
+    const url = `${this.apiBaseUrl}${path}`;
+    const response = await fetch(url, {
       ...init,
       headers: {
         Accept: "application/vnd.github+json",
@@ -144,7 +145,47 @@ export class GitHubClient {
     }
 
     if (!response.ok) {
-      throw new Error(`GitHub request failed (${response.status} ${response.statusText}) for ${path}`);
+      // Read the body for full triage context before throwing.
+      let responseBody: string;
+      try {
+        responseBody = await response.text();
+      } catch {
+        responseBody = "(could not read response body)";
+      }
+
+      // Redact auth from request headers for safe logging.
+      const requestHeaders: Record<string, string> = {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "vibrator",
+        ...(init?.headers as Record<string, string> ?? {}),
+      };
+      delete requestHeaders["Authorization"];
+
+      let requestBodySummary: string;
+      if (typeof init?.body === "string") {
+        try {
+          // Pretty-print JSON bodies for readability.
+          requestBodySummary = JSON.stringify(JSON.parse(init.body), null, 2);
+        } catch {
+          requestBodySummary = init.body;
+        }
+      } else {
+        requestBodySummary = "(no body)";
+      }
+
+      console.error(
+        `[vibrator] GitHub ${response.status} ${response.statusText} — full triage context:\n` +
+        `  Method : ${init?.method ?? "GET"}\n` +
+        `  URL    : ${url}\n` +
+        `  Request headers (redacted): ${JSON.stringify(requestHeaders)}\n` +
+        `  Request body:\n${requestBodySummary}\n` +
+        `  Response body:\n${responseBody}`,
+      );
+
+      throw new Error(
+        `GitHub request failed (${response.status} ${response.statusText}) for ${path}. ` +
+        `Response body: ${responseBody}`,
+      );
     }
 
     if (response.status === 204) {

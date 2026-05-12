@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import "dotenv/config";
 
-import { executeAction } from "./actions.js";
+import { executeAction, type ExecuteActionResult } from "./actions.js";
 import { createClaudeAgentClient } from "./claude-agent.js";
 import {
   buildDefaultSessionStorePath,
@@ -322,11 +322,17 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       blank();
       for (let i = 0; i < results.length; i++) {
         const result = results[i]!;
+        const prefix = `[${i + 1}/${plan.actions.length}]`;
         if (result.status === "fulfilled") {
-          note(`[${i + 1}/${plan.actions.length}] ✓ done`, 2);
+          const actionResult: ExecuteActionResult = result.value;
+          if (actionResult.noCommitsPushed) {
+            note(`${prefix} ⚠ done — no new commits pushed to branch (Claude ran but made no changes)`, 2);
+          } else {
+            note(`${prefix} ✓ done`, 2);
+          }
         } else {
           note(
-            `[${i + 1}/${plan.actions.length}] ✗ failed: ${(result.reason as Error).message}`,
+            `${prefix} ✗ failed: ${(result.reason as Error).message}`,
             2,
           );
         }
