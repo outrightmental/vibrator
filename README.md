@@ -121,6 +121,29 @@ The repository slug can be omitted from the CLI when `GITHUB_REPOSITORY` is set.
 | `LOOP_INTERVAL_MS` | No | `60000` | Delay between loop iterations. |
 | `SESSION_TIMEOUT_MS` | No | `21600000` | Marks still-active sessions failed after 6 hours by default. |
 | `VIBRATOR_SESSION_STORE_PATH` | No | platform cache path | Path for persisted local agent-session state. |
+| `VIBRATOR_DASHBOARD_PORT` | No | `7777` | Port for the local broadcast dashboard. |
+| `VIBRATOR_DASHBOARD_HOST` | No | `127.0.0.1` | Bind address for the dashboard server. |
+| `VIBRATOR_NO_DASHBOARD` | No | - | Set to `1` to disable the dashboard server entirely. |
+| `VIBRATOR_NO_BROWSER` | No | - | Set to `1` to keep the dashboard server running but not auto-launch a browser window. |
+
+## Live broadcast dashboard
+
+On startup, `vibrator` spins up a local HTTP server (default `http://127.0.0.1:7777/`)
+and opens a browser window pointing at it. The dashboard is a cyberpunk
+broadcast-television treatment of the same SDLC loop the CLI runs:
+
+- A persistent countdown to the next SDLC cycle, top-right.
+- An animated fly-in banner when a cycle begins, then a per-phase segment
+  ("Clearing the gates", "Connecting to the mainframe", "Reconciling the
+  field", "Quota sweep", "Blocker triage", "Taking actions") with the same
+  live log lines the CLI emits.
+- Between cycles, a non-stop "GitHub activity uplink" carousel of every open
+  pull request (with CI status / draft / conflict tags), open issue, agent
+  session, and blocker — plus a live scoreboard and a lower-third ticker.
+
+Disable it (e.g. on headless servers) with `--no-dashboard` or
+`VIBRATOR_NO_DASHBOARD=1`. Keep the server but skip the browser launch with
+`--no-browser` or `VIBRATOR_NO_BROWSER=1`.
 
 ## Issue language the loop understands
 

@@ -3,6 +3,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import "dotenv/config";
 
 import { executeAction } from "./actions.js";
+import { DashboardServer, openBrowser } from "./dashboard-server.js";
+import type { SnapshotSummary } from "./dashboard-server.js";
 import {
   buildDefaultSessionStorePath,
   GitHubClient,
@@ -19,6 +21,32 @@ import type {
   RepositorySnapshot,
 } from "./types.js";
 
+// Module-level dashboard broadcaster. The CLI writers below mirror their
+// output here so the live web dashboard sees every line the user sees in
+// the terminal. Kept module-scoped because the writers are reused across
+// many call sites and threading a parameter through each one would be
+// invasive and obscure the orchestrator logic.
+let dashboard: DashboardServer | undefined;
+let currentIterationNumber = 0;
+let currentPhase = "Boot";
+
+function setDashboard(server: DashboardServer | undefined): void {
+  dashboard = server;
+}
+
+function publishLog(level: "info" | "bullet" | "note" | "heavy", indent: number, message: string): void {
+  if (!dashboard) return;
+  dashboard.publish({
+    type: "log",
+    iteration: currentIterationNumber,
+    phase: currentPhase,
+    level,
+    indent,
+    message,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 const DEFAULT_SESSION_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_ACKNOWLEDGE_TIMEOUT_MS = 10 * 60 * 1000;
 const RULE = "─".repeat(80);
@@ -30,6 +58,11 @@ function timestamp(): string {
 
 function write(line: string): void {
   console.log(line);
+  // Lines composed entirely of box-drawing rule characters are the CLI's
+  // visual section dividers — the dashboard already draws section frames,
+  // so don't pollute the live feed with them.
+  if (/^[─═]+$/.test(line.trim())) return;
+  publishLog("info", 0, line);
 }
 
 function blank(): void {
@@ -39,17 +72,41 @@ function blank(): void {
 function section(title: string): void {
   blank();
   write(title);
-  write(RULE);
+  console.log(RULE);
+  // A "section" in the CLI maps to an SDLC phase in the dashboard. End the
+  // previous phase (if any) and start the new one so the broadcast steps
+  // through phases with its own on-screen treatment.
+  if (dashboard) {
+    if (currentPhase && currentPhase !== "Boot") {
+      dashboard.publish({
+        type: "phase",
+        iteration: currentIterationNumber,
+        phase: currentPhase,
+        status: "end",
+        timestamp: new Date().toISOString(),
+      });
+    }
+    currentPhase = title;
+    dashboard.publish({
+      type: "phase",
+      iteration: currentIterationNumber,
+      phase: title,
+      status: "start",
+      timestamp: new Date().toISOString(),
+    });
+  }
 }
 
 function bullet(text: string, indent = 1): void {
   const pad = "  ".repeat(indent);
-  write(`${pad}• ${text}`);
+  console.log(`${pad}• ${text}`);
+  publishLog("bullet", indent, text);
 }
 
 function note(text: string, indent = 1): void {
   const pad = "  ".repeat(indent);
-  write(`${pad}${text}`);
+  console.log(`${pad}${text}`);
+  publishLog("note", indent, text);
 }
 
 function formatDuration(milliseconds: number): string {
@@ -135,6 +192,10 @@ interface Config {
   sessionStorePath: string;
   sessionTimeoutMs: number;
   acknowledgeTimeoutMs: number;
+  dashboardHost: string;
+  dashboardPort: number;
+  dashboardEnabled: boolean;
+  openBrowserOnStart: boolean;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -180,6 +241,16 @@ function parseArgs(argv: string[]): Config {
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
 
+  const dashboardPortRaw = Number.parseInt(process.env.VIBRATOR_DASHBOARD_PORT ?? "7777", 10);
+  const dashboardPort = Number.isNaN(dashboardPortRaw) ? 7777 : dashboardPortRaw;
+  const dashboardHost = process.env.VIBRATOR_DASHBOARD_HOST ?? "127.0.0.1";
+  const dashboardEnabled =
+    !argv.includes("--no-dashboard") && process.env.VIBRATOR_NO_DASHBOARD !== "1";
+  const openBrowserOnStart =
+    dashboardEnabled &&
+    !argv.includes("--no-browser") &&
+    process.env.VIBRATOR_NO_BROWSER !== "1";
+
   return {
     owner,
     repo,
@@ -193,6 +264,10 @@ function parseArgs(argv: string[]): Config {
     acknowledgeTimeoutMs: Number.isNaN(acknowledgeTimeoutMs)
       ? DEFAULT_ACKNOWLEDGE_TIMEOUT_MS
       : acknowledgeTimeoutMs,
+    dashboardHost,
+    dashboardPort,
+    dashboardEnabled,
+    openBrowserOnStart,
   };
 }
 
@@ -277,6 +352,37 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   );
 
   section("Repository snapshot");
+  if (dashboard) {
+    const summary: SnapshotSummary = {
+      pullRequests: snapshot.pullRequests.map((pr) => ({
+        number: pr.number,
+        title: pr.title,
+        draft: pr.draft,
+        checksStatus: pr.checksStatus,
+        headRefName: pr.headRefName,
+        hasMergeConflicts: pr.hasMergeConflicts,
+        changedFiles: pr.changedFiles,
+        url: gitHubClient.pullRequestUrl(pr.number),
+        linkedIssueNumbers: pr.linkedIssueNumbers,
+      })),
+      issues: snapshot.issues.map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        type: issue.type,
+        assignees: issue.assignees,
+        url: gitHubClient.issueUrl(issue.number),
+      })),
+      agentSessions: snapshot.agentSessions.map((s) => ({
+        id: s.id,
+        phase: s.phase,
+        status: s.status,
+        issueNumber: s.issueNumber,
+        pullRequestNumber: s.pullRequestNumber,
+      })),
+      blockedIssueNumbers: {},
+    };
+    dashboard.setSnapshot(iterationNumber, summary);
+  }
   bullet(`${snapshot.issues.length} open issue(s)`);
   bullet(
     `${snapshot.pullRequests.length} open pull request(s)` +
@@ -441,6 +547,14 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   }
   if (detectedRateLimitResetAt) {
     await sessionStore.setRateLimitedUntil(detectedRateLimitResetAt);
+    if (dashboard) {
+      dashboard.publish({
+        type: "rate-limit",
+        iteration: iterationNumber,
+        resetAt: detectedRateLimitResetAt.toISOString(),
+        timestamp: new Date().toISOString(),
+      });
+    }
     bullet(
       `pausing until ${detectedRateLimitResetAt.toISOString()} ` +
         `(≈${formatDuration(detectedRateLimitResetAt.getTime() - Date.now())} from now)`,
@@ -456,6 +570,39 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   // --- Plan -------------------------------------------------------------
   const plan = buildPlan(snapshot, config.maxConcurrency);
   const blockedEntries = Object.entries(plan.blockedIssueNumbers);
+
+  // Re-publish the snapshot with blocker info filled in so the dashboard's
+  // between-cycle "broadcast TV" can show blockers as their own segment.
+  if (dashboard) {
+    dashboard.setSnapshot(iterationNumber, {
+      pullRequests: snapshot.pullRequests.map((pr) => ({
+        number: pr.number,
+        title: pr.title,
+        draft: pr.draft,
+        checksStatus: pr.checksStatus,
+        headRefName: pr.headRefName,
+        hasMergeConflicts: pr.hasMergeConflicts,
+        changedFiles: pr.changedFiles,
+        url: gitHubClient.pullRequestUrl(pr.number),
+        linkedIssueNumbers: pr.linkedIssueNumbers,
+      })),
+      issues: snapshot.issues.map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        type: issue.type,
+        assignees: issue.assignees,
+        url: gitHubClient.issueUrl(issue.number),
+      })),
+      agentSessions: snapshot.agentSessions.map((s) => ({
+        id: s.id,
+        phase: s.phase,
+        status: s.status,
+        issueNumber: s.issueNumber,
+        pullRequestNumber: s.pullRequestNumber,
+      })),
+      blockedIssueNumbers: plan.blockedIssueNumbers,
+    });
+  }
 
   section("Blocked issues");
   if (blockedEntries.length === 0) {
@@ -477,7 +624,19 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     bullet(`${plan.actions.length} action(s) to execute`);
     for (let i = 0; i < plan.actions.length; i++) {
       const action = plan.actions[i]!;
-      note(`[${i + 1}/${plan.actions.length}] → ${describeAction(action, snapshot, gitHubClient)}`, 2);
+      const description = describeAction(action, snapshot, gitHubClient);
+      note(`[${i + 1}/${plan.actions.length}] → ${description}`, 2);
+      if (dashboard) {
+        dashboard.publish({
+          type: "action",
+          iteration: iterationNumber,
+          index: i + 1,
+          total: plan.actions.length,
+          description,
+          status: "start",
+          timestamp: new Date().toISOString(),
+        });
+      }
       try {
         await executeAction(
           gitHubClient,
@@ -488,8 +647,32 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
           { owner: config.owner, repo: config.repo },
         );
         note(`[${i + 1}/${plan.actions.length}] ✓ done${config.dryRun ? " (dry-run)" : ""}`, 2);
+        if (dashboard) {
+          dashboard.publish({
+            type: "action",
+            iteration: iterationNumber,
+            index: i + 1,
+            total: plan.actions.length,
+            description,
+            status: "done",
+            timestamp: new Date().toISOString(),
+          });
+        }
       } catch (error) {
-        note(`[${i + 1}/${plan.actions.length}] ✗ failed: ${(error as Error).message}`, 2);
+        const message = (error as Error).message;
+        note(`[${i + 1}/${plan.actions.length}] ✗ failed: ${message}`, 2);
+        if (dashboard) {
+          dashboard.publish({
+            type: "action",
+            iteration: iterationNumber,
+            index: i + 1,
+            total: plan.actions.length,
+            description,
+            status: "failed",
+            error: message,
+            timestamp: new Date().toISOString(),
+          });
+        }
       }
     }
   }
@@ -498,12 +681,51 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
-  write(HEAVY_RULE);
-  write(`vibrator starting · ${timestamp()}`);
-  write(`repo: ${config.owner}/${config.repo} (${repositoryUrl})`);
   const modeNotes: string[] = [];
   if (config.once) modeNotes.push("--once");
   if (config.dryRun) modeNotes.push("--dry-run");
+
+  // --- Dashboard (local web broadcast) ---------------------------------
+  // Spin up the local HTTP server BEFORE printing any banners so the very
+  // first log lines (including "vibrator starting…") also stream into the
+  // dashboard's live feed. If it fails to bind (e.g. port collision), log
+  // the error and continue headless — the CLI must keep working.
+  let dashboardServer: DashboardServer | undefined;
+  if (config.dashboardEnabled) {
+    dashboardServer = new DashboardServer();
+    try {
+      const url = await dashboardServer.start(config.dashboardHost, config.dashboardPort);
+      setDashboard(dashboardServer);
+      dashboardServer.setStartup({
+        repo: `${config.owner}/${config.repo}`,
+        repositoryUrl,
+        mode: modeNotes,
+        intervalMs: config.intervalMs,
+        concurrency: config.maxConcurrency,
+      });
+      console.log(`[dashboard] live at ${url}`);
+      if (config.openBrowserOnStart) {
+        openBrowser(url);
+      }
+    } catch (error) {
+      console.error(`[dashboard] failed to start: ${(error as Error).message}`);
+      dashboardServer = undefined;
+      setDashboard(undefined);
+    }
+  }
+
+  // Make sure the dashboard server is closed cleanly on shutdown so the
+  // port is freed and SSE clients see EOF instead of hanging connections.
+  const shutdownSignals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+  for (const signal of shutdownSignals) {
+    process.once(signal, () => {
+      void dashboardServer?.close().finally(() => process.exit(0));
+    });
+  }
+
+  write(HEAVY_RULE);
+  write(`vibrator starting · ${timestamp()}`);
+  write(`repo: ${config.owner}/${config.repo} (${repositoryUrl})`);
   write(
     `interval: ${formatDuration(config.intervalMs)} · concurrency: ${config.maxConcurrency}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
@@ -513,10 +735,37 @@ async function main(): Promise<void> {
   let iterationNumber = 0;
   do {
     iterationNumber++;
-    await runIteration(config, iterationNumber);
+    currentIterationNumber = iterationNumber;
+    currentPhase = "Boot";
+    if (dashboardServer) {
+      dashboardServer.publish({
+        type: "cycle-start",
+        iteration: iterationNumber,
+        timestamp: new Date().toISOString(),
+      });
+    }
+    try {
+      await runIteration(config, iterationNumber);
+    } finally {
+      if (dashboardServer) {
+        const nextCycleAt = config.once ? null : new Date(Date.now() + config.intervalMs);
+        dashboardServer.setNextCycleAt(nextCycleAt);
+        dashboardServer.publish({
+          type: "cycle-end",
+          iteration: iterationNumber,
+          nextCycleAt: nextCycleAt ? nextCycleAt.toISOString() : null,
+        });
+      }
+    }
+
     if (config.once) {
       blank();
       write(`Done (--once mode). Exiting.`);
+      // Keep the dashboard up so the user can review the broadcast.
+      if (dashboardServer && config.dashboardEnabled) {
+        write(`[dashboard] still serving at ${dashboardServer.url()} (Ctrl+C to exit)`);
+        return;
+      }
       return;
     }
 
