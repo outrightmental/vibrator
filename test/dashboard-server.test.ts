@@ -71,6 +71,49 @@ test("DashboardServer returns 404 for unknown paths", async () => {
   }
 });
 
+test("DashboardServer ignores query strings when routing static assets", async () => {
+  // Cache-busted asset URLs like `/app.js?v=123` and dashboard root with
+  // tracking params like `/?foo=1` must still resolve to the expected
+  // handler rather than falling through to 404.
+  const server = await start();
+  try {
+    const js = await fetch(new URL("/app.js?v=abc123", server.url()));
+    assert.equal(js.status, 200);
+    assert.match(js.headers.get("content-type") ?? "", /javascript/);
+
+    const css = await fetch(new URL("/styles.css?cb=1", server.url()));
+    assert.equal(css.status, 200);
+
+    const root = await fetch(new URL("/?utm=test", server.url()));
+    assert.equal(root.status, 200);
+    assert.match(root.headers.get("content-type") ?? "", /text\/html/);
+
+    const state = await fetch(new URL("/state?pretty", server.url()));
+    assert.equal(state.status, 200);
+    assert.match(state.headers.get("content-type") ?? "", /json/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("DashboardServer.start() can be retried after a bind failure", async () => {
+  // If the initial listen() rejects (e.g. EADDRINUSE) the started-listening
+  // flag must NOT remain set, so the caller can retry on another port
+  // without being permanently locked out.
+  const blocker = await start();
+  const blockerPort = new URL(blocker.url()).port;
+  const server = new (await import("../src/dashboard-server.js")).DashboardServer();
+  try {
+    await assert.rejects(server.start("127.0.0.1", Number(blockerPort)));
+    // After the rejection the server must be startable again on a free port.
+    const url = await server.start("127.0.0.1", 0);
+    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
+  } finally {
+    await server.close();
+    await blocker.close();
+  }
+});
+
 test("DashboardServer streams live SSE events to subscribers", async () => {
   const server = await start();
   try {

@@ -125,7 +125,9 @@ export class DashboardServer {
     if (this.startedListening) {
       throw new Error("DashboardServer is already started");
     }
-    this.startedListening = true;
+    // Set the flag only AFTER `listen()` succeeds; if the bind fails (e.g.
+    // EADDRINUSE) we want to allow the caller to retry on another port
+    // rather than be permanently locked out by a stale flag.
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => {
         this.httpServer.off("listening", onListening);
@@ -139,6 +141,7 @@ export class DashboardServer {
       this.httpServer.once("listening", onListening);
       this.httpServer.listen(port, host);
     });
+    this.startedListening = true;
 
     // Periodic keepalive so SSE connections don't get killed by idle proxies
     // and so countdown ticks stay smooth even without orchestrator activity.
@@ -278,8 +281,12 @@ export class DashboardServer {
   }
 
   private handleRequest(request: IncomingMessage, response: ServerResponse): void {
-    const url = request.url ?? "/";
-    if (url === "/" || url === "/index.html") {
+    // Strip query strings (e.g. cache-busted asset URLs like `/app.js?v=…`)
+    // before routing so requests don't fall through to 404.
+    const rawUrl = request.url ?? "/";
+    const queryIndex = rawUrl.indexOf("?");
+    const pathname = queryIndex === -1 ? rawUrl : rawUrl.slice(0, queryIndex);
+    if (pathname === "/" || pathname === "/index.html") {
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-cache",
@@ -287,7 +294,7 @@ export class DashboardServer {
       response.end(renderIndexHtml());
       return;
     }
-    if (url === "/app.js") {
+    if (pathname === "/app.js") {
       response.writeHead(200, {
         "content-type": "application/javascript; charset=utf-8",
         "cache-control": "no-cache",
@@ -295,7 +302,7 @@ export class DashboardServer {
       response.end(renderAppJs());
       return;
     }
-    if (url === "/styles.css") {
+    if (pathname === "/styles.css") {
       response.writeHead(200, {
         "content-type": "text/css; charset=utf-8",
         "cache-control": "no-cache",
@@ -303,7 +310,7 @@ export class DashboardServer {
       response.end(renderStylesCss());
       return;
     }
-    if (url === "/state") {
+    if (pathname === "/state") {
       response.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-cache",
@@ -311,7 +318,7 @@ export class DashboardServer {
       response.end(JSON.stringify({ state: this.state, history: this.history }));
       return;
     }
-    if (url === "/events") {
+    if (pathname === "/events") {
       this.handleSse(request, response);
       return;
     }
@@ -774,6 +781,7 @@ html, body {
 .tv-card .tag.failure { border-color: var(--danger); color: var(--danger); }
 .tv-card .tag.pending { border-color: var(--neon-yellow); color: var(--neon-yellow); }
 .tv-card .tag.conflict { border-color: var(--neon-magenta); color: var(--neon-magenta); }
+.tv-card .accent-yellow { color: var(--neon-yellow); }
 
 .tv-scoreboard {
   display: grid;
@@ -1073,11 +1081,19 @@ function renderAppJs(): string {
     if (tvTimer) { clearInterval(tvTimer); tvTimer = null; }
   }
 
+  // Each segment's "body" is an array of structured parts that
+  // renderTvCard renders via DOM APIs / textContent rather than innerHTML,
+  // so that repo-supplied text (PR titles, branch names, issue titles,
+  // assignees, etc.) can never inject HTML or script into the dashboard.
+  // Supported part kinds: {text:string} for plain runs (line breaks come
+  // from explicit {br:true} parts), {tag:string, cls?:string} for the
+  // small whitelist of styled tag chips, and {accent:string} for
+  // neon-yellow inline accents (branch names, timestamps).
   function tagFor(status) {
-    if (status === "success") return '<span class="tag success">CI ✓</span>';
-    if (status === "failure") return '<span class="tag failure">CI ✗</span>';
-    if (status === "pending") return '<span class="tag pending">CI …</span>';
-    return '<span class="tag">CI —</span>';
+    if (status === "success") return { tag: "CI ✓", cls: "success" };
+    if (status === "failure") return { tag: "CI ✗", cls: "failure" };
+    if (status === "pending") return { tag: "CI …", cls: "pending" };
+    return { tag: "CI —" };
   }
 
   function buildTvSegments() {
@@ -1085,33 +1101,50 @@ function renderAppJs(): string {
     const snap = state.snapshot;
     if (snap) {
       for (const pr of snap.pullRequests) {
-        const tags = [
-          pr.draft ? '<span class="tag draft">DRAFT</span>' : '<span class="tag success">READY</span>',
-          tagFor(pr.checksStatus),
-          pr.hasMergeConflicts ? '<span class="tag conflict">CONFLICTS</span>' : "",
-        ].join(" ");
-        const issues = pr.linkedIssueNumbers && pr.linkedIssueNumbers.length
-          ? " ⟶ closes " + pr.linkedIssueNumbers.map((n) => "#" + n).join(", ")
-          : "";
+        const body = [];
+        body.push({ text: pr.title });
+        body.push({ br: true }, { br: true });
+        body.push(pr.draft ? { tag: "DRAFT", cls: "draft" } : { tag: "READY", cls: "success" });
+        body.push({ text: " " });
+        body.push(tagFor(pr.checksStatus));
+        if (pr.hasMergeConflicts) {
+          body.push({ text: " " }, { tag: "CONFLICTS", cls: "conflict" });
+        }
+        body.push({ br: true }, { br: true });
+        body.push({ text: "branch: " });
+        body.push({ accent: pr.headRefName });
+        body.push({ text: " · " + pr.changedFiles + " file(s) changed" });
+        if (pr.linkedIssueNumbers && pr.linkedIssueNumbers.length) {
+          body.push({ text: " ⟶ closes " + pr.linkedIssueNumbers.map((n) => "#" + n).join(", ") });
+        }
         segs.push({
           kicker: "NOW PLAYING // PULL REQUEST",
           title: "PR #" + pr.number,
-          body: pr.title + "<br/><br/>" + tags + "<br/><br/>branch: <span style=\\"color:var(--neon-yellow)\\">" + pr.headRefName + "</span> · " + pr.changedFiles + " file(s) changed" + issues,
+          body: body,
           meta: pr.url,
         });
       }
       for (const issue of snap.issues.slice(0, 12)) {
         const blockers = snap.blockedIssueNumbers && snap.blockedIssueNumbers[issue.number];
-        const blockerLine = blockers && blockers.length
-          ? "<br/><br/><span class=\\"tag conflict\\">BLOCKED BY</span> " + blockers.map((n) => "#" + n).join(", ")
-          : "";
-        const assigneeLine = issue.assignees && issue.assignees.length
-          ? "<br/><br/>assignees: " + issue.assignees.join(", ")
-          : "";
+        const body = [];
+        body.push({ text: issue.title });
+        if (issue.type) {
+          body.push({ br: true }, { br: true });
+          body.push({ tag: String(issue.type).toUpperCase() });
+        }
+        if (issue.assignees && issue.assignees.length) {
+          body.push({ br: true }, { br: true });
+          body.push({ text: "assignees: " + issue.assignees.join(", ") });
+        }
+        if (blockers && blockers.length) {
+          body.push({ br: true }, { br: true });
+          body.push({ tag: "BLOCKED BY", cls: "conflict" });
+          body.push({ text: " " + blockers.map((n) => "#" + n).join(", ") });
+        }
         segs.push({
           kicker: "INCOMING // OPEN ISSUE",
           title: "#" + issue.number,
-          body: issue.title + (issue.type ? "<br/><br/><span class=\\"tag\\">" + issue.type.toUpperCase() + "</span>" : "") + assigneeLine + blockerLine,
+          body: body,
           meta: issue.url,
         });
       }
@@ -1119,19 +1152,29 @@ function renderAppJs(): string {
         const target = sess.pullRequestNumber !== undefined
           ? "PR #" + sess.pullRequestNumber
           : sess.issueNumber !== undefined ? "issue #" + sess.issueNumber : "(unlinked)";
+        const body = [];
+        body.push({ text: "Target: " + target });
+        body.push({ br: true }, { br: true });
+        body.push({ tag: String(sess.status).toUpperCase() });
+        body.push({ br: true }, { br: true });
+        body.push({ text: "session " + String(sess.id).slice(0, 8) + "…" });
         segs.push({
           kicker: "AGENT FIELD // SESSION",
-          title: sess.phase.toUpperCase(),
-          body: "Target: " + target + "<br/><br/><span class=\\"tag\\">" + sess.status.toUpperCase() + "</span><br/><br/>session " + sess.id.slice(0, 8) + "…",
+          title: String(sess.phase).toUpperCase(),
+          body: body,
           meta: "AGENT SESSION",
         });
       }
     }
     if (state.rateLimitedUntil) {
+      const body = [
+        { text: "Copilot quota engaged. Resuming at " },
+        { accent: new Date(state.rateLimitedUntil).toISOString() },
+      ];
       segs.unshift({
         kicker: "⚠ TRANSMISSION DELAY",
         title: "RATE LIMIT",
-        body: "Copilot quota engaged. Resuming at <span style=\\"color:var(--neon-yellow)\\">" + new Date(state.rateLimitedUntil).toISOString() + "</span>",
+        body: body,
         meta: "STAND BY",
       });
     }
@@ -1139,11 +1182,35 @@ function renderAppJs(): string {
       segs.push({
         kicker: "STAND BY",
         title: "AWAITING SIGNAL",
-        body: "Synchronising with the mainframe. Next cycle on the countdown.",
+        body: [{ text: "Synchronising with the mainframe. Next cycle on the countdown." }],
         meta: state.repositoryUrl || "",
       });
     }
     return segs;
+  }
+
+  // Append a single structured body part to the target node using DOM APIs
+  // so user-controlled text never reaches innerHTML.
+  function appendBodyPart(target, part) {
+    if (!part) return;
+    if (part.br) { target.appendChild(document.createElement("br")); return; }
+    if (part.tag !== undefined) {
+      const span = document.createElement("span");
+      span.className = "tag" + (part.cls ? " " + part.cls : "");
+      span.textContent = part.tag;
+      target.appendChild(span);
+      return;
+    }
+    if (part.accent !== undefined) {
+      const span = document.createElement("span");
+      span.className = "accent-yellow";
+      span.textContent = part.accent;
+      target.appendChild(span);
+      return;
+    }
+    if (part.text !== undefined) {
+      target.appendChild(document.createTextNode(String(part.text)));
+    }
   }
 
   function renderTvCard() {
@@ -1153,11 +1220,28 @@ function renderAppJs(): string {
     tvIndex++;
     const card = document.createElement("div");
     card.className = "tv-card";
-    card.innerHTML =
-      '<div class="tv-card-kicker">' + seg.kicker + '</div>' +
-      '<div class="tv-card-title">' + escapeHtml(seg.title) + '</div>' +
-      '<div class="tv-card-body">' + seg.body + '</div>' +
-      '<div class="tv-card-meta">' + escapeHtml(seg.meta || "") + '</div>';
+
+    const kicker = document.createElement("div");
+    kicker.className = "tv-card-kicker";
+    kicker.textContent = seg.kicker;
+    card.appendChild(kicker);
+
+    const title = document.createElement("div");
+    title.className = "tv-card-title";
+    title.textContent = seg.title;
+    card.appendChild(title);
+
+    const bodyNode = document.createElement("div");
+    bodyNode.className = "tv-card-body";
+    const bodyParts = Array.isArray(seg.body) ? seg.body : [{ text: String(seg.body || "") }];
+    for (const part of bodyParts) appendBodyPart(bodyNode, part);
+    card.appendChild(bodyNode);
+
+    const meta = document.createElement("div");
+    meta.className = "tv-card-meta";
+    meta.textContent = seg.meta || "";
+    card.appendChild(meta);
+
     // Animate the old card out, the new one in.
     const old = stage.querySelector(".tv-card");
     if (old) {
@@ -1170,24 +1254,32 @@ function renderAppJs(): string {
 
   function renderScoreboard() {
     const sb = el("tv-scoreboard");
+    sb.textContent = "";
     const snap = state.snapshot;
-    if (!snap) { sb.innerHTML = ""; return; }
+    if (!snap) return;
     const prs = snap.pullRequests;
     const drafts = prs.filter((p) => p.draft).length;
     const ready = prs.length - drafts;
     const ciFail = prs.filter((p) => p.checksStatus === "failure").length;
     const conflicts = prs.filter((p) => p.hasMergeConflicts).length;
     const active = snap.agentSessions.filter((s) => s.status === "queued" || s.status === "in_progress").length;
-    sb.innerHTML =
-      score("OPEN ISSUES", snap.issues.length) +
-      score("OPEN PRs", prs.length + " (" + drafts + " draft, " + ready + " ready)") +
-      score("ACTIVE AGENTS", active, active > 0 ? "ok" : "") +
-      score("CI FAILURES", ciFail + (conflicts ? " · " + conflicts + " conflicts" : ""), ciFail || conflicts ? "danger" : "ok");
+    sb.appendChild(score("OPEN ISSUES", snap.issues.length));
+    sb.appendChild(score("OPEN PRs", prs.length + " (" + drafts + " draft, " + ready + " ready)"));
+    sb.appendChild(score("ACTIVE AGENTS", active, active > 0 ? "ok" : ""));
+    sb.appendChild(score("CI FAILURES", ciFail + (conflicts ? " · " + conflicts + " conflicts" : ""), ciFail || conflicts ? "danger" : "ok"));
   }
   function score(label, value, cls) {
-    return '<div class="score' + (cls ? " " + cls : "") + '">' +
-      '<div class="score-label">' + label + '</div>' +
-      '<div class="score-value">' + escapeHtml(String(value)) + '</div></div>';
+    const root = document.createElement("div");
+    root.className = "score" + (cls ? " " + cls : "");
+    const labelNode = document.createElement("div");
+    labelNode.className = "score-label";
+    labelNode.textContent = label;
+    const valueNode = document.createElement("div");
+    valueNode.className = "score-value";
+    valueNode.textContent = String(value);
+    root.appendChild(labelNode);
+    root.appendChild(valueNode);
+    return root;
   }
 
   // ── Ticker ───────────────────────────────────────────────────────────────
@@ -1208,10 +1300,6 @@ function renderAppJs(): string {
     if (state.rateLimitedUntil) parts.push("⚠ RATE LIMIT IN EFFECT");
     if (parts.length === 0) parts.push("NO SIGNAL");
     el("ticker-track").textContent = parts.join("   ▮▮   ") + "   ▮▮   ";
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c]));
   }
 
   // ── Copilot CLI call overlay ────────────────────────────────────────────

@@ -71,11 +71,10 @@ function blank(): void {
 
 function section(title: string): void {
   blank();
-  write(title);
-  console.log(RULE);
   // A "section" in the CLI maps to an SDLC phase in the dashboard. End the
-  // previous phase (if any) and start the new one so the broadcast steps
-  // through phases with its own on-screen treatment.
+  // previous phase (if any) and start the new one BEFORE writing the title
+  // so the section-title log line is attributed to the new phase rather
+  // than the previous one in the broadcast feed.
   if (dashboard) {
     if (currentPhase && currentPhase !== "Boot") {
       dashboard.publish({
@@ -94,7 +93,11 @@ function section(title: string): void {
       status: "start",
       timestamp: new Date().toISOString(),
     });
+  } else {
+    currentPhase = title;
   }
+  write(title);
+  console.log(RULE);
 }
 
 function bullet(text: string, indent = 1): void {
