@@ -18,6 +18,7 @@ import {
   broadcastRepositorySnapshot,
   broadcastPullRequestUpdate,
   broadcastCIStatus,
+  broadcastIssueUpdate,
   emitLogMessage,
 } from "./dashboard-utils.js";
 import type {
@@ -97,6 +98,18 @@ async function broadcastBetweenCycleActivity(
     // Broadcast any open PRs
     for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
       broadcastPullRequestUpdate(pr, "monitoring");
+    }
+
+    // Broadcast issue activity: new or recently updated issues
+    if (lastSnapshot) {
+      const lastIssueMap = new Map(lastSnapshot.issues.map((i) => [i.number, i]));
+      for (const issue of snapshot.issues) {
+        const lastIssue = lastIssueMap.get(issue.number);
+        // Broadcast if this is a new issue or recently updated
+        if (!lastIssue || new Date(issue.updatedAt) > new Date(lastIssue.updatedAt)) {
+          broadcastIssueUpdate(issue, lastIssue ? "updated" : "opened");
+        }
+      }
     }
 
     return snapshot;
