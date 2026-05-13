@@ -302,15 +302,16 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   // --- Repository snapshot ----------------------------------------------
   const snapshot = await loadSnapshot(gitHubClient, sessionStore);
-  const draftPullRequestCount = snapshot.pullRequests.filter((pr) => pr.draft).length;
-  const readyPullRequestCount = snapshot.pullRequests.length - draftPullRequestCount;
+  const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
+  const draftPullRequestCount = openPullRequests.filter((pr) => pr.draft).length;
+  const readyPullRequestCount = openPullRequests.filter((pr) => !pr.draft).length;
   const preReconcileActiveSessions = snapshot.agentSessions.filter(
     (s) => s.status === "in_progress",
   );
 
   globalEventEmitter.emit("snapshot-update", {
     issueCount: snapshot.issues.length,
-    prCount: snapshot.pullRequests.length,
+    prCount: openPullRequests.length,
     draftPrCount: draftPullRequestCount,
     readyPrCount: readyPullRequestCount,
     sessionCount: preReconcileActiveSessions.length,
@@ -318,7 +319,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   // Broadcast repository snapshot and PR updates to dashboard
   broadcastRepositorySnapshot(snapshot, config.owner, config.repo, preReconcileActiveSessions.length);
-  for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
+  for (const pr of openPullRequests) {
     const draftLabel = pr.draft ? "[DRAFT]" : "";
     const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
     broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
@@ -329,8 +330,8 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   section("Repository snapshot");
   bullet(`${snapshot.issues.length} open issue(s)`);
   bullet(
-    `${snapshot.pullRequests.length} open pull request(s)` +
-      (snapshot.pullRequests.length > 0
+    `${openPullRequests.length} open pull request(s)` +
+      (openPullRequests.length > 0
         ? ` (${draftPullRequestCount} draft, ${readyPullRequestCount} ready)`
         : ""),
   );
