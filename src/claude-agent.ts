@@ -446,6 +446,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       owner: params.owner,
       repo: params.repo,
       baseBranch: params.baseBranch,
+      identifier: `issue-${params.issueNumber}`,
     });
 
     // Create or reset the feature branch from the up-to-date base.
@@ -591,11 +592,14 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     owner: string;
     repo: string;
     baseBranch: string;
+    /** Unique identifier for this checkout (e.g. `issue-42`). Each concurrent
+     *  implementation gets its own directory to avoid git ref-lock races. */
+    identifier: string;
   }): Promise<string> {
     const repoDir = join(
       this.checkoutRootDir,
       `${params.owner}-${params.repo}`,
-      "base",
+      params.identifier,
     );
     await mkdir(repoDir, { recursive: true });
     const gitDir = join(repoDir, ".git");
