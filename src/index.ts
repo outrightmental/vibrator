@@ -254,8 +254,6 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   globalEventEmitter.emit("iteration-start", {
     iterationNumber,
-    repo,
-    timestamp,
   });
 
   write(HEAVY_RULE);
