@@ -612,6 +612,9 @@ class DashboardUI {
     if (!message.type) return;
 
     this.events.push(message);
+    if (this.events.length > 1000) {
+      this.events.shift();
+    }
     document.getElementById('event-count').textContent = this.events.length;
 
     switch (message.type) {
@@ -770,10 +773,17 @@ class DashboardUI {
 
     const ticker = document.createElement('div');
     ticker.className = \`broadcast-ticker \${level}\`;
-    ticker.innerHTML = \`
-      <div class="broadcast-ticker-label">📡 BROADCAST</div>
-      <div class="broadcast-ticker-content">\${text}</div>
-    \`;
+
+    const label = document.createElement('div');
+    label.className = 'broadcast-ticker-label';
+    label.textContent = '📡 BROADCAST';
+
+    const content = document.createElement('div');
+    content.className = 'broadcast-ticker-content';
+    content.textContent = text;
+
+    ticker.appendChild(label);
+    ticker.appendChild(content);
     broadcastContent.appendChild(ticker);
     broadcastContent.scrollTop = broadcastContent.scrollHeight;
 
