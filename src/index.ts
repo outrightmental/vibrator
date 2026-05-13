@@ -14,6 +14,12 @@ import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
 import { globalEventEmitter } from "./event-emitter.js";
+import {
+  broadcastRepositorySnapshot,
+  broadcastPullRequestUpdate,
+  broadcastCIStatus,
+  emitLogMessage,
+} from "./dashboard-utils.js";
 import type {
   AgentSession,
   OrchestratorAction,
@@ -258,6 +264,14 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     readyPrCount: readyPullRequestCount,
     sessionCount: preReconcileActiveSessions.length,
   });
+
+  // Broadcast repository snapshot and PR updates to dashboard
+  broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+  for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
+    const draftLabel = pr.draft ? "[DRAFT]" : "";
+    const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
+    broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
+  }
 
   section("Repository snapshot");
   bullet(`${snapshot.issues.length} open issue(s)`);
