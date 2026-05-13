@@ -463,14 +463,26 @@ async function main(): Promise<void> {
 
   // Start dashboard server
   const dashboard = new DashboardServer({ port: 3000 });
-  await dashboard.initialize();
-  await dashboard.start();
-  await dashboard.openBrowser();
+  let dashboardReady = false;
+  try {
+    await dashboard.initialize();
+    await dashboard.start();
+    await dashboard.openBrowser();
+    dashboardReady = true;
+  } catch (error) {
+    console.error(
+      `[Dashboard] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   write(HEAVY_RULE);
   write(`vibrator starting · ${timestamp()}`);
   write(`repo: ${config.owner}/${config.repo} (${repositoryUrl})`);
-  write(`dashboard: ${dashboard.getUrl()}`);
+  if (dashboardReady) {
+    write(`dashboard: ${dashboard.getUrl()}`);
+  } else {
+    write(`dashboard: failed to start (check if port 3000 is available)`);
+  }
   const modeNotes: string[] = [];
   if (config.once) modeNotes.push("--once");
   if (config.dryRun) modeNotes.push("--dry-run");
@@ -492,7 +504,9 @@ async function main(): Promise<void> {
     if (config.once) {
       blank();
       write(`Done (--once mode). Exiting.`);
-      dashboard.close();
+      if (dashboardReady) {
+        dashboard.close();
+      }
       return;
     }
 
