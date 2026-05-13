@@ -184,6 +184,14 @@ interface RunCommandOptions {
   cwd?: string;
   input?: string;
   captureStdout?: boolean;
+  /** Called with each decoded stdout chunk as it arrives (requires captureStdout: true). */
+  onStdoutChunk?: (chunk: string) => void;
+  /**
+   * Called with each decoded stderr chunk as it arrives. When set, stderr is
+   * piped (rather than inherited) and each chunk is forwarded to
+   * process.stderr so nothing is lost.
+   */
+  onStderrChunk?: (chunk: string) => void;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -199,7 +207,7 @@ function runCommand(
       stdio: [
         options.input !== undefined ? "pipe" : "inherit",
         options.captureStdout ? "pipe" : "inherit",
-        "inherit",
+        options.onStderrChunk ? "pipe" : "inherit",
       ],
     });
 
@@ -207,6 +215,14 @@ function runCommand(
     if (options.captureStdout && child.stdout) {
       child.stdout.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
+        options.onStdoutChunk?.(chunk.toString("utf8"));
+      });
+    }
+
+    if (options.onStderrChunk && child.stderr) {
+      child.stderr.on("data", (chunk: Buffer) => {
+        process.stderr.write(chunk);
+        options.onStderrChunk!(chunk.toString("utf8"));
       });
     }
 
@@ -581,6 +597,27 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const stdout = await this.runClaude(prompt, repoDir);
     const payload = extractImplementationPayload(stdout);
 
+    // Safety net: if Claude edited files but did not commit them (e.g. because
+    // the permission mode previously blocked bash commands), commit everything
+    // now so the push is never empty.
+    const uncommitted = (
+      await runCommand("git", ["status", "--porcelain"], {
+        cwd: repoDir,
+        captureStdout: true,
+      })
+    ).trim();
+    if (uncommitted) {
+      console.warn(
+        `[vibrator] Claude left uncommitted changes after implementation — committing automatically.`,
+      );
+      await runCommand("git", ["add", "--all"], { cwd: repoDir });
+      await runCommand(
+        "git",
+        ["commit", "-m", `Implement #${params.issueNumber}: ${params.issueTitle}`],
+        { cwd: repoDir },
+      );
+    }
+
     // Push the branch and capture the head SHA.
     await runCommand("git", ["push", "--force-with-lease", "origin", branch], {
       cwd: repoDir,
@@ -781,7 +818,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         "ANTHROPIC_API_KEY is not set. Provide it via the environment or the ClaudeAgentClient constructor.",
       );
     }
-    console.log("Sending request to Claude CLI (waiting for response)…");
+
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ANTHROPIC_API_KEY: this.anthropicApiKey,
@@ -791,21 +828,85 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // user's `gh auth` setup).
     delete env.GH_TOKEN;
     const modelArgs = this.claudeModel ? ["--model", this.claudeModel] : [];
-    return runCommand(
-      this.claudeCommand,
-      [
-        "--print",
-        "--permission-mode",
-        "acceptEdits",
-        ...modelArgs,
-        prompt,
-      ],
-      {
-        cwd,
-        captureStdout: true,
-        env,
-      },
-    );
+
+    const startTime = Date.now();
+    const isTTY = process.stdout.isTTY === true;
+    let lastPreview = "";
+
+    // Short display name for the model: strip the leading "claude-" prefix so
+    // "claude-sonnet-4-5" becomes "sonnet-4-5" and bare names are shown as-is.
+    const modelDisplay = (this.claudeModel ?? "claude").replace(/^claude-/i, "");
+
+    const formatElapsed = (): string => {
+      const secs = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    };
+
+    const writeStatus = (): void => {
+      const preview = lastPreview ? ` · ${lastPreview}` : "";
+      const line = `  Claude [${modelDisplay}] [${formatElapsed()}]${preview}`;
+      const width = (process.stdout.columns ?? 120) - 1;
+      process.stdout.write(`\r${line.slice(0, width).padEnd(width)}`);
+    };
+
+    if (isTTY) {
+      process.stdout.write(`  Claude [${modelDisplay}] [0s]`);
+    } else {
+      console.log(`Sending request to Claude CLI [${modelDisplay}] (waiting for response)…`);
+    }
+
+    const ticker = isTTY ? setInterval(writeStatus, 500) : undefined;
+
+    const extractPreview = (chunk: string): void => {
+      // Pick the last short, non-empty line from the chunk as a live preview.
+      // Skip blank lines and very long code/diff lines to keep the display clean.
+      const lines = chunk.split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const trimmed = lines[i]!.trim();
+        if (trimmed.length >= 4 && trimmed.length <= 80) {
+          lastPreview = trimmed;
+          break;
+        }
+      }
+    };
+
+    try {
+      const result = await runCommand(
+        this.claudeCommand,
+        [
+          "--print",
+          "--permission-mode",
+          "bypassPermissions",
+          ...modelArgs,
+          prompt,
+        ],
+        {
+          cwd,
+          captureStdout: true,
+          env,
+          // Use stderr for the live preview: the Claude CLI writes its
+          // streaming progress (tool calls, thinking, etc.) to stderr even
+          // when stdout is piped, so we get real-time updates here.
+          ...(isTTY && { onStderrChunk: extractPreview }),
+        },
+      );
+
+      if (isTTY) {
+        clearInterval(ticker);
+        const done = `  Claude [${modelDisplay}] done [${formatElapsed()}]`;
+        const width = (process.stdout.columns ?? 120) - 1;
+        process.stdout.write(`\r${done.padEnd(width)}\n`);
+      }
+      return result;
+    } catch (error) {
+      if (isTTY) {
+        clearInterval(ticker);
+        process.stdout.write("\n");
+      }
+      throw error;
+    }
   }
 }
 
