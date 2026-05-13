@@ -435,6 +435,66 @@ body {
 .hidden {
   display: none !important;
 }
+
+.cycle-banner {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1000;
+  background: rgba(10, 14, 39, 0.95);
+  border: 3px solid #ff00ff;
+  padding: 40px 60px;
+  text-align: center;
+  border-radius: 8px;
+  box-shadow: 0 0 40px rgba(255, 0, 255, 0.6), inset 0 0 40px rgba(255, 0, 255, 0.1);
+  animation: bannerPop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.cycle-banner-text {
+  font-size: 36px;
+  font-weight: 700;
+  color: #ff00ff;
+  text-shadow: 0 0 20px rgba(255, 0, 255, 1);
+  margin: 0;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.cycle-banner-subtext {
+  font-size: 18px;
+  color: #00ff88;
+  margin-top: 15px;
+  text-shadow: 0 0 10px rgba(0, 255, 136, 0.8);
+}
+
+@keyframes bannerPop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  70% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.1);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes bannerFadeOut {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.cycle-banner.fade-out {
+  animation: bannerFadeOut 0.8s ease-out forwards;
+}
 `;
   }
 
@@ -444,13 +504,14 @@ class DashboardUI {
   constructor() {
     this.appContainer = document.getElementById('app');
     this.events = [];
-    this.phases = ['implementation', 'self-review', 'address-failing-checks', 'resolve-conflicts', 'squash-merge'];
+    this.phases = ['implementation', 'review'];
     this.currentPhase = null;
     this.countdownInterval = null;
     this.nextCycleTime = null;
     this.connected = false;
     this.iterationNumber = 0;
     this.lastIterationStartTime = null;
+    this.bannerTimeout = null;
     this.init();
   }
 
@@ -462,6 +523,10 @@ class DashboardUI {
 
   render() {
     this.appContainer.innerHTML = \`
+      <div class="cycle-banner hidden" id="cycle-banner">
+        <div class="cycle-banner-text">⚡ CYCLE START</div>
+        <div class="cycle-banner-subtext" id="banner-iteration">Iteration --</div>
+      </div>
       <div class="header">
         <div>
           <div class="header-title">⚡ VIBRATOR</div>
@@ -594,8 +659,27 @@ class DashboardUI {
     this.iterationNumber = message.data.iterationNumber;
     this.lastIterationStartTime = new Date(message.timestamp);
     document.getElementById('iteration-number').textContent = this.iterationNumber;
+    document.getElementById('banner-iteration').textContent = \`Iteration \${this.iterationNumber}\`;
+    this.showCycleBanner();
     this.addLogLine('info', \`🔄 Iteration \${message.data.iterationNumber} started\`);
     this.currentPhase = null;
+  }
+
+  showCycleBanner() {
+    const banner = document.getElementById('cycle-banner');
+    if (!banner) return;
+
+    if (this.bannerTimeout) clearTimeout(this.bannerTimeout);
+
+    banner.classList.remove('hidden', 'fade-out');
+    void banner.offsetWidth;
+
+    this.bannerTimeout = setTimeout(() => {
+      banner.classList.add('fade-out');
+      setTimeout(() => {
+        banner.classList.add('hidden');
+      }, 800);
+    }, 3000);
   }
 
   handlePhaseUpdate(message) {
