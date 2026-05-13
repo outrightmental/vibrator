@@ -19,6 +19,7 @@ import {
   broadcastPullRequestUpdate,
   broadcastIssueUpdate,
   broadcastCommit,
+  broadcastReviewComment,
   emitLogMessage,
 } from "./dashboard-utils.js";
 import type {
@@ -95,9 +96,19 @@ async function broadcastBetweenCycleActivity(
     // Broadcast current repository state
     broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
 
-    // Broadcast any open PRs
+    // Broadcast any open PRs and their review comments
     for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
       broadcastPullRequestUpdate(pr, "monitoring");
+
+      // Broadcast unresolved review comments for this PR
+      try {
+        const reviewComments = await gitHubClient.listUnresolvedReviewComments(pr.number);
+        if (reviewComments.length > 0) {
+          broadcastReviewComment(pr.number, "Review", reviewComments.length);
+        }
+      } catch (error) {
+        // Silently skip review comment broadcasting if it fails
+      }
     }
 
     // Broadcast issue activity: new or recently updated issues
