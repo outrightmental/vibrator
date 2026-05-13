@@ -77,6 +77,35 @@ function shortId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }
 
+async function broadcastBetweenCycleActivity(
+  config: Config,
+  lastSnapshot: RepositorySnapshot | null,
+): Promise<RepositorySnapshot> {
+  try {
+    const gitHubClient = new GitHubClient({
+      owner: config.owner,
+      repo: config.repo,
+      token: config.token,
+    });
+    const sessionStore = new FileSessionStore(config.sessionStorePath);
+
+    const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+
+    // Broadcast current repository state
+    broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+
+    // Broadcast any open PRs
+    for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
+      broadcastPullRequestUpdate(pr, "monitoring");
+    }
+
+    return snapshot;
+  } catch (error) {
+    // Silently fail on between-cycle polling errors
+    return lastSnapshot || ({ pullRequests: [], issues: [], agentSessions: [] } as RepositorySnapshot);
+  }
+}
+
 function describeAction(
   action: OrchestratorAction,
   snapshot: RepositorySnapshot,
@@ -431,6 +460,8 @@ async function main(): Promise<void> {
   write(HEAVY_RULE);
 
   let iterationNumber = 0;
+  let lastSnapshot: RepositorySnapshot | null = null;
+
   do {
     iterationNumber++;
 
@@ -457,7 +488,21 @@ async function main(): Promise<void> {
       nextCycleTime: new Date(Date.now() + remainingMs).toISOString(),
     });
 
-    await delay(remainingMs);
+    // Broadcast GitHub activity during idle period to keep dashboard vibrant
+    const pollIntervalMs = 10000; // Poll every 10 seconds
+    const startWaitTime = Date.now();
+    while (Date.now() - startWaitTime < remainingMs) {
+      const timeLeftMs = remainingMs - (Date.now() - startWaitTime);
+      if (timeLeftMs <= 0) break;
+
+      const waitMs = Math.min(pollIntervalMs, timeLeftMs);
+      await delay(waitMs);
+
+      // Broadcast activity if time permits
+      if (Date.now() - startWaitTime < remainingMs - 1000) {
+        lastSnapshot = await broadcastBetweenCycleActivity(config, lastSnapshot);
+      }
+    }
   } while (true);
 }
 
