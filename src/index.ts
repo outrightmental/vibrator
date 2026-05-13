@@ -35,6 +35,7 @@ function timestamp(): string {
 
 function write(line: string): void {
   console.log(line);
+  emitLogMessage("info", line);
 }
 
 function blank(): void {
@@ -273,6 +274,8 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
   }
 
+  globalEventEmitter.emit("phase-update", { phase: "implementation" });
+
   section("Repository snapshot");
   bullet(`${snapshot.issues.length} open issue(s)`);
   bullet(
@@ -300,6 +303,8 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   snapshot.agentSessions = await sessionStore.load();
 
   // --- Plan -------------------------------------------------------------
+  globalEventEmitter.emit("phase-update", { phase: "review" });
+
   const plan = buildPlan(snapshot, config.maxConcurrency);
   const blockedEntries = Object.entries(plan.blockedIssueNumbers);
 
@@ -332,6 +337,8 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     }
 
     if (!config.dryRun) {
+      globalEventEmitter.emit("phase-update", { phase: "implementation" });
+
       const actionContext = {
         owner: config.owner,
         repo: config.repo,
