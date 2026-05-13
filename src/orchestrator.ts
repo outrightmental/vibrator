@@ -175,7 +175,7 @@ function planPullRequestAction(
     return { ...action, issueNumber: actionIssueNumber };
   }
 
-  // Merge conflicts take priority over the normal review/merge flow.
+  // Merge conflicts take priority over the normal self-review/merge flow.
   if (pullRequest.hasMergeConflicts) {
     return withIssueNumber({
       type: "resolve-conflicts",
@@ -184,8 +184,8 @@ function planPullRequestAction(
     });
   }
 
-  // Status-check gate: never advance to final-description / merge while
-  // checks are failing or still running.
+  // Status-check gate: never advance to merge while checks are failing or
+  // still running; also block self-review after code-changing phases.
   const mergeGateAction = ((): OrchestratorAction | undefined | "proceed" => {
     if (pullRequest.checksStatus === "failure") {
       return withIssueNumber({
@@ -200,81 +200,54 @@ function planPullRequestAction(
     return "proceed";
   })();
 
-  // After Claude pushed a fix for failing checks, re-review the updated code.
-  if (latestCompletedSession?.phase === "address-failing-checks") {
+  if (latestCompletedSession?.phase === "squash-merge") {
+    // The squash merge has been completed — nothing left to do.
+    // (The PR will disappear from listOpenPullRequests on the next iteration.)
+    return undefined;
+  }
+
+  // After a code-changing phase, check CI before the next self-review.
+  if (
+    latestCompletedSession?.phase === "implementation" ||
+    latestCompletedSession?.phase === "address-failing-checks" ||
+    latestCompletedSession?.phase === "resolve-conflicts"
+  ) {
     if (mergeGateAction !== "proceed") {
       return mergeGateAction;
     }
     return withIssueNumber({
-      type: "review-pull-request",
+      type: "self-review",
       pullRequestNumber: pullRequest.number,
       pullRequestHeadSha: pullRequest.headSha,
     });
   }
 
-  // Unresolved review comments must be addressed before any merge-path
-  // action, regardless of what the latest session phase is.
-  if (pullRequest.unresolvedReviewCommentCount > 0) {
-    const reviewCommentCount =
-      latestCompletedSession?.phase === "review"
-        ? (latestCompletedSession.result?.reviewCommentCount ?? 0)
-        : 0;
-    return withIssueNumber({
-      type: "address-review-comments",
-      pullRequestNumber: pullRequest.number,
-      pullRequestHeadSha: pullRequest.headSha,
-      unresolvedReviewCommentCount: Math.max(
-        reviewCommentCount,
-        pullRequest.unresolvedReviewCommentCount,
-      ),
-    });
-  }
-
-  if (latestCompletedSession?.phase === "review") {
-    const reviewCommentCount = latestCompletedSession.result?.reviewCommentCount ?? 0;
-    if (reviewCommentCount > 0) {
-      return withIssueNumber({
-        type: "address-review-comments",
-        pullRequestNumber: pullRequest.number,
-        pullRequestHeadSha: pullRequest.headSha,
-        unresolvedReviewCommentCount: reviewCommentCount,
-      });
-    }
-
-    // The review session recorded zero comments. Require confirmation
-    // from GitHub as well: hasCleanReviewOnHead must be true so we
-    // know the APPROVE review actually landed on the current head SHA.
-    if (!pullRequest.hasCleanReviewOnHead) {
-      // The review session said zero comments but GitHub doesn't see a
-      // clean review on the head — re-review to reconcile.
-      return withIssueNumber({
-        type: "review-pull-request",
-        pullRequestNumber: pullRequest.number,
-        pullRequestHeadSha: pullRequest.headSha,
-      });
-    }
-
-    if (mergeGateAction !== "proceed") {
-      return mergeGateAction;
-    }
-    return withIssueNumber({
-      type: "write-final-description",
-      pullRequestNumber: pullRequest.number,
-      pullRequestTitle: pullRequest.title,
-      pullRequestHeadRefName: pullRequest.headRefName,
-      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
-      pullRequestBody: pullRequest.body,
-    });
-  }
-
-  if (latestCompletedSession?.phase === "final-description") {
-    const generatedDescription = latestCompletedSession.result?.generatedDescription;
-    if (generatedDescription === undefined) {
+  if (latestCompletedSession?.phase === "self-review") {
+    if (latestCompletedSession.result?.madeChanges) {
+      // Self-review pushed new commits — check CI before the next pass.
       if (mergeGateAction !== "proceed") {
         return mergeGateAction;
       }
       return withIssueNumber({
-        type: "write-final-description",
+        type: "self-review",
+        pullRequestNumber: pullRequest.number,
+        pullRequestHeadSha: pullRequest.headSha,
+      });
+    }
+
+    // Self-review found nothing to change (clean pass). Check if the
+    // immediately preceding completed session was also a clean self-review.
+    // Two consecutive clean passes → squash-merge.
+    const completedBeforeLatest = relevantSessions
+      .filter((s) => s.status === "completed" && s.id !== latestCompletedSession.id)
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+    const penultimate = completedBeforeLatest[0];
+    if (penultimate?.phase === "self-review" && !penultimate.result?.madeChanges) {
+      if (mergeGateAction !== "proceed") {
+        return mergeGateAction;
+      }
+      return withIssueNumber({
+        type: "squash-merge",
         pullRequestNumber: pullRequest.number,
         pullRequestTitle: pullRequest.title,
         pullRequestHeadRefName: pullRequest.headRefName,
@@ -283,78 +256,21 @@ function planPullRequestAction(
       });
     }
 
-    // write-final-description completed with a description but merge
-    // hasn't happened yet — emit the squash-merge action.
+    // Only one clean pass so far — run another self-review.
     return withIssueNumber({
-      type: "squash-merge",
+      type: "self-review",
       pullRequestNumber: pullRequest.number,
-      pullRequestTitle: pullRequest.title,
-      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
-      pullRequestBody:
-        latestCompletedSession.result?.pullRequestBody ?? pullRequest.body,
+      pullRequestHeadSha: pullRequest.headSha,
     });
   }
 
-  if (latestCompletedSession?.phase === "squash-merge") {
-    // The squash merge has been completed — nothing left to do.
-    // (The PR will disappear from listOpenPullRequests on the next iteration.)
-    return undefined;
-  }
-
-  // Clean review on the current head SHA with no prior review session
-  // (e.g. an externally-posted clean review). Only advance to
-  // final-description when both the GitHub-side flag AND our own
-  // session history agree. If we have no session but see a clean
-  // review, trust it and advance.
-  if (pullRequest.hasCleanReviewOnHead && !latestCompletedSession) {
+  // No prior session: run the first self-review, waiting for CI first.
+  if (!latestCompletedSession) {
     if (mergeGateAction !== "proceed") {
       return mergeGateAction;
     }
     return withIssueNumber({
-      type: "write-final-description",
-      pullRequestNumber: pullRequest.number,
-      pullRequestTitle: pullRequest.title,
-      pullRequestHeadRefName: pullRequest.headRefName,
-      closingIssueNumbers: [...pullRequest.closingIssueNumbers],
-      pullRequestBody: pullRequest.body,
-    });
-  }
-
-  if (latestCompletedSession?.phase === "address-review-comments") {
-    // If the last address-review-comments session pushed no new commits (Claude
-    // could not make any code changes), do not immediately re-review. A new
-    // review would just post fresh threads on the unchanged code, restarting
-    // the loop. Wait until the branch is updated externally.
-    if (latestCompletedSession.result?.noCommitsPushed) {
-      return undefined;
-    }
-    return withIssueNumber({
-      type: "review-pull-request",
-      pullRequestNumber: pullRequest.number,
-      pullRequestHeadSha: pullRequest.headSha,
-    });
-  }
-
-  if (latestCompletedSession?.phase === "resolve-conflicts") {
-    return withIssueNumber({
-      type: "review-pull-request",
-      pullRequestNumber: pullRequest.number,
-      pullRequestHeadSha: pullRequest.headSha,
-    });
-  }
-
-  if (latestCompletedSession?.phase === "implementation") {
-    return withIssueNumber({
-      type: "review-pull-request",
-      pullRequestNumber: pullRequest.number,
-      pullRequestHeadSha: pullRequest.headSha,
-    });
-  }
-
-  if (!latestCompletedSession) {
-    // No prior session has touched this PR — request the first review.
-    return withIssueNumber({
-      type: "review-pull-request",
+      type: "self-review",
       pullRequestNumber: pullRequest.number,
       pullRequestHeadSha: pullRequest.headSha,
     });
@@ -387,9 +303,8 @@ function countImplementationSessionsWithoutPullRequests(
 export function buildMergedPullRequestBody(
   pullRequestBody: string,
   closingIssueNumbers: readonly number[],
-  generatedDescription?: string,
 ): string {
-  const baseBody = (generatedDescription ?? pullRequestBody).trim();
+  const baseBody = pullRequestBody.trim();
   const existingClosingIssues = new Set(parseClosingIssueNumbers(baseBody));
   const missingClosingReferences = uniqueSorted(closingIssueNumbers)
     .filter((issueNumber) => !existingClosingIssues.has(issueNumber))

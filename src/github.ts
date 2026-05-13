@@ -6,9 +6,14 @@ import { FileSessionStore } from "./session-store.js";
 import type {
   Issue,
   PullRequest,
-  PullRequestInlineComment,
   RepositorySnapshot,
 } from "./types.js";
+
+interface PullRequestInlineComment {
+  path: string;
+  line: number;
+  body: string;
+}
 
 function runShellCommand(command: string, args: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {

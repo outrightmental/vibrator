@@ -12,18 +12,6 @@ export interface Issue {
   type: string | null;
 }
 
-/**
- * Reviewer-style inline comment posted on a specific file/line by the
- * Claude reviewer. Mirrors the shape required by the GitHub
- * "Create a review" API (`comments[]`).
- */
-export interface PullRequestInlineComment {
-  path: string;
-  /** 1-based line number on the RIGHT (post-image) side of the diff. */
-  line: number;
-  body: string;
-}
-
 export interface PullRequest {
   number: number;
   title: string;
@@ -62,20 +50,14 @@ export interface PullRequest {
 
 export type AgentSessionPhase =
   | "implementation"
-  | "review"
-  | "address-review-comments"
+  | "self-review"
   | "address-failing-checks"
   | "resolve-conflicts"
-  | "final-description"
   | "squash-merge";
 
 export type AgentSessionStatus = "in_progress" | "completed" | "failed";
 
 export interface AgentSessionResult {
-  /** Number of inline comments posted by the Claude reviewer. */
-  reviewCommentCount?: number;
-  /** Final PR description produced by Claude. */
-  generatedDescription?: string;
   /** PR body observed at the time of the session. */
   pullRequestBody?: string;
   /** PR head SHA observed at the time of the session. */
@@ -83,11 +65,16 @@ export interface AgentSessionResult {
   /** Error message captured when the session failed. */
   errorMessage?: string;
   /**
-   * True when a branch-modifying phase (address-review-comments,
-   * address-failing-checks, resolve-conflicts) completed but pushed no
-   * new commits — the branch HEAD SHA was unchanged.
+   * True when a branch-modifying phase (address-failing-checks,
+   * resolve-conflicts) completed but pushed no new commits — the branch
+   * HEAD SHA was unchanged.
    */
   noCommitsPushed?: boolean;
+  /**
+   * True when a self-review session committed and pushed changes to the
+   * branch. False when the review found nothing to change.
+   */
+  madeChanges?: boolean;
 }
 
 export interface AgentSession {
@@ -112,17 +99,10 @@ export interface RepositorySnapshot {
 export type OrchestratorAction =
   | { type: "start-implementation"; issueNumber: number }
   | {
-      type: "review-pull-request";
+      type: "self-review";
       issueNumber: number | undefined;
       pullRequestNumber: number;
       pullRequestHeadSha: string;
-    }
-  | {
-      type: "address-review-comments";
-      issueNumber: number | undefined;
-      pullRequestNumber: number;
-      pullRequestHeadSha: string;
-      unresolvedReviewCommentCount: number;
     }
   | {
       type: "address-failing-checks";
@@ -137,19 +117,11 @@ export type OrchestratorAction =
       pullRequestHeadSha: string;
     }
   | {
-      type: "write-final-description";
-      issueNumber: number | undefined;
-      pullRequestNumber: number;
-      pullRequestTitle: string;
-      pullRequestHeadRefName: string;
-      closingIssueNumbers: number[];
-      pullRequestBody: string;
-    }
-  | {
       type: "squash-merge";
       issueNumber: number | undefined;
       pullRequestNumber: number;
       pullRequestTitle: string;
+      pullRequestHeadRefName: string;
       closingIssueNumbers: number[];
       pullRequestBody: string;
     };

@@ -6,7 +6,6 @@ import type {
   Issue,
   OrchestratorAction,
   PullRequest,
-  PullRequestInlineComment,
 } from "./types.js";
 
 export interface ActionGitHubClient {
@@ -18,22 +17,12 @@ export interface ActionGitHubClient {
     base: string;
     draft?: boolean;
   }): Promise<{ number: number; headSha: string }>;
-  createPullRequestReview(input: {
-    pullRequestNumber: number;
-    commitId: string;
-    body: string;
-    inlineComments: ReadonlyArray<PullRequestInlineComment>;
-  }): Promise<void>;
   updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void>;
   squashMergePullRequest(
     pullRequestNumber: number,
     subject: string,
     body: string,
   ): Promise<void>;
-  resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void>;
-  listUnresolvedReviewComments(pullRequestNumber: number): Promise<
-    Array<{ path: string; line: number | null; body: string; author: string }>
-  >;
   listFailingCheckRuns(input: {
     pullRequestNumber: number;
     headSha: string;
@@ -54,7 +43,7 @@ export interface ActionClaudeAgentClient {
     pullRequestBody: string;
     headSha: string;
   }>;
-  addressReviewComments(params: {
+  selfReview(params: {
     owner: string;
     repo: string;
     pullRequestNumber: number;
@@ -62,13 +51,7 @@ export interface ActionClaudeAgentClient {
     pullRequestBody: string;
     headRefName: string;
     baseRefName: string;
-    reviewComments: ReadonlyArray<{
-      path: string;
-      line: number | null;
-      body: string;
-      author: string;
-    }>;
-  }): Promise<{ headSha: string }>;
+  }): Promise<{ madeChanges: boolean; headSha: string }>;
   resolveMergeConflicts(params: {
     owner: string;
     repo: string;
@@ -84,18 +67,6 @@ export interface ActionClaudeAgentClient {
     baseRefName: string;
     failingChecks: ReadonlyArray<{ name: string; logExcerpt: string }>;
   }): Promise<{ headSha: string }>;
-  reviewPullRequest(params: {
-    owner: string;
-    repo: string;
-    pullRequestNumber: number;
-    pullRequestTitle: string;
-    pullRequestBody: string;
-    headRefName: string;
-    baseRefName: string;
-  }): Promise<{
-    summary: string;
-    inlineComments: PullRequestInlineComment[];
-  }>;
   generateFinalDescription(params: {
     owner: string;
     repo: string;
@@ -200,9 +171,9 @@ export async function executeAction(
       return {};
     }
 
-    case "review-pull-request": {
+    case "self-review": {
       const pullRequest = findPullRequest(context, action.pullRequestNumber);
-      const review = await claudeAgentClient.reviewPullRequest({
+      const result = await claudeAgentClient.selfReview({
         owner: context.owner,
         repo: context.repo,
         pullRequestNumber: pullRequest.number,
@@ -211,65 +182,17 @@ export async function executeAction(
         headRefName: pullRequest.headRefName,
         baseRefName: pullRequest.baseRefName,
       });
-      await gitHubClient.createPullRequestReview({
-        pullRequestNumber: pullRequest.number,
-        commitId: pullRequest.headSha,
-        body: review.summary,
-        inlineComments: review.inlineComments,
-      });
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         pullRequestNumber: pullRequest.number,
-        phase: "review",
+        phase: "self-review",
         status: "completed",
         result: {
-          reviewCommentCount: review.inlineComments.length,
-          pullRequestHeadSha: pullRequest.headSha,
+          madeChanges: result.madeChanges,
+          pullRequestHeadSha: result.headSha,
         },
       });
       return {};
-    }
-
-    case "address-review-comments": {
-      const pullRequest = findPullRequest(context, action.pullRequestNumber);
-      const reviewComments = await gitHubClient.listUnresolvedReviewComments(
-        pullRequest.number,
-      );
-      const update = await claudeAgentClient.addressReviewComments({
-        owner: context.owner,
-        repo: context.repo,
-        pullRequestNumber: pullRequest.number,
-        pullRequestTitle: pullRequest.title,
-        pullRequestBody: pullRequest.body,
-        headRefName: pullRequest.headRefName,
-        baseRefName: pullRequest.baseRefName,
-        reviewComments,
-      });
-      const addressReviewNoCommits = update.headSha === pullRequest.headSha;
-      if (addressReviewNoCommits) {
-        console.warn(
-          `[vibrator] WARNING: address-review-comments on PR #${pullRequest.number} ` +
-          `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
-          `Claude ran but pushed no new commits. ` +
-          `Review comments that were sent to Claude:\n` +
-          reviewComments
-            .map((c, i) => `  ${i + 1}. ${c.path}${c.line !== null ? `:${c.line}` : ""} @${c.author}: ${c.body}`)
-            .join("\n"),
-        );
-      }
-      // Always resolve threads after addressing review comments. Claude either
-      // made code changes or responded verbally — either way the threads have
-      // been addressed. Leaving them open causes a new review on the next
-      // iteration which posts fresh threads, leading to unbounded accumulation.
-      await gitHubClient.resolvePullRequestReviewThreads(pullRequest.number);
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        pullRequestNumber: pullRequest.number,
-        phase: "address-review-comments",
-        status: "completed",
-        result: { pullRequestHeadSha: update.headSha, noCommitsPushed: addressReviewNoCommits },
-      });
-      return { noCommitsPushed: addressReviewNoCommits };
     }
 
     case "address-failing-checks": {
@@ -332,7 +255,7 @@ export async function executeAction(
       return { noCommitsPushed: conflictsNoCommits };
     }
 
-    case "write-final-description": {
+    case "squash-merge": {
       const pullRequest = findPullRequest(context, action.pullRequestNumber);
       const description = await claudeAgentClient.generateFinalDescription({
         owner: context.owner,
@@ -345,32 +268,9 @@ export async function executeAction(
         closingIssueNumbers: action.closingIssueNumbers,
       });
 
-      const mergedBody = buildMergedPullRequestBody(
-        description,
-        action.closingIssueNumbers,
-      );
+      const mergedBody = buildMergedPullRequestBody(description, action.closingIssueNumbers);
 
       await gitHubClient.updatePullRequestBody(action.pullRequestNumber, mergedBody);
-
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        pullRequestNumber: action.pullRequestNumber,
-        phase: "final-description",
-        status: "completed",
-        result: {
-          pullRequestBody: mergedBody,
-          generatedDescription: description,
-        },
-      });
-      return {};
-    }
-
-    case "squash-merge": {
-      const mergedBody = buildMergedPullRequestBody(
-        action.pullRequestBody,
-        action.closingIssueNumbers,
-      );
-
       await gitHubClient.squashMergePullRequest(
         action.pullRequestNumber,
         action.pullRequestTitle,

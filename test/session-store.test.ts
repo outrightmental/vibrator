@@ -57,12 +57,12 @@ test("FileSessionStore completeSession transitions an in_progress session", asyn
   await withTempStore(async (store) => {
     const created = await store.createSession({
       issueNumber: 1,
-      phase: "review",
+      phase: "self-review",
     });
-    const updated = await store.completeSession(created.id, { reviewCommentCount: 2 });
+    const updated = await store.completeSession(created.id, { madeChanges: true });
     assert.ok(updated);
     assert.equal(updated!.status, "completed");
-    assert.equal(updated!.result?.reviewCommentCount, 2);
+    assert.equal(updated!.result?.madeChanges, true);
   });
 });
 
@@ -94,18 +94,18 @@ test("FileSessionStore prunes terminal sessions beyond the cap, keeping the most
     // survive pruning.
     await store.createSession({
       issueNumber: 1,
-      phase: "review",
+      phase: "self-review",
       status: "completed",
     });
     await new Promise((resolve) => setTimeout(resolve, 5));
     const newer = await store.createSession({
       issueNumber: 1,
-      phase: "review",
+      phase: "self-review",
       status: "completed",
     });
     const sessions = await store.load();
     const reviewSessions = sessions.filter(
-      (s) => s.issueNumber === 1 && s.phase === "review",
+      (s) => s.issueNumber === 1 && s.phase === "self-review",
     );
     assert.equal(reviewSessions.length, 1);
     assert.equal(reviewSessions[0]?.id, newer.id);
@@ -121,7 +121,7 @@ test("FileSessionStore preserves active sessions through writes", async () => {
     // Add unrelated terminal sessions
     await store.createSession({
       issueNumber: 6,
-      phase: "review",
+      phase: "self-review",
       status: "completed",
     });
     const sessions = await store.load();

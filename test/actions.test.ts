@@ -15,7 +15,6 @@ import type {
   Issue,
   OrchestratorAction,
   PullRequest,
-  PullRequestInlineComment,
 } from "../src/types.js";
 
 type SessionInput = {
@@ -73,8 +72,8 @@ function createPullRequest(
 function createHarness(input: {
   issues?: Issue[];
   pullRequests?: PullRequest[];
-  reviewSummary?: string;
-  reviewInlineComments?: PullRequestInlineComment[];
+  selfReviewMadeChanges?: boolean;
+  selfReviewHeadSha?: string;
   generatedDescription?: string;
   implementation?: {
     branch: string;
@@ -82,12 +81,6 @@ function createHarness(input: {
     pullRequestBody: string;
     headSha: string;
   };
-  unresolvedReviewComments?: Array<{
-    path: string;
-    line: number | null;
-    body: string;
-    author: string;
-  }>;
   failingCheckRuns?: Array<{ name: string; logExcerpt: string }>;
   newPullRequest?: { number: number; headSha: string };
 }): Harness {
@@ -106,24 +99,11 @@ function createHarness(input: {
       );
       return newPullRequest;
     },
-    async createPullRequestReview(args): Promise<void> {
-      calls.push(
-        `create-review:${args.pullRequestNumber}:${args.commitId}:` +
-          `${args.inlineComments.length}-comments:${args.body}`,
-      );
-    },
     async updatePullRequestBody(pullRequestNumber, body): Promise<void> {
       calls.push(`update-body:${pullRequestNumber}:${body}`);
     },
     async squashMergePullRequest(pullRequestNumber, subject, body): Promise<void> {
       calls.push(`squash-merge:${pullRequestNumber}:${subject}:${body}`);
-    },
-    async resolvePullRequestReviewThreads(pullRequestNumber): Promise<void> {
-      calls.push(`resolve-threads:${pullRequestNumber}`);
-    },
-    async listUnresolvedReviewComments(pullRequestNumber) {
-      calls.push(`list-unresolved:${pullRequestNumber}`);
-      return input.unresolvedReviewComments ?? [];
     },
     async listFailingCheckRuns(args) {
       calls.push(`list-failing:${args.pullRequestNumber}:${args.headSha}`);
@@ -150,11 +130,12 @@ function createHarness(input: {
         }
       );
     },
-    async addressReviewComments(params) {
-      calls.push(
-        `address-review:${params.pullRequestNumber}:${params.reviewComments.length}-comments`,
-      );
-      return { headSha: "sha-after-address" };
+    async selfReview(params) {
+      calls.push(`self-review:${params.pullRequestNumber}`);
+      return {
+        madeChanges: input.selfReviewMadeChanges ?? false,
+        headSha: input.selfReviewHeadSha ?? "sha-after-self-review",
+      };
     },
     async resolveMergeConflicts(params) {
       calls.push(`resolve-conflicts:${params.pullRequestNumber}`);
@@ -165,13 +146,6 @@ function createHarness(input: {
         `address-checks:${params.pullRequestNumber}:${params.failingChecks.length}-checks`,
       );
       return { headSha: "sha-after-checks" };
-    },
-    async reviewPullRequest(params) {
-      calls.push(`review:${params.pullRequestNumber}`);
-      return {
-        summary: input.reviewSummary ?? "LGTM",
-        inlineComments: input.reviewInlineComments ?? [],
-      };
     },
     async generateFinalDescription(params) {
       calls.push(`generate-desc:${params.pullRequestNumber}`);
@@ -242,7 +216,7 @@ test("executeAction implements an issue, opens a PR, and records the session", a
   ]);
 });
 
-test("executeAction posts an approval review when Claude returns no inline comments", async () => {
+test("executeAction runs a self-review and records whether changes were made", async () => {
   const pullRequest = createPullRequest({
     number: 10,
     linkedIssueNumbers: [5],
@@ -250,110 +224,62 @@ test("executeAction posts an approval review when Claude returns no inline comme
   });
   const harness = createHarness({
     pullRequests: [pullRequest],
-    reviewSummary: "Looks great.",
-    reviewInlineComments: [],
+    selfReviewMadeChanges: false,
+    selfReviewHeadSha: "sha-after-self-review",
   });
 
   await run(harness, {
-    type: "review-pull-request",
+    type: "self-review",
     issueNumber: 5,
     pullRequestNumber: 10,
     pullRequestHeadSha: "sha-head-10",
   });
 
-  assert.deepEqual(harness.calls, [
-    "review:10",
-    "create-review:10:sha-head-10:0-comments:Looks great.",
-  ]);
+  assert.deepEqual(harness.calls, ["self-review:10"]);
   assert.deepEqual(harness.sessions, [
     {
       issueNumber: 5,
       pullRequestNumber: 10,
-      phase: "review",
+      phase: "self-review",
       status: "completed",
       result: {
-        reviewCommentCount: 0,
-        pullRequestHeadSha: "sha-head-10",
+        madeChanges: false,
+        pullRequestHeadSha: "sha-after-self-review",
       },
     },
   ]);
 });
 
-test("executeAction posts a request-changes review when Claude returns inline comments", async () => {
+test("executeAction records madeChanges=true when the self-review commits changes", async () => {
   const pullRequest = createPullRequest({
     number: 11,
     linkedIssueNumbers: [6],
     headSha: "sha-head-11",
   });
-  const inlineComments: PullRequestInlineComment[] = [
-    { path: "src/a.ts", line: 12, body: "Rename." },
-    { path: "src/b.ts", line: 7, body: "Add test." },
-  ];
   const harness = createHarness({
     pullRequests: [pullRequest],
-    reviewSummary: "Two issues to fix.",
-    reviewInlineComments: inlineComments,
+    selfReviewMadeChanges: true,
+    selfReviewHeadSha: "sha-after-fixes",
   });
 
   await run(harness, {
-    type: "review-pull-request",
+    type: "self-review",
     issueNumber: 6,
     pullRequestNumber: 11,
     pullRequestHeadSha: "sha-head-11",
   });
 
-  assert.equal(harness.calls[0], "review:11");
-  assert.equal(
-    harness.calls[1],
-    "create-review:11:sha-head-11:2-comments:Two issues to fix.",
-  );
+  assert.deepEqual(harness.calls, ["self-review:11"]);
   assert.deepEqual(harness.sessions, [
     {
       issueNumber: 6,
       pullRequestNumber: 11,
-      phase: "review",
+      phase: "self-review",
       status: "completed",
       result: {
-        reviewCommentCount: 2,
-        pullRequestHeadSha: "sha-head-11",
+        madeChanges: true,
+        pullRequestHeadSha: "sha-after-fixes",
       },
-    },
-  ]);
-});
-
-test("executeAction passes unresolved review comments to Claude and resolves threads afterwards", async () => {
-  const pullRequest = createPullRequest({
-    number: 12,
-    linkedIssueNumbers: [9],
-  });
-  const harness = createHarness({
-    pullRequests: [pullRequest],
-    unresolvedReviewComments: [
-      { path: "src/a.ts", line: 1, body: "Rename", author: "alice" },
-      { path: "src/b.ts", line: 2, body: "Add test", author: "bob" },
-    ],
-  });
-
-  await run(harness, {
-    type: "address-review-comments",
-    issueNumber: 9,
-    pullRequestNumber: 12,
-    pullRequestHeadSha: "sha-12",
-    unresolvedReviewCommentCount: 2,
-  });
-
-  assert.deepEqual(harness.calls, [
-    "list-unresolved:12",
-    "address-review:12:2-comments",
-    "resolve-threads:12",
-  ]);
-  assert.deepEqual(harness.sessions, [
-    {
-      issueNumber: 9,
-      pullRequestNumber: 12,
-      phase: "address-review-comments",
-      status: "completed",
-      result: { pullRequestHeadSha: "sha-after-address" },
     },
   ]);
 });
@@ -422,11 +348,12 @@ test("executeAction asks Claude to resolve merge conflicts", async () => {
   ]);
 });
 
-test("executeAction generates the final description and updates the PR body without merging", async () => {
+test("executeAction generates the final description, updates the PR body, and squash-merges", async () => {
   const pullRequest = createPullRequest({
     number: 15,
     linkedIssueNumbers: [3],
     closingIssueNumbers: [3],
+    headRefName: "branch-15",
   });
   const harness = createHarness({
     pullRequests: [pullRequest],
@@ -434,7 +361,7 @@ test("executeAction generates the final description and updates the PR body with
   });
 
   await run(harness, {
-    type: "write-final-description",
+    type: "squash-merge",
     issueNumber: 3,
     pullRequestNumber: 15,
     pullRequestTitle: "Add widget",
@@ -447,68 +374,6 @@ test("executeAction generates the final description and updates the PR body with
   assert.deepEqual(harness.calls, [
     "generate-desc:15",
     `update-body:15:${expectedBody}`,
-  ]);
-  assert.deepEqual(harness.sessions, [
-    {
-      issueNumber: 3,
-      pullRequestNumber: 15,
-      phase: "final-description",
-      status: "completed",
-      result: {
-        pullRequestBody: expectedBody,
-        generatedDescription: "Polished description",
-      },
-    },
-  ]);
-});
-
-test("executeAction appends missing closing references to the generated description", async () => {
-  const pullRequest = createPullRequest({
-    number: 16,
-    linkedIssueNumbers: [3, 8],
-    closingIssueNumbers: [3, 8],
-  });
-  const harness = createHarness({
-    pullRequests: [pullRequest],
-    generatedDescription: "Summary.",
-  });
-
-  await run(harness, {
-    type: "write-final-description",
-    issueNumber: 3,
-    pullRequestNumber: 16,
-    pullRequestTitle: "Fix",
-    pullRequestHeadRefName: "branch-16",
-    closingIssueNumbers: [3, 8],
-    pullRequestBody: "Old body",
-  });
-
-  const expectedBody = "Summary.\n\nCloses #3\n\nCloses #8";
-  assert.equal(harness.calls[1], `update-body:16:${expectedBody}`);
-  assert.equal(harness.calls.length, 2);
-});
-
-test("executeAction squash-merges a PR", async () => {
-  const pullRequest = createPullRequest({
-    number: 15,
-    linkedIssueNumbers: [3],
-    closingIssueNumbers: [3],
-  });
-  const harness = createHarness({
-    pullRequests: [pullRequest],
-  });
-
-  await run(harness, {
-    type: "squash-merge",
-    issueNumber: 3,
-    pullRequestNumber: 15,
-    pullRequestTitle: "Add widget",
-    closingIssueNumbers: [3],
-    pullRequestBody: "Final description",
-  });
-
-  const expectedBody = "Final description\n\nCloses #3";
-  assert.deepEqual(harness.calls, [
     `squash-merge:15:Add widget:${expectedBody}`,
   ]);
   assert.deepEqual(harness.sessions, [
@@ -520,6 +385,35 @@ test("executeAction squash-merges a PR", async () => {
       result: { pullRequestBody: expectedBody },
     },
   ]);
+});
+
+test("executeAction appends missing closing references to the generated description on merge", async () => {
+  const pullRequest = createPullRequest({
+    number: 16,
+    linkedIssueNumbers: [3, 8],
+    closingIssueNumbers: [3, 8],
+    headRefName: "branch-16",
+  });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    generatedDescription: "Summary.",
+  });
+
+  await run(harness, {
+    type: "squash-merge",
+    issueNumber: 3,
+    pullRequestNumber: 16,
+    pullRequestTitle: "Fix",
+    pullRequestHeadRefName: "branch-16",
+    closingIssueNumbers: [3, 8],
+    pullRequestBody: "Old body",
+  });
+
+  const expectedBody = "Summary.\n\nCloses #3\n\nCloses #8";
+  assert.equal(harness.calls[0], "generate-desc:16");
+  assert.equal(harness.calls[1], `update-body:16:${expectedBody}`);
+  assert.equal(harness.calls[2], `squash-merge:16:Fix:${expectedBody}`);
+  assert.equal(harness.calls.length, 3);
 });
 
 test("executeAction is a no-op when dry-run is enabled", async () => {

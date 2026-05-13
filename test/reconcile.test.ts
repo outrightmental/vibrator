@@ -33,8 +33,8 @@ test("reconcileSessions fails every in_progress session as a crash carcass", asy
 
   const events = await reconcileSessions(sessionStore, [
     createSession({ id: "a", issueNumber: 1, phase: "implementation", status: "in_progress" }),
-    createSession({ id: "b", issueNumber: 2, phase: "review", status: "completed" }),
-    createSession({ id: "c", issueNumber: 3, phase: "review", status: "in_progress" }),
+    createSession({ id: "b", issueNumber: 2, phase: "self-review", status: "completed" }),
+    createSession({ id: "c", issueNumber: 3, phase: "self-review", status: "in_progress" }),
     createSession({ id: "d", issueNumber: 4, phase: "implementation", status: "failed" }),
   ]);
 
@@ -56,7 +56,7 @@ test("reconcileSessions emits no events when nothing is in_progress", async () =
   };
 
   const events = await reconcileSessions(sessionStore, [
-    createSession({ id: "x", issueNumber: 1, phase: "review", status: "completed" }),
+    createSession({ id: "x", issueNumber: 1, phase: "self-review", status: "completed" }),
   ]);
 
   assert.deepEqual(events, []);

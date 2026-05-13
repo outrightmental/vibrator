@@ -3,7 +3,7 @@ import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { PullRequestInlineComment } from "./types.js";
+
 
 /**
  * Local Claude coding-agent client. The default implementation shells out
@@ -19,16 +19,13 @@ import type { PullRequestInlineComment } from "./types.js";
  */
 export interface ClaudeAgentClient {
   implementIssue(params: ImplementIssueParams): Promise<ImplementIssueResult>;
-  addressReviewComments(
-    params: AddressReviewCommentsParams,
-  ): Promise<AgentBranchUpdate>;
+  selfReview(params: SelfReviewParams): Promise<SelfReviewResult>;
   resolveMergeConflicts(
     params: ResolveMergeConflictsParams,
   ): Promise<AgentBranchUpdate>;
   addressFailingChecks(
     params: AddressFailingChecksParams,
   ): Promise<AgentBranchUpdate>;
-  reviewPullRequest(params: ReviewPullRequestParams): Promise<ReviewPullRequestResult>;
   generateFinalDescription(
     params: GenerateFinalDescriptionParams,
   ): Promise<string>;
@@ -55,7 +52,7 @@ export interface ImplementIssueResult {
   headSha: string;
 }
 
-export interface AddressReviewCommentsParams {
+export interface SelfReviewParams {
   owner: string;
   repo: string;
   pullRequestNumber: number;
@@ -65,13 +62,17 @@ export interface AddressReviewCommentsParams {
   headRefName: string;
   /** Branch the PR targets. */
   baseRefName: string;
-  /** Pre-fetched unresolved review comments to address. */
-  reviewComments: ReadonlyArray<{
-    path: string;
-    line: number | null;
-    body: string;
-    author: string;
-  }>;
+}
+
+export interface SelfReviewResult {
+  /**
+   * True when the self-review found issues and committed fixes to the
+   * branch. False when the code was already satisfactory and nothing was
+   * changed.
+   */
+  madeChanges: boolean;
+  /** SHA of the latest commit on the branch after the review pass. */
+  headSha: string;
 }
 
 export interface ResolveMergeConflictsParams {
@@ -93,23 +94,6 @@ export interface AddressFailingChecksParams {
     name: string;
     logExcerpt: string;
   }>;
-}
-
-export interface ReviewPullRequestParams {
-  owner: string;
-  repo: string;
-  pullRequestNumber: number;
-  pullRequestTitle: string;
-  pullRequestBody: string;
-  headRefName: string;
-  baseRefName: string;
-}
-
-export interface ReviewPullRequestResult {
-  /** Free-text top-level review body. */
-  summary: string;
-  /** Inline comments — empty when the reviewer was satisfied. */
-  inlineComments: PullRequestInlineComment[];
 }
 
 export interface GenerateFinalDescriptionParams {
@@ -136,13 +120,6 @@ export interface AgentBranchUpdate {
  */
 export const FINAL_DESCRIPTION_START_MARKER = "<<<VIBRATOR_PR_BODY_START>>>";
 export const FINAL_DESCRIPTION_END_MARKER = "<<<VIBRATOR_PR_BODY_END>>>";
-
-/**
- * Sentinel markers wrapping the JSON review payload (summary + inline
- * comments) the Claude reviewer must emit.
- */
-export const REVIEW_PAYLOAD_START_MARKER = "<<<VIBRATOR_REVIEW_START>>>";
-export const REVIEW_PAYLOAD_END_MARKER = "<<<VIBRATOR_REVIEW_END>>>";
 
 /**
  * Sentinel markers wrapping the JSON implementation-summary payload
@@ -274,98 +251,6 @@ export function extractFinalDescription(rawOutput: string): string {
   return inner ?? rawOutput.trim();
 }
 
-export function extractReviewPayload(
-  rawOutput: string,
-): ReviewPullRequestResult {
-  const inner = extractBetweenMarkers(
-    rawOutput,
-    REVIEW_PAYLOAD_START_MARKER,
-    REVIEW_PAYLOAD_END_MARKER,
-  );
-  if (!inner) {
-    // No markers found — try to find a JSON object that looks like a
-    // review payload (has "summary" and "comments" keys) anywhere in
-    // the raw output. This guards against Claude omitting the sentinel
-    // markers while still producing the expected JSON.
-    const fallback = tryExtractReviewJsonFromRawOutput(rawOutput);
-    if (fallback) {
-      return fallback;
-    }
-    // Genuinely free-text output with no JSON review structure.
-    // Treat as a clean review (LGTM).
-    return { summary: rawOutput.trim(), inlineComments: [] };
-  }
-  const parsed = parseReviewJson(inner);
-  return parsed;
-}
-
-/**
- * Best-effort extraction of a review JSON object from raw Claude output
- * when sentinel markers are missing. Looks for a top-level JSON object
- * that contains both "summary" and "comments" keys.
- */
-function tryExtractReviewJsonFromRawOutput(
-  rawOutput: string,
-): ReviewPullRequestResult | undefined {
-  // Find the outermost { ... } that contains "summary" and "comments".
-  let braceDepth = 0;
-  let startIndex = -1;
-  for (let i = 0; i < rawOutput.length; i++) {
-    if (rawOutput[i] === "{") {
-      if (braceDepth === 0) startIndex = i;
-      braceDepth++;
-    } else if (rawOutput[i] === "}") {
-      braceDepth--;
-      if (braceDepth === 0 && startIndex !== -1) {
-        const candidate = rawOutput.slice(startIndex, i + 1);
-        if (candidate.includes('"summary"') && candidate.includes('"comments"')) {
-          const parsed = parseReviewJson(candidate);
-          // Only accept if it actually parsed into a meaningful review.
-          if (parsed.summary.length > 0) {
-            return parsed;
-          }
-        }
-        startIndex = -1;
-      }
-    }
-  }
-  return undefined;
-}
-
-function parseReviewJson(payload: string): ReviewPullRequestResult {
-  let data: unknown;
-  try {
-    data = JSON.parse(payload);
-  } catch {
-    return { summary: payload, inlineComments: [] };
-  }
-  if (typeof data !== "object" || data === null) {
-    return { summary: payload, inlineComments: [] };
-  }
-  const obj = data as Record<string, unknown>;
-  const summary = typeof obj.summary === "string" ? obj.summary : "";
-  const rawComments = Array.isArray(obj.comments) ? obj.comments : [];
-  const inlineComments: PullRequestInlineComment[] = [];
-  for (const entry of rawComments) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const comment = entry as Record<string, unknown>;
-    if (
-      typeof comment.path === "string" &&
-      typeof comment.line === "number" &&
-      Number.isFinite(comment.line) &&
-      typeof comment.body === "string" &&
-      comment.body.trim().length > 0
-    ) {
-      inlineComments.push({
-        path: comment.path,
-        line: Math.floor(comment.line),
-        body: comment.body,
-      });
-    }
-  }
-  return { summary, inlineComments };
-}
-
 export function extractImplementationPayload(
   rawOutput: string,
 ): { pullRequestTitle: string; pullRequestBody: string } | undefined {
@@ -422,34 +307,25 @@ function buildImplementationPrompt(params: ImplementIssueParams, branch: string)
   ].join("\n");
 }
 
-function buildAddressReviewCommentsPrompt(params: AddressReviewCommentsParams): string {
-  const commentList =
-    params.reviewComments.length === 0
-      ? "(no unresolved review comments were provided — re-inspect the PR yourself with `gh pr view`)"
-      : params.reviewComments
-          .map(
-            (c, i) =>
-              `${i + 1}. ${c.path}${c.line !== null ? `:${c.line}` : ""} — @${c.author}:\n${c.body}`,
-          )
-          .join("\n\n");
-
+function buildSelfReviewPrompt(params: SelfReviewParams): string {
   return [
-    `You are addressing reviewer comments on pull request #${params.pullRequestNumber} in ${params.owner}/${params.repo}.`,
+    `You are performing a self-review of pull request #${params.pullRequestNumber} in ${params.owner}/${params.repo}.`,
     "",
     `PR title: ${params.pullRequestTitle}`,
     `Branch: \`${params.headRefName}\` (targets \`${params.baseRefName}\`).`,
     "",
-    "Unresolved review comments to address:",
+    "Current PR description:",
     "---",
-    commentList,
+    params.pullRequestBody || "(empty)",
     "---",
     "",
     "Instructions:",
-    "1. For each unresolved review comment, either make the change the reviewer is requesting OR, if the existing code is already correct, leave a reply explaining why (use `gh pr comment`).",
-    "2. Commit every code change to the current branch with descriptive commit messages.",
-    "3. Be conservative: only modify what the reviewer pointed out plus anything strictly required to make the tests pass.",
+    `1. Read the full diff (\`git diff origin/${params.baseRefName}..HEAD\`) and the surrounding code carefully.`,
+    "2. Identify any substantive problems: bugs, regressions, missing or broken tests, security issues, or significant design problems. Minor style nits are out of scope.",
+    "3. If you find any problems, fix them directly by editing the files. Commit every change with a clear, descriptive commit message that explains what was changed and why.",
+    "4. If you find nothing that needs to change, make no commits and output only a brief 'LGTM' message.",
     "",
-    "After all commits are made, summarize what you changed in plain text. The orchestrator will push the branch automatically.",
+    "Be honest and thorough — this is your own code and the goal is to ship high-quality work.",
   ].join("\n");
 }
 
@@ -488,40 +364,6 @@ function buildAddressFailingChecksPrompt(params: AddressFailingChecksParams): st
     "2. Fix the underlying problem. Re-run the tests/linters locally if available.",
     "3. Commit every change with a descriptive commit message.",
     "4. Do not push — the orchestrator handles pushing.",
-  ].join("\n");
-}
-
-function buildReviewPrompt(params: ReviewPullRequestParams): string {
-  return [
-    `You are reviewing pull request #${params.pullRequestNumber} in ${params.owner}/${params.repo}.`,
-    "",
-    `PR title: ${params.pullRequestTitle}`,
-    `Branch: \`${params.headRefName}\` (targets \`${params.baseRefName}\`).`,
-    "",
-    "Current PR description:",
-    "---",
-    params.pullRequestBody || "(empty)",
-    "---",
-    "",
-    "Instructions:",
-    "1. Read the diff (`git diff origin/" + params.baseRefName + "..HEAD`) and the surrounding code.",
-    "2. Identify substantive problems: bugs, regressions, missing tests, security issues, design problems. Style nits are out of scope.",
-    "3. Do not modify any files. Do not commit. Only produce a review.",
-    "4. Emit a JSON object summarizing the review between the exact sentinel markers below.",
-    "",
-    `${REVIEW_PAYLOAD_START_MARKER}`,
-    `{`,
-    `  "summary": "<short Markdown summary of the review — what looked good, what needs work, or 'LGTM' when nothing needs to change>",`,
-    `  "comments": [`,
-    `    { "path": "<file path>", "line": <1-based line number on the PR's right side>, "body": "<what needs to change and why>" }`,
-    `  ]`,
-    `}`,
-    `${REVIEW_PAYLOAD_END_MARKER}`,
-    "",
-    "Output requirements:",
-    "- The JSON object must appear exactly once between the sentinels and must be valid JSON (no trailing commas, no code fences).",
-    `- An empty \`comments\` array means the PR is approved as-is — use this when the change is good to merge.`,
-    "- Only flag genuine issues. Do not add comments just to seem thorough.",
   ].join("\n");
 }
 
@@ -636,17 +478,26 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     };
   }
 
-  async addressReviewComments(
-    params: AddressReviewCommentsParams,
-  ): Promise<AgentBranchUpdate> {
+  async selfReview(params: SelfReviewParams): Promise<SelfReviewResult> {
     const repoDir = await this.checkoutPullRequest({
       owner: params.owner,
       repo: params.repo,
       pullRequestNumber: params.pullRequestNumber,
     });
-    const prompt = buildAddressReviewCommentsPrompt(params);
+
+    // Capture the head SHA before Claude runs so we can detect whether any
+    // commits were made.
+    const headShaBeforeReview = (
+      await runCommand("git", ["rev-parse", "HEAD"], { cwd: repoDir, captureStdout: true })
+    ).trim();
+
+    const prompt = buildSelfReviewPrompt(params);
     await this.runClaude(prompt, repoDir);
-    return this.pushAndReportHead(repoDir, params.headRefName);
+
+    // Push whatever Claude may have committed and report the new head SHA.
+    const update = await this.pushAndReportHead(repoDir, params.headRefName);
+    const madeChanges = update.headSha !== headShaBeforeReview;
+    return { madeChanges, headSha: update.headSha };
   }
 
   async resolveMergeConflicts(
@@ -686,19 +537,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const prompt = buildAddressFailingChecksPrompt(params);
     await this.runClaude(prompt, repoDir);
     return this.pushAndReportHead(repoDir, params.headRefName);
-  }
-
-  async reviewPullRequest(
-    params: ReviewPullRequestParams,
-  ): Promise<ReviewPullRequestResult> {
-    const repoDir = await this.checkoutPullRequest({
-      owner: params.owner,
-      repo: params.repo,
-      pullRequestNumber: params.pullRequestNumber,
-    });
-    const prompt = buildReviewPrompt(params);
-    const stdout = await this.runClaude(prompt, repoDir);
-    return extractReviewPayload(stdout);
   }
 
   async generateFinalDescription(

@@ -87,7 +87,7 @@ test("buildPlan chooses the oldest unblocked issues up to available capacity", (
 
   assert.deepEqual(plan.actions, [
     {
-      type: "review-pull-request",
+      type: "self-review",
       issueNumber: 3,
       pullRequestNumber: 10,
       pullRequestHeadSha: "sha-10",
@@ -113,7 +113,7 @@ test("buildPlan prioritizes bug-typed issues ahead of older non-bug issues", () 
   assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 70 }]);
 });
 
-test("buildPlan shepherds a PR with no linked issue by requesting a Claude review", () => {
+test("buildPlan self-reviews a PR with no linked issue", () => {
   const snapshot: RepositorySnapshot = {
     issues: [],
     pullRequests: [createPullRequest({ number: 200, linkedIssueNumbers: [] })],
@@ -124,7 +124,7 @@ test("buildPlan shepherds a PR with no linked issue by requesting a Claude revie
 
   assert.deepEqual(plan.actions, [
     {
-      type: "review-pull-request",
+      type: "self-review",
       issueNumber: undefined,
       pullRequestNumber: 200,
       pullRequestHeadSha: "sha-200",
@@ -132,52 +132,18 @@ test("buildPlan shepherds a PR with no linked issue by requesting a Claude revie
   ]);
 });
 
-test("buildPlan jumps straight to final-description when a clean review is seen with no prior session", () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 92 })],
-    pullRequests: [
-      createPullRequest({
-        number: 192,
-        linkedIssueNumbers: [92],
-        hasCleanReviewOnHead: true,
-      }),
-    ],
-    agentSessions: [],
-  };
-
-  const plan = buildPlan(snapshot, 3);
-
-  assert.deepEqual(plan.actions, [
-    {
-      type: "write-final-description",
-      issueNumber: 92,
-      pullRequestNumber: 192,
-      pullRequestTitle: "PR 192",
-      pullRequestHeadRefName: "branch-192",
-      closingIssueNumbers: [92],
-      pullRequestBody: "",
-    },
-  ]);
-});
-
-test("buildPlan asks for review comment fixes when the latest review found issues", () => {
+test("buildPlan runs a second self-review after the first one made changes", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 7 })],
-    pullRequests: [
-      createPullRequest({
-        number: 16,
-        linkedIssueNumbers: [7],
-        unresolvedReviewCommentCount: 2,
-      }),
-    ],
+    pullRequests: [createPullRequest({ number: 16, linkedIssueNumbers: [7] })],
     agentSessions: [
       createSession({
-        id: "review-1",
+        id: "self-review-1",
         issueNumber: 7,
         pullRequestNumber: 16,
-        phase: "review",
+        phase: "self-review",
         updatedAt: "2024-01-02T00:00:00.000Z",
-        result: { reviewCommentCount: 2 },
+        result: { madeChanges: true, pullRequestHeadSha: "sha-16" },
       }),
     ],
   };
@@ -186,33 +152,26 @@ test("buildPlan asks for review comment fixes when the latest review found issue
 
   assert.deepEqual(plan.actions, [
     {
-      type: "address-review-comments",
+      type: "self-review",
       issueNumber: 7,
       pullRequestNumber: 16,
       pullRequestHeadSha: "sha-16",
-      unresolvedReviewCommentCount: 2,
     },
   ]);
 });
 
-test("buildPlan advances to final-description after a clean (zero-comment) review", () => {
+test("buildPlan runs a second self-review after the first clean pass", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 7 })],
-    pullRequests: [
-      createPullRequest({
-        number: 16,
-        linkedIssueNumbers: [7],
-        hasCleanReviewOnHead: true,
-      }),
-    ],
+    pullRequests: [createPullRequest({ number: 16, linkedIssueNumbers: [7] })],
     agentSessions: [
       createSession({
-        id: "review-clean",
+        id: "self-review-1",
         issueNumber: 7,
         pullRequestNumber: 16,
-        phase: "review",
+        phase: "self-review",
         updatedAt: "2024-01-02T00:00:00.000Z",
-        result: { reviewCommentCount: 0 },
+        result: { madeChanges: false, pullRequestHeadSha: "sha-16" },
       }),
     ],
   };
@@ -221,7 +180,50 @@ test("buildPlan advances to final-description after a clean (zero-comment) revie
 
   assert.deepEqual(plan.actions, [
     {
-      type: "write-final-description",
+      type: "self-review",
+      issueNumber: 7,
+      pullRequestNumber: 16,
+      pullRequestHeadSha: "sha-16",
+    },
+  ]);
+});
+
+test("buildPlan squash-merges after two consecutive clean self-reviews", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 7 })],
+    pullRequests: [
+      createPullRequest({
+        number: 16,
+        linkedIssueNumbers: [7],
+        closingIssueNumbers: [7],
+        headRefName: "branch-16",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "self-review-1",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "self-review",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { madeChanges: false },
+      }),
+      createSession({
+        id: "self-review-2",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "self-review",
+        updatedAt: "2024-01-03T00:00:00.000Z",
+        result: { madeChanges: false },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "squash-merge",
       issueNumber: 7,
       pullRequestNumber: 16,
       pullRequestTitle: "PR 16",
@@ -232,33 +234,44 @@ test("buildPlan advances to final-description after a clean (zero-comment) revie
   ]);
 });
 
-test("buildPlan re-reviews when the review session recorded zero comments but hasCleanReviewOnHead is false", () => {
+test("buildPlan does not squash-merge when two clean reviews are separated by a changes-making review", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 7 })],
-    pullRequests: [
-      createPullRequest({
-        number: 16,
-        linkedIssueNumbers: [7],
-        hasCleanReviewOnHead: false,
-      }),
-    ],
+    pullRequests: [createPullRequest({ number: 16, linkedIssueNumbers: [7] })],
     agentSessions: [
       createSession({
-        id: "review-ghost",
+        id: "self-review-1",
         issueNumber: 7,
         pullRequestNumber: 16,
-        phase: "review",
+        phase: "self-review",
         updatedAt: "2024-01-02T00:00:00.000Z",
-        result: { reviewCommentCount: 0 },
+        result: { madeChanges: false },
+      }),
+      createSession({
+        id: "self-review-2",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "self-review",
+        updatedAt: "2024-01-03T00:00:00.000Z",
+        result: { madeChanges: true },
+      }),
+      createSession({
+        id: "self-review-3",
+        issueNumber: 7,
+        pullRequestNumber: 16,
+        phase: "self-review",
+        updatedAt: "2024-01-04T00:00:00.000Z",
+        result: { madeChanges: false },
       }),
     ],
   };
 
   const plan = buildPlan(snapshot, 3);
 
+  // The penultimate session made changes, so one more clean pass is needed.
   assert.deepEqual(plan.actions, [
     {
-      type: "review-pull-request",
+      type: "self-review",
       issueNumber: 7,
       pullRequestNumber: 16,
       pullRequestHeadSha: "sha-16",
@@ -266,69 +279,7 @@ test("buildPlan re-reviews when the review session recorded zero comments but ha
   ]);
 });
 
-test("buildPlan addresses unresolved review comments even when latest session is not review phase", () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 7 })],
-    pullRequests: [
-      createPullRequest({
-        number: 16,
-        linkedIssueNumbers: [7],
-        unresolvedReviewCommentCount: 3,
-        hasCleanReviewOnHead: false,
-      }),
-    ],
-    agentSessions: [
-      createSession({
-        id: "impl-1",
-        issueNumber: 7,
-        pullRequestNumber: 16,
-        phase: "implementation",
-        updatedAt: "2024-01-02T00:00:00.000Z",
-      }),
-    ],
-  };
-
-  const plan = buildPlan(snapshot, 3);
-
-  assert.deepEqual(plan.actions, [
-    {
-      type: "address-review-comments",
-      issueNumber: 7,
-      pullRequestNumber: 16,
-      pullRequestHeadSha: "sha-16",
-      unresolvedReviewCommentCount: 3,
-    },
-  ]);
-});
-
-test("buildPlan requests another review after review comments are addressed", () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 9 })],
-    pullRequests: [createPullRequest({ number: 12, linkedIssueNumbers: [9] })],
-    agentSessions: [
-      createSession({
-        id: "address-1",
-        issueNumber: 9,
-        pullRequestNumber: 12,
-        phase: "address-review-comments",
-        updatedAt: "2024-01-02T00:00:00.000Z",
-      }),
-    ],
-  };
-
-  const plan = buildPlan(snapshot, 3);
-
-  assert.deepEqual(plan.actions, [
-    {
-      type: "review-pull-request",
-      issueNumber: 9,
-      pullRequestNumber: 12,
-      pullRequestHeadSha: "sha-12",
-    },
-  ]);
-});
-
-test("buildPlan requests a fresh review after conflicts are resolved", () => {
+test("buildPlan requests a fresh self-review after conflicts are resolved", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 14 })],
     pullRequests: [
@@ -352,7 +303,7 @@ test("buildPlan requests a fresh review after conflicts are resolved", () => {
 
   assert.deepEqual(plan.actions, [
     {
-      type: "review-pull-request",
+      type: "self-review",
       issueNumber: 14,
       pullRequestNumber: 24,
       pullRequestHeadSha: "sha-24",
@@ -429,80 +380,6 @@ test("buildPlan emits no action while checks are pending", () => {
   const plan = buildPlan(snapshot, 3);
 
   assert.deepEqual(plan.actions, []);
-});
-
-test("buildPlan re-requests the final description if none was captured", () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 5 })],
-    pullRequests: [
-      createPullRequest({
-        number: 15,
-        linkedIssueNumbers: [5],
-        closingIssueNumbers: [5],
-        body: "Ready to merge.",
-      }),
-    ],
-    agentSessions: [
-      createSession({
-        id: "description-1",
-        issueNumber: 5,
-        pullRequestNumber: 15,
-        phase: "final-description",
-        updatedAt: "2024-01-02T00:00:00.000Z",
-      }),
-    ],
-  };
-
-  const plan = buildPlan(snapshot, 3);
-
-  assert.deepEqual(plan.actions, [
-    {
-      type: "write-final-description",
-      issueNumber: 5,
-      pullRequestNumber: 15,
-      pullRequestTitle: "PR 15",
-      pullRequestHeadRefName: "branch-15",
-      closingIssueNumbers: [5],
-      pullRequestBody: "Ready to merge.",
-    },
-  ]);
-});
-
-test("buildPlan emits squash-merge after the final description session has completed", () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 5 })],
-    pullRequests: [
-      createPullRequest({
-        number: 15,
-        linkedIssueNumbers: [5],
-        closingIssueNumbers: [5],
-        body: "Final summary.",
-      }),
-    ],
-    agentSessions: [
-      createSession({
-        id: "description-done",
-        issueNumber: 5,
-        pullRequestNumber: 15,
-        phase: "final-description",
-        updatedAt: "2024-01-02T00:00:00.000Z",
-        result: { generatedDescription: "Final summary.", pullRequestBody: "Final summary.\n\nCloses #5" },
-      }),
-    ],
-  };
-
-  const plan = buildPlan(snapshot, 3);
-
-  assert.deepEqual(plan.actions, [
-    {
-      type: "squash-merge",
-      issueNumber: 5,
-      pullRequestNumber: 15,
-      pullRequestTitle: "PR 15",
-      closingIssueNumbers: [5],
-      pullRequestBody: "Final summary.\n\nCloses #5",
-    },
-  ]);
 });
 
 test("buildPlan emits no action after squash-merge session has completed", () => {
@@ -603,10 +480,10 @@ test("buildPlan suppresses planning for PRs with an active session", () => {
     pullRequests: [createPullRequest({ number: 20, linkedIssueNumbers: [3] })],
     agentSessions: [
       createSession({
-        id: "active-review",
+        id: "active-self-review",
         issueNumber: 3,
         pullRequestNumber: 20,
-        phase: "review",
+        phase: "self-review",
         status: "in_progress",
         updatedAt: "2024-01-02T00:00:00.000Z",
       }),
@@ -625,17 +502,16 @@ test("buildPlan uses sessions from any linked issue on the same pull request", (
       createPullRequest({
         number: 20,
         linkedIssueNumbers: [3, 8],
-        unresolvedReviewCommentCount: 1,
       }),
     ],
     agentSessions: [
       createSession({
-        id: "review-8",
+        id: "self-review-8",
         issueNumber: 8,
         pullRequestNumber: 20,
-        phase: "review",
+        phase: "self-review",
         updatedAt: "2024-01-02T00:00:00.000Z",
-        result: { reviewCommentCount: 1 },
+        result: { madeChanges: true },
       }),
     ],
   };
@@ -644,11 +520,10 @@ test("buildPlan uses sessions from any linked issue on the same pull request", (
 
   assert.deepEqual(plan.actions, [
     {
-      type: "address-review-comments",
+      type: "self-review",
       issueNumber: 8,
       pullRequestNumber: 20,
       pullRequestHeadSha: "sha-20",
-      unresolvedReviewCommentCount: 1,
     },
   ]);
 });
