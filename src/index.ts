@@ -12,6 +12,16 @@ import {
 import { buildPlan } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
+import { DashboardServer } from "./dashboard-server.js";
+import { globalEventEmitter } from "./event-emitter.js";
+import {
+  broadcastRepositorySnapshot,
+  broadcastPullRequestUpdate,
+  broadcastIssueUpdate,
+  broadcastCommit,
+  broadcastReviewComment,
+  emitLogMessage,
+} from "./dashboard-utils.js";
 import type {
   AgentSession,
   OrchestratorAction,
@@ -27,6 +37,7 @@ function timestamp(): string {
 
 function write(line: string): void {
   console.log(line);
+  emitLogMessage("info", line);
 }
 
 function blank(): void {
@@ -66,6 +77,67 @@ function formatDuration(milliseconds: number): string {
 
 function shortId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+async function broadcastBetweenCycleActivity(
+  config: Config,
+  lastSnapshot: RepositorySnapshot | null,
+): Promise<RepositorySnapshot> {
+  try {
+    const gitHubClient = new GitHubClient({
+      owner: config.owner,
+      repo: config.repo,
+      token: config.token,
+    });
+    const sessionStore = new FileSessionStore(config.sessionStorePath);
+
+    const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+
+    // Broadcast current repository state
+    broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+
+    // Broadcast any open PRs and their review comments
+    for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
+      broadcastPullRequestUpdate(pr, "monitoring");
+
+      // Broadcast unresolved review comments for this PR
+      try {
+        const reviewComments = await gitHubClient.listUnresolvedReviewComments(pr.number);
+        if (reviewComments.length > 0) {
+          broadcastReviewComment(pr.number, "Review", reviewComments.length);
+        }
+      } catch (error) {
+        // Silently skip review comment broadcasting if it fails
+      }
+    }
+
+    // Broadcast issue activity: new or recently updated issues
+    if (lastSnapshot) {
+      const lastIssueMap = new Map(lastSnapshot.issues.map((i) => [i.number, i]));
+      for (const issue of snapshot.issues) {
+        const lastIssue = lastIssueMap.get(issue.number);
+        // Broadcast if this is a new issue or recently updated
+        if (!lastIssue || new Date(issue.updatedAt) > new Date(lastIssue.updatedAt)) {
+          broadcastIssueUpdate(issue, lastIssue ? "updated" : "opened");
+        }
+      }
+    }
+
+    // Broadcast recent commits
+    try {
+      const recentCommits = await gitHubClient.listRecentCommits(5);
+      for (const commit of recentCommits) {
+        broadcastCommit(commit);
+      }
+    } catch (error) {
+      // Silently skip commit broadcasting if it fails
+    }
+
+    return snapshot;
+  } catch (error) {
+    // Silently fail on between-cycle polling errors
+    return lastSnapshot || ({ pullRequests: [], issues: [], agentSessions: [] } as RepositorySnapshot);
+  }
 }
 
 function describeAction(
@@ -191,6 +263,10 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     ...(config.claudeModel !== undefined && { claudeModel: config.claudeModel }),
   });
 
+  globalEventEmitter.emit("iteration-start", {
+    iterationNumber,
+  });
+
   write(HEAVY_RULE);
   write(`vibrator status update · ${timestamp()} · iteration ${iterationNumber}`);
   write(`repo: ${repo} (${gitHubClient.repositoryUrl()})`);
@@ -221,6 +297,11 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         try {
           const result = await gitHubClient.approveWorkflowRun(run.id);
           note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
+          globalEventEmitter.emit("workflow-approval", {
+            runId: run.id,
+            runName: run.name,
+            approved: result.approved,
+          });
         } catch (error) {
           note(`✗ failed to approve ${label}: ${(error as Error).message}`, 2);
         }
@@ -232,17 +313,36 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   // --- Repository snapshot ----------------------------------------------
   const snapshot = await loadSnapshot(gitHubClient, sessionStore);
-  const draftPullRequestCount = snapshot.pullRequests.filter((pr) => pr.draft).length;
-  const readyPullRequestCount = snapshot.pullRequests.length - draftPullRequestCount;
+  const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
+  const draftPullRequestCount = openPullRequests.filter((pr) => pr.draft).length;
+  const readyPullRequestCount = openPullRequests.filter((pr) => !pr.draft).length;
   const preReconcileActiveSessions = snapshot.agentSessions.filter(
     (s) => s.status === "in_progress",
   );
 
+  globalEventEmitter.emit("snapshot-update", {
+    issueCount: snapshot.issues.length,
+    prCount: openPullRequests.length,
+    draftPrCount: draftPullRequestCount,
+    readyPrCount: readyPullRequestCount,
+    sessionCount: preReconcileActiveSessions.length,
+  });
+
+  // Broadcast repository snapshot and PR updates to dashboard
+  broadcastRepositorySnapshot(snapshot, config.owner, config.repo, preReconcileActiveSessions.length);
+  for (const pr of openPullRequests) {
+    const draftLabel = pr.draft ? "[DRAFT]" : "";
+    const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
+    broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
+  }
+
+  globalEventEmitter.emit("phase-update", { phase: "implementation" });
+
   section("Repository snapshot");
   bullet(`${snapshot.issues.length} open issue(s)`);
   bullet(
-    `${snapshot.pullRequests.length} open pull request(s)` +
-      (snapshot.pullRequests.length > 0
+    `${openPullRequests.length} open pull request(s)` +
+      (openPullRequests.length > 0
         ? ` (${draftPullRequestCount} draft, ${readyPullRequestCount} ready)`
         : ""),
   );
@@ -265,6 +365,8 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   snapshot.agentSessions = await sessionStore.load();
 
   // --- Plan -------------------------------------------------------------
+  globalEventEmitter.emit("phase-update", { phase: "review" });
+
   const plan = buildPlan(snapshot, config.maxConcurrency);
   const blockedEntries = Object.entries(plan.blockedIssueNumbers);
 
@@ -297,6 +399,8 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     }
 
     if (!config.dryRun) {
+      globalEventEmitter.emit("phase-update", { phase: "implementation" });
+
       const actionContext = {
         owner: config.owner,
         repo: config.repo,
@@ -305,16 +409,22 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       };
 
       const results = await Promise.allSettled(
-        plan.actions.map((action) =>
-          executeAction(
+        plan.actions.map((action, index) => {
+          globalEventEmitter.emit("action-start", {
+            actionIndex: index + 1,
+            totalActions: plan.actions.length,
+            description: describeAction(action, snapshot, gitHubClient),
+            type: action.type,
+          });
+          return executeAction(
             gitHubClient,
             sessionStore,
             claudeAgentClient,
             action,
             false,
             actionContext,
-          ),
-        ),
+          );
+        }),
       );
 
       blank();
@@ -323,12 +433,22 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         const prefix = `[${i + 1}/${plan.actions.length}]`;
         if (result.status === "fulfilled") {
           const actionResult: ExecuteActionResult = result.value;
+          globalEventEmitter.emit("action-complete", {
+            actionIndex: i + 1,
+            totalActions: plan.actions.length,
+            noCommitsPushed: actionResult.noCommitsPushed || false,
+          });
           if (actionResult.noCommitsPushed) {
             note(`${prefix} ⚠ done — no new commits pushed to branch (Claude ran but made no changes)`, 2);
           } else {
             note(`${prefix} ✓ done`, 2);
           }
         } else {
+          globalEventEmitter.emit("action-error", {
+            actionIndex: i + 1,
+            totalActions: plan.actions.length,
+            error: (result.reason as Error).message,
+          });
           note(
             `${prefix} ✗ failed: ${(result.reason as Error).message}`,
             2,
@@ -338,6 +458,11 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     } else {
       blank();
       for (let i = 0; i < plan.actions.length; i++) {
+        globalEventEmitter.emit("action-complete", {
+          actionIndex: i + 1,
+          totalActions: plan.actions.length,
+          dryRun: true,
+        });
         note(`[${i + 1}/${plan.actions.length}] ✓ done (dry-run)`, 2);
       }
     }
@@ -347,9 +472,29 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
+
+  // Start dashboard server
+  const dashboard = new DashboardServer({ port: 3000 });
+  let dashboardReady = false;
+  try {
+    await dashboard.initialize();
+    await dashboard.start();
+    await dashboard.openBrowser();
+    dashboardReady = true;
+  } catch (error) {
+    console.error(
+      `[Dashboard] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   write(HEAVY_RULE);
   write(`vibrator starting · ${timestamp()}`);
   write(`repo: ${config.owner}/${config.repo} (${repositoryUrl})`);
+  if (dashboardReady) {
+    write(`dashboard: ${dashboard.getUrl()}`);
+  } else {
+    write(`dashboard: failed to start (check if port 3000 is available)`);
+  }
   const modeNotes: string[] = [];
   if (config.once) modeNotes.push("--once");
   if (config.dryRun) modeNotes.push("--dry-run");
@@ -360,18 +505,51 @@ async function main(): Promise<void> {
   write(HEAVY_RULE);
 
   let iterationNumber = 0;
+  let lastSnapshot: RepositorySnapshot | null = null;
+
   do {
     iterationNumber++;
+
+    const iterationStartTime = Date.now();
     await runIteration(config, iterationNumber);
+
     if (config.once) {
       blank();
       write(`Done (--once mode). Exiting.`);
+      if (dashboardReady) {
+        dashboard.close();
+      }
       return;
     }
 
+    // Calculate time until next cycle, accounting for iteration duration
+    const elapsedMs = Date.now() - iterationStartTime;
+    const remainingMs = Math.max(0, config.intervalMs - elapsedMs);
+
     blank();
-    write(`Next iteration in ${formatDuration(config.intervalMs)}.`);
-    await delay(config.intervalMs);
+    write(`Next iteration in ${formatDuration(remainingMs)}.`);
+
+    // Emit countdown with remaining time
+    globalEventEmitter.emit("cycle-countdown", {
+      msUntilCycle: remainingMs,
+      nextCycleTime: new Date(Date.now() + remainingMs).toISOString(),
+    });
+
+    // Broadcast GitHub activity during idle period to keep dashboard vibrant
+    const pollIntervalMs = 10000; // Poll every 10 seconds
+    const startWaitTime = Date.now();
+    while (Date.now() - startWaitTime < remainingMs) {
+      const timeLeftMs = remainingMs - (Date.now() - startWaitTime);
+      if (timeLeftMs <= 0) break;
+
+      const waitMs = Math.min(pollIntervalMs, timeLeftMs);
+      await delay(waitMs);
+
+      // Broadcast activity if time permits
+      if (Date.now() - startWaitTime < remainingMs - 1000) {
+        lastSnapshot = await broadcastBetweenCycleActivity(config, lastSnapshot);
+      }
+    }
   } while (true);
 }
 
