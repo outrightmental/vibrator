@@ -1,3 +1,10 @@
+export interface Commit {
+  hash: string;
+  author: string;
+  message: string;
+  pushedAt: string;
+}
+
 export interface Issue {
   number: number;
   title: string;

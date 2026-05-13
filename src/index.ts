@@ -19,6 +19,7 @@ import {
   broadcastPullRequestUpdate,
   broadcastCIStatus,
   broadcastIssueUpdate,
+  broadcastCommit,
   emitLogMessage,
 } from "./dashboard-utils.js";
 import type {
@@ -110,6 +111,16 @@ async function broadcastBetweenCycleActivity(
           broadcastIssueUpdate(issue, lastIssue ? "updated" : "opened");
         }
       }
+    }
+
+    // Broadcast recent commits
+    try {
+      const recentCommits = await gitHubClient.listRecentCommits(5);
+      for (const commit of recentCommits) {
+        broadcastCommit(commit);
+      }
+    } catch (error) {
+      // Silently skip commit broadcasting if it fails
     }
 
     return snapshot;

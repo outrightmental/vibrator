@@ -1,5 +1,5 @@
 import { globalEventEmitter } from "./event-emitter.js";
-import type { RepositorySnapshot, PullRequest, Issue } from "./types.js";
+import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
 export function broadcastRepositorySnapshot(
   snapshot: RepositorySnapshot,
@@ -87,6 +87,17 @@ export function broadcastIssueUpdate(issue: Issue, action: string): void {
     title: issue.title,
     action,
     state: issue.state,
+  });
+}
+
+export function broadcastCommit(commit: Commit): void {
+  const shortHash = commit.hash.slice(0, 7);
+  const firstLine = commit.message.split('\n')[0];
+  globalEventEmitter.emit("broadcast-commit", {
+    content: `Commit ${shortHash} by ${commit.author}: ${firstLine}`,
+    hash: commit.hash,
+    author: commit.author,
+    message: firstLine,
   });
 }
 

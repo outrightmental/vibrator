@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
 import type {
+  Commit,
   Issue,
   PullRequest,
   RepositorySnapshot,
@@ -320,6 +321,28 @@ export class GitHubClient {
         closingIssueNumbers,
       };
     });
+  }
+
+  async listRecentCommits(limit: number = 10): Promise<Commit[]> {
+    interface GitHubCommitResponse {
+      sha: string;
+      commit: {
+        author: { name: string };
+        message: string;
+      };
+      pushed_at?: string;
+    }
+
+    const commits = await this.getAllPages<GitHubCommitResponse>(
+      `/repos/${this.options.owner}/${this.options.repo}/commits?per_page=${limit}`,
+    );
+
+    return commits.slice(0, limit).map((commit) => ({
+      hash: commit.sha,
+      author: commit.commit.author.name,
+      message: commit.commit.message,
+      pushedAt: commit.pushed_at || new Date().toISOString(),
+    }));
   }
 
   private async fetchOpenPullRequestGraphQLData(): Promise<
