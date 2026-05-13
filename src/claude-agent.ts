@@ -62,6 +62,10 @@ export interface SelfReviewParams {
   headRefName: string;
   /** Branch the PR targets. */
   baseRefName: string;
+  /** The issue this PR is intended to resolve — used to scope the review. */
+  issueNumber?: number;
+  issueTitle?: string;
+  issueBody?: string;
 }
 
 export interface SelfReviewResult {
@@ -308,11 +312,25 @@ function buildImplementationPrompt(params: ImplementIssueParams, branch: string)
 }
 
 function buildSelfReviewPrompt(params: SelfReviewParams): string {
+  const issueSection =
+    params.issueNumber !== undefined
+      ? [
+          "",
+          `This PR was created to resolve issue #${params.issueNumber}: ${params.issueTitle ?? "(no title)"}`,
+          "",
+          "Issue description:",
+          "---",
+          params.issueBody || "(empty)",
+          "---",
+        ]
+      : [];
+
   return [
     `You are performing a self-review of pull request #${params.pullRequestNumber} in ${params.owner}/${params.repo}.`,
     "",
     `PR title: ${params.pullRequestTitle}`,
     `Branch: \`${params.headRefName}\` (targets \`${params.baseRefName}\`).`,
+    ...issueSection,
     "",
     "Current PR description:",
     "---",
@@ -321,11 +339,11 @@ function buildSelfReviewPrompt(params: SelfReviewParams): string {
     "",
     "Instructions:",
     `1. Read the full diff (\`git diff origin/${params.baseRefName}..HEAD\`) and the surrounding code carefully.`,
-    "2. Identify any substantive problems: bugs, regressions, missing or broken tests, security issues, or significant design problems. Minor style nits are out of scope.",
+    `2. Evaluate the changes strictly against the requirements in issue #${params.issueNumber !== undefined ? params.issueNumber : "(above)"}. Only flag problems that are relevant to what this issue asked for: bugs, missing requirements, broken or missing tests, security issues, or significant design problems within the scope of this change. Do not comment on pre-existing code or unrelated areas.`,
     "3. If you find any problems, fix them directly by editing the files. Commit every change with a clear, descriptive commit message that explains what was changed and why.",
     "4. If you find nothing that needs to change, make no commits and output only a brief 'LGTM' message.",
     "",
-    "Be honest and thorough — this is your own code and the goal is to ship high-quality work.",
+    "Be honest and thorough — this is your own code and the goal is to ship high-quality work that fully satisfies the issue.",
   ].join("\n");
 }
 

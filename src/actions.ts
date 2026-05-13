@@ -51,6 +51,9 @@ export interface ActionClaudeAgentClient {
     pullRequestBody: string;
     headRefName: string;
     baseRefName: string;
+    issueNumber?: number;
+    issueTitle?: string;
+    issueBody?: string;
   }): Promise<{ madeChanges: boolean; headSha: string }>;
   resolveMergeConflicts(params: {
     owner: string;
@@ -173,6 +176,10 @@ export async function executeAction(
 
     case "self-review": {
       const pullRequest = findPullRequest(context, action.pullRequestNumber);
+      const issue =
+        action.issueNumber !== undefined
+          ? context.issues.find((i) => i.number === action.issueNumber)
+          : undefined;
       const result = await claudeAgentClient.selfReview({
         owner: context.owner,
         repo: context.repo,
@@ -181,6 +188,11 @@ export async function executeAction(
         pullRequestBody: pullRequest.body,
         headRefName: pullRequest.headRefName,
         baseRefName: pullRequest.baseRefName,
+        ...(issue !== undefined && {
+          issueNumber: issue.number,
+          issueTitle: issue.title,
+          issueBody: issue.body,
+        }),
       });
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
