@@ -17,7 +17,6 @@ import { globalEventEmitter } from "./event-emitter.js";
 import {
   broadcastRepositorySnapshot,
   broadcastPullRequestUpdate,
-  broadcastCIStatus,
   broadcastIssueUpdate,
   broadcastCommit,
   emitLogMessage,
