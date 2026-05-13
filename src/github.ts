@@ -602,6 +602,10 @@ export class GitHubClient {
     return { id: response.id };
   }
 
+  async postComment(pullRequestNumber: number, body: string): Promise<void> {
+    await this.createIssueComment(pullRequestNumber, body);
+  }
+
   async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {
     await this.request(`/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}`, {
       method: "PATCH",

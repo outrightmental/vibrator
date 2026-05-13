@@ -28,6 +28,7 @@ export interface ActionGitHubClient {
     headSha: string;
   }): Promise<Array<{ name: string; logExcerpt: string }>>;
   cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
+  postComment(pullRequestNumber: number, body: string): Promise<void>;
 }
 
 export interface ActionClaudeAgentClient {
@@ -172,6 +173,10 @@ export async function executeAction(
           pullRequestBody: implementation.pullRequestBody,
         },
       });
+      await gitHubClient.postComment(
+        created.number,
+        `Implemented issue #${issue.number}: opened this PR.`,
+      );
       return {};
     }
 
@@ -205,6 +210,10 @@ export async function executeAction(
           pullRequestHeadSha: result.headSha,
         },
       });
+      const reviewComment = result.madeChanges
+        ? "Reviewed code and pushed fixes."
+        : "Reviewed code, no issues found.";
+      await gitHubClient.postComment(pullRequest.number, reviewComment);
       return {};
     }
 
@@ -261,6 +270,10 @@ export async function executeAction(
         status: "completed",
         result: { pullRequestHeadSha: update.headSha },
       });
+      const checksComment = checksNoCommits
+        ? "Investigated failing CI checks; no code changes were needed."
+        : `Addressed failing CI checks and pushed a fix (${failingChecks.map((c) => c.name).join(", ") || "unknown checks"}).`;
+      await gitHubClient.postComment(pullRequest.number, checksComment);
       return { noCommitsPushed: checksNoCommits };
     }
 
@@ -288,6 +301,10 @@ export async function executeAction(
         status: "completed",
         result: { pullRequestHeadSha: update.headSha },
       });
+      const conflictsComment = conflictsNoCommits
+        ? "Investigated merge conflicts; no changes were needed."
+        : "Resolved merge conflicts and pushed updated branch.";
+      await gitHubClient.postComment(pullRequest.number, conflictsComment);
       return { noCommitsPushed: conflictsNoCommits };
     }
 

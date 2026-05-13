@@ -269,10 +269,10 @@ function planPullRequestAction(
       });
     }
 
-    // Only one clean pass so far — check CI, then run another self-review.
-    if (mergeGateAction !== "proceed") {
-      return mergeGateAction;
-    }
+    // Only one clean pass so far — run another self-review immediately.
+    // No CI gate here: no new commits were pushed by the clean review, so
+    // there is nothing new for CI to test. The merge step below still gates
+    // on CI passing before squash-merging.
     return withIssueNumber({
       type: "self-review",
       pullRequestNumber: pullRequest.number,

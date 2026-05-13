@@ -114,6 +114,9 @@ function createHarness(input: {
       calls.push(`cancel-in-progress:${headSha}`);
       return 0;
     },
+    async postComment(pullRequestNumber, body) {
+      calls.push(`post-comment:${pullRequestNumber}:${body}`);
+    },
   };
 
   const sessionStore: ActionSessionStore = {
@@ -206,6 +209,7 @@ test("executeAction implements an issue, opens a PR, and records the session", a
     "get-default-branch",
     "implement:7:main",
     "create-pr:vibrator/issue-7-add-widget->main:Add widget:Added widget.\\n\\nCloses #7",
+    "post-comment:100:Implemented issue #7: opened this PR.",
   ]);
   assert.deepEqual(harness.sessions, [
     {
@@ -240,7 +244,7 @@ test("executeAction runs a self-review and records whether changes were made", a
     pullRequestHeadSha: "sha-head-10",
   });
 
-  assert.deepEqual(harness.calls, ["self-review:10"]);
+  assert.deepEqual(harness.calls, ["self-review:10", "post-comment:10:Reviewed code, no issues found."]);
   assert.deepEqual(harness.sessions, [
     {
       issueNumber: 5,
@@ -274,7 +278,7 @@ test("executeAction records madeChanges=true when the self-review commits change
     pullRequestHeadSha: "sha-head-11",
   });
 
-  assert.deepEqual(harness.calls, ["self-review:11"]);
+  assert.deepEqual(harness.calls, ["self-review:11", "post-comment:11:Reviewed code and pushed fixes."]);
   assert.deepEqual(harness.sessions, [
     {
       issueNumber: 6,
@@ -315,6 +319,7 @@ test("executeAction passes failing check logs to Claude", async () => {
     "cancel-in-progress:sha-13",
     "list-failing:13:sha-13",
     "address-checks:13:2-checks",
+    "post-comment:13:Addressed failing CI checks and pushed a fix (lint, test).",
   ]);
   assert.deepEqual(harness.sessions, [
     {
@@ -342,7 +347,8 @@ test("executeAction asks Claude to resolve merge conflicts", async () => {
     pullRequestHeadSha: "sha-14",
   });
 
-  assert.deepEqual(harness.calls, ["resolve-conflicts:14"]);
+  assert.deepEqual(harness.calls, ["resolve-conflicts:14", "post-comment:14:Resolved merge conflicts and pushed updated branch."]);
+
   assert.deepEqual(harness.sessions, [
     {
       issueNumber: 11,
