@@ -149,6 +149,13 @@ export class GitHubClient {
       );
     }
 
+    if (response.status === 403) {
+      throw Object.assign(
+        new Error(`GitHub request failed (403 Forbidden) for ${path}`),
+        { statusCode: 403 },
+      );
+    }
+
     if (!response.ok) {
       // Read the body for full triage context before throwing.
       let responseBody: string;
@@ -827,7 +834,10 @@ export class GitHubClient {
         `/repos/${this.options.owner}/${this.options.repo}/commits/${input.headSha}/check-runs?per_page=100`,
       );
     } catch (error) {
-      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
+      const statusCode = (error as Error & { statusCode?: number }).statusCode;
+      // Token may lack check-runs access (403) or the ref may not exist (404).
+      // Return an empty list so Claude investigates with `gh pr checks` itself.
+      if (statusCode === 403 || statusCode === 404) {
         return [];
       }
       throw error;

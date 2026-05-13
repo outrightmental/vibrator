@@ -256,7 +256,10 @@ function planPullRequestAction(
       });
     }
 
-    // Only one clean pass so far — run another self-review.
+    // Only one clean pass so far — check CI, then run another self-review.
+    if (mergeGateAction !== "proceed") {
+      return mergeGateAction;
+    }
     return withIssueNumber({
       type: "self-review",
       pullRequestNumber: pullRequest.number,
