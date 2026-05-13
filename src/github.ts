@@ -852,16 +852,75 @@ export class GitHubClient {
       }
       throw error;
     }
-    const failing = (response.check_runs ?? []).filter(
-      (run) => run.conclusion === "failure" || run.conclusion === "timed_out",
+    const allRuns = response.check_runs ?? [];
+    const failing = allRuns.filter(
+      (run) =>
+        run.conclusion === "failure" ||
+        run.conclusion === "timed_out" ||
+        // Include still-running/queued jobs so Claude knows they were cancelled
+        // and can re-trigger them if needed.
+        run.status === "in_progress" ||
+        run.status === "queued" ||
+        run.status === "waiting",
     );
     return failing.map((run) => {
       const summary = run.output?.summary ?? "";
       const text = run.output?.text ?? "";
       const combined = [summary, text].filter(Boolean).join("\n\n");
       const excerpt = combined.length > 4000 ? combined.slice(0, 4000) + "\n…(truncated)" : combined;
-      return { name: run.name, logExcerpt: excerpt || "(no log excerpt available)" };
+      const statusNote =
+        run.conclusion === null
+          ? `(status: ${run.status ?? "unknown"} — run was cancelled before completing)`
+          : "";
+      return { name: run.name, logExcerpt: [statusNote, excerpt].filter(Boolean).join("\n") || "(no log excerpt available)" };
     });
+  }
+
+  /**
+   * Cancel any workflow runs that are still in progress (status:
+   * in_progress, queued, or waiting) for the given commit SHA. This is
+   * called before Claude tries to address failing/timed-out checks so that
+   * the run is definitively finished before new fixes are pushed.
+   *
+   * Returns the number of runs that were cancelled.
+   */
+  async cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number> {
+    interface WorkflowRunListResponse {
+      total_count: number;
+      workflow_runs: Array<{ id: number; status: string | null; head_sha: string }>;
+    }
+
+    let response: WorkflowRunListResponse;
+    try {
+      response = await this.request<WorkflowRunListResponse>(
+        `/repos/${this.options.owner}/${this.options.repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`,
+      );
+    } catch (error) {
+      const statusCode = (error as Error & { statusCode?: number }).statusCode;
+      if (statusCode === 403 || statusCode === 404) {
+        return 0;
+      }
+      throw error;
+    }
+
+    const inProgressStatuses = new Set(["in_progress", "queued", "waiting", "requested", "pending"]);
+    const toCancel = (response.workflow_runs ?? []).filter(
+      (run) => run.status !== null && inProgressStatuses.has(run.status),
+    );
+
+    let cancelled = 0;
+    for (const run of toCancel) {
+      try {
+        await this.request<void>(
+          `/repos/${this.options.owner}/${this.options.repo}/actions/runs/${run.id}/cancel`,
+          { method: "POST" },
+        );
+        cancelled++;
+      } catch {
+        // Best-effort: ignore errors (run may have just completed).
+      }
+    }
+    return cancelled;
   }
 
   async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {

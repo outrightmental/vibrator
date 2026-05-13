@@ -143,6 +143,11 @@ interface ClaudeAgentClientOptions {
   anthropicApiKey?: string;
   /** Model to pass to the claude CLI via --model. When omitted, falls back to CLAUDE_MODEL env. */
   claudeModel?: string;
+  /**
+   * Maximum milliseconds the Claude CLI is allowed to run before being killed.
+   * Defaults to CLAUDE_TIMEOUT_MS env var, or 30 minutes if unset.
+   */
+  claudeTimeoutMs?: number;
 }
 
 function defaultCheckoutRootDir(): string {
@@ -174,6 +179,11 @@ interface RunCommandOptions {
    */
   onStderrChunk?: (chunk: string) => void;
   env?: NodeJS.ProcessEnv;
+  /**
+   * If set, the child process is killed with SIGTERM (then SIGKILL after 5 s)
+   * and the promise rejects with a timeout error after this many milliseconds.
+   */
+  timeoutMs?: number;
 }
 
 function runCommand(
@@ -192,6 +202,20 @@ function runCommand(
       ],
     });
 
+    let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+    if (options.timeoutMs !== undefined) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        // Escalate to SIGKILL after 5 s if SIGTERM did not work.
+        setTimeout(() => {
+          child.kill("SIGKILL");
+        }, 5000);
+      }, options.timeoutMs);
+    }
+
     const stdoutChunks: Buffer[] = [];
     if (options.captureStdout && child.stdout) {
       child.stdout.on("data", (chunk: Buffer) => {
@@ -208,10 +232,20 @@ function runCommand(
     }
 
     child.on("error", (error) => {
+      clearTimeout(killTimer);
       reject(error);
     });
 
     child.on("close", (code) => {
+      clearTimeout(killTimer);
+      if (timedOut) {
+        reject(
+          new Error(
+            `Command \`${command} ${args.join(" ")}\` timed out after ${options.timeoutMs! / 1000}s and was killed.`,
+          ),
+        );
+        return;
+      }
       if (code !== 0) {
         reject(
           new Error(
@@ -425,12 +459,15 @@ function slugifyIssueTitle(title: string): string {
     .slice(0, 40);
 }
 
+const DEFAULT_CLAUDE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
   private readonly claudeCommand: string;
   private readonly ghCommand: string;
   private readonly anthropicApiKey: string | undefined;
   private readonly claudeModel: string | undefined;
+  private readonly claudeTimeoutMs: number;
 
   constructor(options: ClaudeAgentClientOptions = {}) {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
@@ -438,6 +475,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     this.ghCommand = options.ghCommand ?? "gh";
     this.anthropicApiKey = options.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY;
     this.claudeModel = options.claudeModel ?? process.env.CLAUDE_MODEL;
+    const envTimeout = process.env.CLAUDE_TIMEOUT_MS;
+    this.claudeTimeoutMs =
+      options.claudeTimeoutMs ??
+      (envTimeout !== undefined ? Number.parseInt(envTimeout, 10) : DEFAULT_CLAUDE_TIMEOUT_MS);
   }
 
   async implementIssue(params: ImplementIssueParams): Promise<ImplementIssueResult> {
@@ -763,6 +804,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           cwd,
           captureStdout: true,
           env,
+          timeoutMs: this.claudeTimeoutMs,
           // Use stderr for the live preview: the Claude CLI writes its
           // streaming progress (tool calls, thinking, etc.) to stderr even
           // when stdout is piped, so we get real-time updates here.

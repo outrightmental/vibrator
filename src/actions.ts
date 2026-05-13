@@ -27,6 +27,7 @@ export interface ActionGitHubClient {
     pullRequestNumber: number;
     headSha: string;
   }): Promise<Array<{ name: string; logExcerpt: string }>>;
+  cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
 }
 
 export interface ActionClaudeAgentClient {
@@ -209,6 +210,16 @@ export async function executeAction(
 
     case "address-failing-checks": {
       const pullRequest = findPullRequest(context, action.pullRequestNumber);
+      // Cancel any runs that are still in progress so Claude doesn't try to
+      // diagnose a job that hasn't finished yet.
+      const cancelledCount = await gitHubClient.cancelInProgressWorkflowRunsForHeadSha(
+        pullRequest.headSha,
+      );
+      if (cancelledCount > 0) {
+        console.log(
+          `[vibrator] Cancelled ${cancelledCount} in-progress workflow run(s) for PR #${pullRequest.number} before addressing checks.`,
+        );
+      }
       const failingChecks = await gitHubClient.listFailingCheckRuns({
         pullRequestNumber: pullRequest.number,
         headSha: pullRequest.headSha,

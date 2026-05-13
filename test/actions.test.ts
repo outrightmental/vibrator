@@ -110,6 +110,10 @@ function createHarness(input: {
       calls.push(`list-failing:${args.pullRequestNumber}:${args.headSha}`);
       return input.failingCheckRuns ?? [];
     },
+    async cancelInProgressWorkflowRunsForHeadSha(headSha) {
+      calls.push(`cancel-in-progress:${headSha}`);
+      return 0;
+    },
   };
 
   const sessionStore: ActionSessionStore = {
@@ -308,6 +312,7 @@ test("executeAction passes failing check logs to Claude", async () => {
   });
 
   assert.deepEqual(harness.calls, [
+    "cancel-in-progress:sha-13",
     "list-failing:13:sha-13",
     "address-checks:13:2-checks",
   ]);
