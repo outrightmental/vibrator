@@ -725,10 +725,6 @@ class DashboardUI {
   handleSnapshotUpdate(message) {
     const data = message.data;
     document.getElementById('session-count').textContent = data.sessionCount || 0;
-    this.addBroadcastTicker(
-      'info',
-      \`Repository snapshot: \${data.issueCount || 0} issues, \${data.prCount || 0} PRs, \${data.sessionCount || 0} sessions\`
-    );
   }
 
   handleCycleCountdown(message) {
