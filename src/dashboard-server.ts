@@ -47,14 +47,6 @@ export class DashboardServer {
   }
 
   private handleWebSocketConnection(ws: WebSocket): void {
-    // Send initial state
-    ws.send(
-      JSON.stringify({
-        type: "connection",
-        message: "Connected to vibrator dashboard",
-      }),
-    );
-
     ws.on("error", (error: Error) => {
       console.error("[Dashboard] WebSocket error:", error);
     });
@@ -835,7 +827,10 @@ const dashboard = new DashboardUI();
   }
 
   async start(): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      this.server.on("error", (error: NodeJS.ErrnoException) => {
+        reject(error);
+      });
       this.server.listen(this.port, this.host, () => {
         const url = `http://${this.host}:${this.port}`;
         console.log(`[Dashboard] Server listening at ${url}`);
