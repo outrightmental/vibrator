@@ -478,6 +478,23 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       );
     }
 
+    // Guard: if the branch has zero commits ahead of the base, Claude
+    // produced no implementation. Fail early instead of pushing an empty
+    // branch and hitting a GitHub 422 when we try to open the PR.
+    const commitsAhead = (
+      await runCommand(
+        "git",
+        ["rev-list", "--count", `origin/${params.baseBranch}..HEAD`],
+        { cwd: repoDir, captureStdout: true },
+      )
+    ).trim();
+    if (commitsAhead === "0") {
+      throw new Error(
+        `Claude produced no commits for issue #${params.issueNumber} ("${params.issueTitle}"). ` +
+        `The branch "${branch}" has no changes relative to "${params.baseBranch}".`,
+      );
+    }
+
     // Push the branch and capture the head SHA.
     await runCommand("git", ["push", "--force-with-lease", "origin", branch], {
       cwd: repoDir,
