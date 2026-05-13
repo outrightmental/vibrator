@@ -609,6 +609,11 @@ class DashboardUI {
     }
     document.getElementById('event-count').textContent = this.events.length;
 
+    // Update session count if present in message data
+    if (message.data && typeof message.data.sessionCount === 'number') {
+      document.getElementById('session-count').textContent = message.data.sessionCount;
+    }
+
     switch (message.type) {
       case 'iteration-start':
         this.handleIterationStart(message);
