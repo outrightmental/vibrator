@@ -12,6 +12,8 @@ import {
 import { buildPlan } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
+import { DashboardServer } from "./dashboard-server.js";
+import { globalEventEmitter } from "./event-emitter.js";
 import type {
   AgentSession,
   OrchestratorAction,
@@ -191,6 +193,12 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     ...(config.claudeModel !== undefined && { claudeModel: config.claudeModel }),
   });
 
+  globalEventEmitter.emit("iteration-start", {
+    iterationNumber,
+    repo,
+    timestamp,
+  });
+
   write(HEAVY_RULE);
   write(`vibrator status update · ${timestamp()} · iteration ${iterationNumber}`);
   write(`repo: ${repo} (${gitHubClient.repositoryUrl()})`);
@@ -221,6 +229,11 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         try {
           const result = await gitHubClient.approveWorkflowRun(run.id);
           note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
+          globalEventEmitter.emit("workflow-approval", {
+            runId: run.id,
+            runName: run.name,
+            approved: result.approved,
+          });
         } catch (error) {
           note(`✗ failed to approve ${label}: ${(error as Error).message}`, 2);
         }
@@ -237,6 +250,14 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   const preReconcileActiveSessions = snapshot.agentSessions.filter(
     (s) => s.status === "in_progress",
   );
+
+  globalEventEmitter.emit("snapshot-update", {
+    issueCount: snapshot.issues.length,
+    prCount: snapshot.pullRequests.length,
+    draftPrCount: draftPullRequestCount,
+    readyPrCount: readyPullRequestCount,
+    sessionCount: preReconcileActiveSessions.length,
+  });
 
   section("Repository snapshot");
   bullet(`${snapshot.issues.length} open issue(s)`);
@@ -305,16 +326,22 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       };
 
       const results = await Promise.allSettled(
-        plan.actions.map((action) =>
-          executeAction(
+        plan.actions.map((action, index) => {
+          globalEventEmitter.emit("action-start", {
+            actionIndex: index + 1,
+            totalActions: plan.actions.length,
+            description: describeAction(action, snapshot, gitHubClient),
+            type: action.type,
+          });
+          return executeAction(
             gitHubClient,
             sessionStore,
             claudeAgentClient,
             action,
             false,
             actionContext,
-          ),
-        ),
+          );
+        }),
       );
 
       blank();
@@ -323,12 +350,22 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         const prefix = `[${i + 1}/${plan.actions.length}]`;
         if (result.status === "fulfilled") {
           const actionResult: ExecuteActionResult = result.value;
+          globalEventEmitter.emit("action-complete", {
+            actionIndex: i + 1,
+            totalActions: plan.actions.length,
+            noCommitsPushed: actionResult.noCommitsPushed || false,
+          });
           if (actionResult.noCommitsPushed) {
             note(`${prefix} ⚠ done — no new commits pushed to branch (Claude ran but made no changes)`, 2);
           } else {
             note(`${prefix} ✓ done`, 2);
           }
         } else {
+          globalEventEmitter.emit("action-error", {
+            actionIndex: i + 1,
+            totalActions: plan.actions.length,
+            error: (result.reason as Error).message,
+          });
           note(
             `${prefix} ✗ failed: ${(result.reason as Error).message}`,
             2,
@@ -338,6 +375,11 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     } else {
       blank();
       for (let i = 0; i < plan.actions.length; i++) {
+        globalEventEmitter.emit("action-complete", {
+          actionIndex: i + 1,
+          totalActions: plan.actions.length,
+          dryRun: true,
+        });
         note(`[${i + 1}/${plan.actions.length}] ✓ done (dry-run)`, 2);
       }
     }
@@ -347,9 +389,17 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
+
+  // Start dashboard server
+  const dashboard = new DashboardServer({ port: 3000 });
+  await dashboard.initialize();
+  await dashboard.start();
+  await dashboard.openBrowser();
+
   write(HEAVY_RULE);
   write(`vibrator starting · ${timestamp()}`);
   write(`repo: ${config.owner}/${config.repo} (${repositoryUrl})`);
+  write(`dashboard: ${dashboard.getUrl()}`);
   const modeNotes: string[] = [];
   if (config.once) modeNotes.push("--once");
   if (config.dryRun) modeNotes.push("--dry-run");
@@ -362,10 +412,16 @@ async function main(): Promise<void> {
   let iterationNumber = 0;
   do {
     iterationNumber++;
+    const nextCycleTime = new Date().getTime() + config.intervalMs;
+    globalEventEmitter.emit("cycle-countdown", {
+      msUntilCycle: config.intervalMs,
+    });
+
     await runIteration(config, iterationNumber);
     if (config.once) {
       blank();
       write(`Done (--once mode). Exiting.`);
+      dashboard.close();
       return;
     }
 
