@@ -533,6 +533,9 @@ class DashboardUI {
       case 'action-complete':
         this.handleActionComplete(message);
         break;
+      case 'action-error':
+        this.handleActionError(message);
+        break;
       case 'workflow-approval':
         this.handleWorkflowApproval(message);
         break;
@@ -541,6 +544,17 @@ class DashboardUI {
         break;
       case 'cycle-countdown':
         this.handleCycleCountdown(message);
+        break;
+      case 'broadcast-github-activity':
+      case 'broadcast-commit':
+      case 'broadcast-pr-update':
+      case 'broadcast-ci-status':
+      case 'broadcast-review-comment':
+      case 'broadcast-issue-update':
+        this.handleBroadcastEvent(message);
+        break;
+      case 'log-message':
+        this.handleLogMessage(message);
         break;
       default:
         this.addLogLine('info', \`[EVENT] \${message.type}: \${JSON.stringify(message.data)}\`);
@@ -565,11 +579,31 @@ class DashboardUI {
   }
 
   handleActionComplete(message) {
-    this.addLogLine('success', \`✓ Action complete\`);
+    this.addLogLine('success', \`✓ Action complete [\${message.data.actionIndex}/\${message.data.totalActions}]\`);
+  }
+
+  handleActionError(message) {
+    this.addLogLine('error', \`✗ Action failed [\${message.data.actionIndex}/\${message.data.totalActions}]: \${message.data.error}\`);
   }
 
   handleWorkflowApproval(message) {
-    this.addLogLine('success', \`✓ Workflow approved: \${message.data.runId || 'unknown'}\`);
+    const runName = message.data.runName || 'unknown';
+    this.addLogLine('success', \`✓ Workflow approved: \${runName}\`);
+    this.addBroadcastTicker('ci', \`Workflow \${runName} approved and queued for execution\`);
+  }
+
+  handleBroadcastEvent(message) {
+    const eventType = message.type.replace('broadcast-', '').toUpperCase();
+    const content = message.data.content || JSON.stringify(message.data);
+    const category = message.type === 'broadcast-ci-status' ? 'ci' :
+                    message.type === 'broadcast-commit' ? 'commit' :
+                    message.type === 'broadcast-pr-update' ? 'pr' : 'info';
+    this.addBroadcastTicker(category, \`[\${eventType}] \${content}\`);
+  }
+
+  handleLogMessage(message) {
+    const level = message.data.level || 'info';
+    this.addLogLine(level, message.data.message || '');
   }
 
   handleSnapshotUpdate(message) {

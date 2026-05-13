@@ -9,7 +9,14 @@ export type DashboardEventType =
   | "plan-update"
   | "iteration-start"
   | "iteration-complete"
-  | "cycle-countdown";
+  | "cycle-countdown"
+  | "broadcast-github-activity"
+  | "broadcast-commit"
+  | "broadcast-pr-update"
+  | "broadcast-ci-status"
+  | "broadcast-review-comment"
+  | "broadcast-issue-update"
+  | "log-message";
 
 export interface DashboardEvent {
   type: DashboardEventType;
