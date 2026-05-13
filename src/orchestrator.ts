@@ -8,7 +8,7 @@ import type {
 } from "./types.js";
 
 /** Maximum time to wait for CI checks to complete before treating them as failed. */
-const CHECKS_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+export const CHECKS_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 const BLOCKED_BY_PATTERN = /\b(?:blocked by|depends on)\s+#(\d+)\b/gi;
 const BLOCKS_PATTERN = /\bblocks\s+#(\d+)\b/gi;

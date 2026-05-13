@@ -12,10 +12,10 @@ Think of `vibrator` as a scheduler plus shepherd:
 schedule issue work → run Claude locally → open PR → review → fix → review → describe → merge
 ```
 
-Every pass through the loop is allowed to make progress. Unlike a
-remote coding-agent integration, every step here is synchronous —
-vibrator waits for Claude to finish before moving on. That means
-sessions only ever sit in `in_progress` state inside a single iteration;
+Every pass through the loop is allowed to make progress. Every step
+is synchronous — vibrator waits for Claude to finish before moving on.
+That means sessions only ever sit in `in_progress` state inside a single
+iteration;
 on the next iteration they will be either completed (the agent finished
 and the session was recorded) or failed (the previous process crashed
 mid-action).

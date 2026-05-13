@@ -1,4 +1,4 @@
-import { buildMergedPullRequestBody } from "./orchestrator.js";
+import { buildMergedPullRequestBody, CHECKS_TIMEOUT_MS } from "./orchestrator.js";
 import type {
   AgentSessionPhase,
   AgentSessionResult,
@@ -216,8 +216,21 @@ export async function executeAction(
         pullRequest.headSha,
       );
       if (cancelledCount > 0) {
+        const pushedAt = pullRequest.headCommitPushedAt;
+        const pendingMs = pushedAt !== undefined ? Date.now() - Date.parse(pushedAt) : undefined;
+        const pendingDesc =
+          pendingMs !== undefined
+            ? (() => {
+                const totalSecs = Math.floor(pendingMs / 1000);
+                const m = Math.floor(totalSecs / 60);
+                const s = totalSecs % 60;
+                return m > 0 ? `${m}m ${s}s` : `${s}s`;
+              })()
+            : "unknown duration";
+        const thresholdMin = Math.round(CHECKS_TIMEOUT_MS / 60_000);
         console.log(
-          `[vibrator] Cancelled ${cancelledCount} in-progress workflow run(s) for PR #${pullRequest.number} before addressing checks.`,
+          `[vibrator] Cancelled ${cancelledCount} in-progress workflow run(s) for PR #${pullRequest.number} ` +
+          `because CI checks have been pending for ${pendingDesc}, exceeding the ${thresholdMin}-minute timeout threshold.`,
         );
       }
       const failingChecks = await gitHubClient.listFailingCheckRuns({

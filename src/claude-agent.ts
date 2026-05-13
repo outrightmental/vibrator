@@ -11,10 +11,8 @@ import { join } from "node:path";
  * repository / pull request branch so the CLI can read, modify, commit,
  * and (where applicable) push code.
  *
- * Every coding-agent operation runs synchronously: `vibrator` waits for
- * Claude to finish, then continues the loop. There is no remote
- * "coding agent assignee" to wait for, no acknowledgment timeout, and
- * no out-of-band PR creation — this client opens the PR itself when
+ * Every operation runs synchronously: `vibrator` waits for Claude to
+ * finish, then continues the loop. This client opens the PR itself when
  * implementing an issue.
  */
 export interface ClaudeAgentClient {
