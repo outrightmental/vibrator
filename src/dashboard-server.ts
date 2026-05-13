@@ -184,6 +184,29 @@ body {
   text-shadow: 0 0 5px rgba(255, 0, 255, 0.5);
 }
 
+.iteration-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.iteration-label {
+  font-size: 12px;
+  color: #ff00ff;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  text-shadow: 0 0 5px rgba(255, 0, 255, 0.5);
+}
+
+.iteration-number {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ff00ff;
+  text-shadow: 0 0 10px rgba(255, 0, 255, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
 .countdown {
   display: flex;
   flex-direction: column;
@@ -426,6 +449,8 @@ class DashboardUI {
     this.countdownInterval = null;
     this.nextCycleTime = null;
     this.connected = false;
+    this.iterationNumber = 0;
+    this.lastIterationStartTime = null;
     this.init();
   }
 
@@ -441,6 +466,10 @@ class DashboardUI {
         <div>
           <div class="header-title">⚡ VIBRATOR</div>
           <div class="header-repo">AI SDLC BROADCAST</div>
+        </div>
+        <div class="iteration-info">
+          <div class="iteration-label">Iteration</div>
+          <div class="iteration-number" id="iteration-number">--</div>
         </div>
         <div class="countdown">
           <div class="countdown-label">Next Cycle In</div>
@@ -562,6 +591,9 @@ class DashboardUI {
   }
 
   handleIterationStart(message) {
+    this.iterationNumber = message.data.iterationNumber;
+    this.lastIterationStartTime = new Date(message.timestamp);
+    document.getElementById('iteration-number').textContent = this.iterationNumber;
     this.addLogLine('info', \`🔄 Iteration \${message.data.iterationNumber} started\`);
     this.currentPhase = null;
   }
