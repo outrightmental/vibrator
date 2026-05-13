@@ -321,6 +321,13 @@ function planPullRequestAction(
   }
 
   if (latestCompletedSession?.phase === "address-review-comments") {
+    // If the last address-review-comments session pushed no new commits (Claude
+    // could not make any code changes), do not immediately re-review. A new
+    // review would just post fresh threads on the unchanged code, restarting
+    // the loop. Wait until the branch is updated externally.
+    if (latestCompletedSession.result?.noCommitsPushed) {
+      return undefined;
+    }
     return withIssueNumber({
       type: "review-pull-request",
       pullRequestNumber: pullRequest.number,

@@ -82,6 +82,12 @@ export interface AgentSessionResult {
   pullRequestHeadSha?: string;
   /** Error message captured when the session failed. */
   errorMessage?: string;
+  /**
+   * True when a branch-modifying phase (address-review-comments,
+   * address-failing-checks, resolve-conflicts) completed but pushed no
+   * new commits — the branch HEAD SHA was unchanged.
+   */
+  noCommitsPushed?: boolean;
 }
 
 export interface AgentSession {

@@ -245,14 +245,8 @@ export async function executeAction(
         baseRefName: pullRequest.baseRefName,
         reviewComments,
       });
-      // Resolve review threads only if new commits were actually pushed to the
-      // branch. If the head SHA didn't change (Claude made no commits) we leave
-      // the threads open so a GitHub user isn't confused by threads being
-      // resolved without any new code on the branch.
       const addressReviewNoCommits = update.headSha === pullRequest.headSha;
-      if (!addressReviewNoCommits) {
-        await gitHubClient.resolvePullRequestReviewThreads(pullRequest.number);
-      } else {
+      if (addressReviewNoCommits) {
         console.warn(
           `[vibrator] WARNING: address-review-comments on PR #${pullRequest.number} ` +
           `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
@@ -263,12 +257,17 @@ export async function executeAction(
             .join("\n"),
         );
       }
+      // Always resolve threads after addressing review comments. Claude either
+      // made code changes or responded verbally — either way the threads have
+      // been addressed. Leaving them open causes a new review on the next
+      // iteration which posts fresh threads, leading to unbounded accumulation.
+      await gitHubClient.resolvePullRequestReviewThreads(pullRequest.number);
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         pullRequestNumber: pullRequest.number,
         phase: "address-review-comments",
         status: "completed",
-        result: { pullRequestHeadSha: update.headSha },
+        result: { pullRequestHeadSha: update.headSha, noCommitsPushed: addressReviewNoCommits },
       });
       return { noCommitsPushed: addressReviewNoCommits };
     }
