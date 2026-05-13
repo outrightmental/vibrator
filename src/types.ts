@@ -42,6 +42,11 @@ export interface PullRequest {
    *   - `"none"`: no associated status checks. Treated as success.
    */
   checksStatus: "success" | "failure" | "pending" | "none";
+  /**
+   * ISO timestamp of when the head commit was pushed, used to detect
+   * checks that have been pending for too long.
+   */
+  headCommitPushedAt: string | undefined;
   /** Issue numbers referenced as closing this PR (Closes/Fixes/Resolves). */
   closingIssueNumbers: number[];
   /** Linked issues (closing references + broader linked keywords). */

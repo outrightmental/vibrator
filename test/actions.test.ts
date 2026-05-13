@@ -62,6 +62,7 @@ function createPullRequest(
     hasCleanReviewOnHead: overrides.hasCleanReviewOnHead ?? false,
     unresolvedReviewCommentCount: overrides.unresolvedReviewCommentCount ?? 0,
     checksStatus: overrides.checksStatus ?? "success",
+    headCommitPushedAt: overrides.headCommitPushedAt,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     linkedIssueNumbers: overrides.linkedIssueNumbers,

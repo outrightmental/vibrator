@@ -7,6 +7,9 @@ import type {
   RepositorySnapshot,
 } from "./types.js";
 
+/** Maximum time to wait for CI checks to complete before treating them as failed. */
+const CHECKS_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
 const BLOCKED_BY_PATTERN = /\b(?:blocked by|depends on)\s+#(\d+)\b/gi;
 const BLOCKS_PATTERN = /\bblocks\s+#(\d+)\b/gi;
 const CLOSING_ISSUE_KEYWORDS = ["close[sd]?", "fix(?:e[sd]?|es)?", "resolve[sd]?"] as const;
@@ -195,6 +198,16 @@ function planPullRequestAction(
       });
     }
     if (pullRequest.checksStatus === "pending") {
+      // If the commit has been pushed longer than the timeout threshold,
+      // treat the stuck checks as a failure so Claude can investigate.
+      const pushedAt = pullRequest.headCommitPushedAt;
+      if (pushedAt !== undefined && Date.now() - Date.parse(pushedAt) > CHECKS_TIMEOUT_MS) {
+        return withIssueNumber({
+          type: "address-failing-checks",
+          pullRequestNumber: pullRequest.number,
+          pullRequestHeadSha: pullRequest.headSha,
+        });
+      }
       return undefined;
     }
     return "proceed";

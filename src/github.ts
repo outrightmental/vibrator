@@ -313,6 +313,7 @@ export class GitHubClient {
         hasCleanReviewOnHead: graphQLData?.hasCleanReviewOnHead ?? false,
         unresolvedReviewCommentCount: graphQLData?.unresolvedReviewCommentCount ?? 0,
         checksStatus: graphQLData?.checksStatus ?? "none",
+        headCommitPushedAt: graphQLData?.headCommitPushedAt,
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         linkedIssueNumbers,
@@ -330,6 +331,7 @@ export class GitHubClient {
         hasCleanReviewOnHead: boolean;
         unresolvedReviewCommentCount: number;
         checksStatus: "success" | "failure" | "pending" | "none";
+        headCommitPushedAt: string | undefined;
       }
     >
   > {
@@ -356,7 +358,7 @@ export class GitHubClient {
               nodes: Array<{
                 commit: {
                   oid: string;
-                  statusCheckRollup: { state: string } | null;
+                  pushedDate: string | null;                  committedDate: string | null;                  statusCheckRollup: { state: string } | null;
                 };
               }>;
             } | null;
@@ -374,6 +376,7 @@ export class GitHubClient {
         hasCleanReviewOnHead: boolean;
         unresolvedReviewCommentCount: number;
         checksStatus: "success" | "failure" | "pending" | "none";
+        headCommitPushedAt: string | undefined;
       }
     >();
     let after: string | null = null;
@@ -405,6 +408,8 @@ export class GitHubClient {
                     nodes {
                       commit {
                         oid
+                        pushedDate
+                        committedDate
                         statusCheckRollup { state }
                       }
                     }
@@ -456,12 +461,17 @@ export class GitHubClient {
         } else {
           checksStatus = "none";
         }
+        const headCommitPushedAt =
+          headCommitNode?.oid === node.headRefOid
+            ? (headCommitNode?.pushedDate ?? headCommitNode?.committedDate ?? undefined)
+            : undefined;
         result.set(node.number, {
           closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
           hasMergeConflicts: node.mergeable === "CONFLICTING",
           hasCleanReviewOnHead,
           unresolvedReviewCommentCount,
           checksStatus,
+          headCommitPushedAt,
         });
       }
 
