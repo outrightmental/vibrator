@@ -264,19 +264,16 @@ function planPullRequestAction(
     });
   }
 
-  // No prior session: run the first self-review, waiting for CI first.
-  if (!latestCompletedSession) {
-    if (mergeGateAction !== "proceed") {
-      return mergeGateAction;
-    }
-    return withIssueNumber({
-      type: "self-review",
-      pullRequestNumber: pullRequest.number,
-      pullRequestHeadSha: pullRequest.headSha,
-    });
+  // No prior session (or an unrecognized legacy phase): run the first
+  // self-review, waiting for CI first.
+  if (mergeGateAction !== "proceed") {
+    return mergeGateAction;
   }
-
-  return undefined;
+  return withIssueNumber({
+    type: "self-review",
+    pullRequestNumber: pullRequest.number,
+    pullRequestHeadSha: pullRequest.headSha,
+  });
 }
 
 function countImplementationSessionsWithoutPullRequests(
