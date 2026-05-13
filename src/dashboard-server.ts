@@ -616,7 +616,11 @@ class DashboardUI {
   }
 
   handleCycleCountdown(message) {
-    this.nextCycleTime = new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
+    if (message.data.nextCycleTime) {
+      this.nextCycleTime = new Date(message.data.nextCycleTime).getTime();
+    } else {
+      this.nextCycleTime = new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
+    }
   }
 
   updatePhaseUI(phase) {

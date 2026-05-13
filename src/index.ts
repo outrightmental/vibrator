@@ -426,12 +426,10 @@ async function main(): Promise<void> {
   let iterationNumber = 0;
   do {
     iterationNumber++;
-    const nextCycleTime = new Date().getTime() + config.intervalMs;
-    globalEventEmitter.emit("cycle-countdown", {
-      msUntilCycle: config.intervalMs,
-    });
 
+    const iterationStartTime = Date.now();
     await runIteration(config, iterationNumber);
+
     if (config.once) {
       blank();
       write(`Done (--once mode). Exiting.`);
@@ -439,9 +437,20 @@ async function main(): Promise<void> {
       return;
     }
 
+    // Calculate time until next cycle, accounting for iteration duration
+    const elapsedMs = Date.now() - iterationStartTime;
+    const remainingMs = Math.max(0, config.intervalMs - elapsedMs);
+
     blank();
-    write(`Next iteration in ${formatDuration(config.intervalMs)}.`);
-    await delay(config.intervalMs);
+    write(`Next iteration in ${formatDuration(remainingMs)}.`);
+
+    // Emit countdown with remaining time
+    globalEventEmitter.emit("cycle-countdown", {
+      msUntilCycle: remainingMs,
+      nextCycleTime: new Date(Date.now() + remainingMs).toISOString(),
+    });
+
+    await delay(remainingMs);
   } while (true);
 }
 
