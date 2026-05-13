@@ -28,27 +28,14 @@ function getSessionSortTimestamp(session: AgentSession): number {
   return Date.parse(session.updatedAt);
 }
 
-function buildSessionKey(session: AgentSession): string {
-  return `${session.issueNumber ?? ""}:${session.pullRequestNumber ?? ""}:${session.phase}`;
-}
-
 function pruneSessions(sessions: AgentSession[]): AgentSession[] {
   const activeSessions = sessions.filter(isActiveSession);
-  const terminalSessionsByKey = new Map<string, AgentSession>();
-
-  for (const session of [...sessions]
+  const terminalSessions = [...sessions]
     .filter((session) => !isActiveSession(session))
-    .sort((left, right) => getSessionSortTimestamp(right) - getSessionSortTimestamp(left))) {
-    const key = buildSessionKey(session);
-    if (!terminalSessionsByKey.has(key)) {
-      terminalSessionsByKey.set(key, session);
-    }
-    if (terminalSessionsByKey.size >= MAX_PERSISTED_TERMINAL_SESSIONS) {
-      break;
-    }
-  }
+    .sort((left, right) => getSessionSortTimestamp(right) - getSessionSortTimestamp(left))
+    .slice(0, MAX_PERSISTED_TERMINAL_SESSIONS);
 
-  return [...activeSessions, ...terminalSessionsByKey.values()].sort(
+  return [...activeSessions, ...terminalSessions].sort(
     (left, right) => getSessionSortTimestamp(left) - getSessionSortTimestamp(right),
   );
 }

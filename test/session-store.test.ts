@@ -88,11 +88,11 @@ test("FileSessionStore writes valid JSON to disk", async () => {
   });
 });
 
-test("FileSessionStore prunes terminal sessions beyond the cap, keeping the most recent per key", async () => {
+test("FileSessionStore preserves multiple terminal sessions with the same key", async () => {
   await withTempStore(async (store) => {
-    // Two terminal sessions with the same key — only the newest should
-    // survive pruning.
-    await store.createSession({
+    // Two terminal sessions with the same key — both should survive
+    // so the orchestrator can detect consecutive clean self-reviews.
+    const older = await store.createSession({
       issueNumber: 1,
       phase: "self-review",
       status: "completed",
@@ -107,8 +107,9 @@ test("FileSessionStore prunes terminal sessions beyond the cap, keeping the most
     const reviewSessions = sessions.filter(
       (s) => s.issueNumber === 1 && s.phase === "self-review",
     );
-    assert.equal(reviewSessions.length, 1);
-    assert.equal(reviewSessions[0]?.id, newer.id);
+    assert.equal(reviewSessions.length, 2);
+    assert.ok(reviewSessions.some((s) => s.id === older.id));
+    assert.ok(reviewSessions.some((s) => s.id === newer.id));
   });
 });
 
