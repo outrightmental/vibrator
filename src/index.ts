@@ -2,15 +2,14 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import "dotenv/config";
 
-import { executeAction } from "./actions.js";
+import { executeAction, type ExecuteActionResult } from "./actions.js";
+import { createClaudeAgentClient } from "./claude-agent.js";
 import {
   buildDefaultSessionStorePath,
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
-import { createLocalCopilotChatClient } from "./local-copilot.js";
 import { buildPlan } from "./orchestrator.js";
-import { detectRateLimitMessage } from "./rate-limit.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import type {
@@ -19,8 +18,6 @@ import type {
   RepositorySnapshot,
 } from "./types.js";
 
-const DEFAULT_SESSION_TIMEOUT_MS = 6 * 60 * 60 * 1000;
-const DEFAULT_ACKNOWLEDGE_TIMEOUT_MS = 10 * 60 * 1000;
 const RULE = "─".repeat(80);
 const HEAVY_RULE = "═".repeat(80);
 
@@ -76,7 +73,8 @@ function describeAction(
   snapshot: RepositorySnapshot,
   gitHubClient: GitHubClient,
 ): string {
-  const actionIssueNumber = action.type === "start-implementation" ? action.issueNumber : action.issueNumber;
+  const actionIssueNumber =
+    action.type === "start-implementation" ? action.issueNumber : action.issueNumber;
   const issueTitle =
     actionIssueNumber !== undefined
       ? snapshot.issues.find((i) => i.number === actionIssueNumber)?.title
@@ -88,26 +86,15 @@ function describeAction(
       : " (no linked issue)";
   switch (action.type) {
     case "start-implementation":
-      return `Start implementation of issue #${action.issueNumber}${issueSuffix} (${gitHubClient.issueUrl(action.issueNumber)})`;
-    case "request-review":
-      return `Request review for PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
-    case "address-review-comments":
-      return `Address ${action.reviewCommentCount} review comment(s) on PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+      return `Implement issue #${action.issueNumber}${issueSuffix} via Claude (${gitHubClient.issueUrl(action.issueNumber)})`;
+    case "self-review":
+      return `Self-review PR #${action.pullRequestNumber}${issueContext} via Claude (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "address-failing-checks":
-      return `Address failing status checks on PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
-    case "write-final-description":
-      return `Write final description for PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
-    case "merge-pull-request":
-      return `Merge PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+      return `Address failing status checks on PR #${action.pullRequestNumber}${issueContext} via Claude (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+    case "squash-merge":
+      return `Squash-merge PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "resolve-conflicts":
-      return `Resolve merge conflicts in PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
-    case "abandon-empty-pull-request":
-      return (
-        `Abandon empty draft PR #${action.pullRequestNumber} ` +
-        `(${gitHubClient.pullRequestUrl(action.pullRequestNumber)}) and re-assign ` +
-        `Copilot to issue #${action.issueNumber}${issueSuffix} ` +
-        `(${gitHubClient.issueUrl(action.issueNumber)})`
-      );
+      return `Resolve merge conflicts in PR #${action.pullRequestNumber}${issueContext} via Claude (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
   }
 }
 
@@ -128,13 +115,13 @@ interface Config {
   owner: string;
   repo: string;
   token: string;
+  anthropicApiKey: string;
+  claudeModel: string | undefined;
   maxConcurrency: number;
   intervalMs: number;
   once: boolean;
   dryRun: boolean;
   sessionStorePath: string;
-  sessionTimeoutMs: number;
-  acknowledgeTimeoutMs: number;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -164,35 +151,30 @@ function parseArgs(argv: string[]): Config {
   if (!token) {
     throw new Error("Set GITHUB_TOKEN before running vibrator.");
   }
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicApiKey) {
+    throw new Error("Set ANTHROPIC_API_KEY before running vibrator.");
+  }
 
   const maxConcurrency = Number.parseInt(process.env.MAX_CONCURRENCY ?? "3", 10);
   const intervalMs = Number.parseInt(process.env.LOOP_INTERVAL_MS ?? "60000", 10);
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
-  const sessionTimeoutMs = Number.parseInt(
-    process.env.SESSION_TIMEOUT_MS ?? String(DEFAULT_SESSION_TIMEOUT_MS),
-    10,
-  );
-  const acknowledgeTimeoutMs = Number.parseInt(
-    process.env.COPILOT_ACKNOWLEDGE_TIMEOUT_MS ?? String(DEFAULT_ACKNOWLEDGE_TIMEOUT_MS),
-    10,
-  );
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
+  const claudeModel = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
 
   return {
     owner,
     repo,
     token,
+    anthropicApiKey,
+    claudeModel,
     maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
     intervalMs: Number.isNaN(intervalMs) ? 60000 : intervalMs,
     once,
     dryRun,
     sessionStorePath,
-    sessionTimeoutMs: Number.isNaN(sessionTimeoutMs) ? DEFAULT_SESSION_TIMEOUT_MS : sessionTimeoutMs,
-    acknowledgeTimeoutMs: Number.isNaN(acknowledgeTimeoutMs)
-      ? DEFAULT_ACKNOWLEDGE_TIMEOUT_MS
-      : acknowledgeTimeoutMs,
   };
 }
 
@@ -204,7 +186,10 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     token: config.token,
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
-  const localCopilotChatClient = createLocalCopilotChatClient();
+  const claudeAgentClient = createClaudeAgentClient({
+    anthropicApiKey: config.anthropicApiKey,
+    ...(config.claudeModel !== undefined && { claudeModel: config.claudeModel }),
+  });
 
   write(HEAVY_RULE);
   write(`vibrator status update · ${timestamp()} · iteration ${iterationNumber}`);
@@ -217,29 +202,6 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
   );
   write(HEAVY_RULE);
-
-  // --- Rate-limit pause -------------------------------------------------
-  // If a previous iteration detected a Copilot rate-limit message and
-  // recorded a reset timestamp, refuse to dispatch any GitHub-side work
-  // until that window has elapsed. The whole point is to stop spamming
-  // the repo with requests that Copilot will immediately reject.
-  const rateLimitedUntil = await sessionStore.getRateLimitedUntil();
-  if (rateLimitedUntil && rateLimitedUntil.getTime() > Date.now()) {
-    section("Rate-limited — skipping iteration");
-    bullet(
-      `Copilot rate limit in effect until ${rateLimitedUntil.toISOString()} ` +
-        `(≈${formatDuration(rateLimitedUntil.getTime() - Date.now())} remaining)`,
-    );
-    note(
-      "vibrator will resume automatically once the window elapses. To clear " +
-        "this manually, delete `rateLimitedUntil` from the session store file.",
-    );
-    return;
-  }
-  if (rateLimitedUntil && rateLimitedUntil.getTime() <= Date.now()) {
-    // Window elapsed — clear the marker so the rest of the iteration runs normally.
-    await sessionStore.setRateLimitedUntil(undefined);
-  }
 
   // --- Workflow approvals ------------------------------------------------
   section("Workflow approvals");
@@ -273,7 +235,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   const draftPullRequestCount = snapshot.pullRequests.filter((pr) => pr.draft).length;
   const readyPullRequestCount = snapshot.pullRequests.length - draftPullRequestCount;
   const preReconcileActiveSessions = snapshot.agentSessions.filter(
-    (s) => s.status === "queued" || s.status === "in_progress",
+    (s) => s.status === "in_progress",
   );
 
   section("Repository snapshot");
@@ -285,173 +247,22 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         : ""),
   );
   bullet(`${preReconcileActiveSessions.length} active agent session(s)`);
-  if (preReconcileActiveSessions.length > 0) {
-    for (const session of preReconcileActiveSessions) {
-      note(`◦ ${describeSession(session, gitHubClient)}`, 2);
-    }
+  for (const session of preReconcileActiveSessions) {
+    note(`◦ ${describeSession(session, gitHubClient)}`, 2);
   }
 
   // --- Reconciliation ---------------------------------------------------
+  // Every Claude action runs synchronously, so any `in_progress` session
+  // observed here can only be the carcass of a previous vibrator process
+  // that crashed mid-action. Fail those so the planner can re-plan.
   section("Reconciliation");
-  const reconcileEvents = await reconcileSessions(
-    gitHubClient,
-    sessionStore,
-    snapshot,
-    localCopilotChatClient,
-    {
-      owner: config.owner,
-      repo: config.repo,
-      acknowledgeTimeoutMs: config.acknowledgeTimeoutMs,
-    },
-  );
-  const completedEvents = reconcileEvents.filter((e) => e.outcome === "completed");
-  const failedStaleEvents = reconcileEvents.filter((e) => e.outcome === "failed-stale");
-  const failedTimedOut = await sessionStore.failStaleSessions(config.sessionTimeoutMs);
-
-  bullet(`${completedEvents.length} session(s) completed`);
-  for (const event of completedEvents) {
+  const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
+  bullet(`${reconcileEvents.length} stale session(s) failed`);
+  for (const event of reconcileEvents) {
     note(`◦ ${describeSession(event.session, gitHubClient)}`, 2);
-  }
-  bullet(`${failedStaleEvents.length} session(s) failed (stale)`);
-  for (const event of failedStaleEvents) {
-    let reason: string;
-    switch (event.staleReason) {
-      case "issue-closed":
-        reason = "issue no longer open";
-        break;
-      case "copilot-not-assigned":
-        reason = "Copilot not assigned to issue";
-        break;
-      case "copilot-review-failed":
-        reason = "Copilot review came back as failed (wasn't able to review)";
-        break;
-      case "copilot-review-incomplete":
-        reason =
-          "Copilot review request completed with no clean-review signal (no Copilot review on the PR — refusing to merge)";
-        break;
-      case "copilot-review-comments-not-addressed":
-        reason = "Copilot ended its turn but review comments are not adequately addressed";
-        break;
-      case "copilot-did-not-acknowledge":
-        reason = "Copilot never acknowledged the request (no start/finish event or eyes reaction)";
-        break;
-      case "copilot-stopped-with-error":
-        reason =
-          "Copilot's agent run finished with an error (likely rate-limit or transient failure) before making progress";
-        break;
-      default:
-        reason = "unknown reason";
-    }
-    note(`◦ ${describeSession(event.session, gitHubClient)} — ${reason}`, 2);
-    if (event.evaluationRationale) {
-      note(`  rationale: ${event.evaluationRationale.split("\n")[0]}`, 4);
-    }
-  }
-  bullet(`${failedTimedOut.length} session(s) timed out`);
-  for (const session of failedTimedOut) {
-    note(`◦ ${describeSession(session, gitHubClient)}`, 2);
   }
 
   snapshot.agentSessions = await sessionStore.load();
-  const reconciledActiveSessions = snapshot.agentSessions.filter(
-    (s) => s.status === "queued" || s.status === "in_progress",
-  );
-  bullet(`${reconciledActiveSessions.length} session(s) still active`);
-  for (const session of reconciledActiveSessions) {
-    note(`◦ ${describeSession(session, gitHubClient)}`, 2);
-  }
-
-  // --- Rate-limit detection --------------------------------------------
-  // Scan recent "Copilot stopped work" timeline events on every open PR
-  // for the rate-limit message ("You've hit your rate limit. Please wait
-  // for your limit to reset in N minutes…"). If detected, persist the
-  // reset time and skip plan execution — the next iteration will see the
-  // pause and short-circuit immediately.
-  section("Copilot rate-limit check");
-  let detectedRateLimitResetAt: Date | undefined;
-  for (const pullRequest of snapshot.pullRequests) {
-    try {
-      const stoppedEvents = await gitHubClient.listCopilotStoppedWorkEvents(
-        pullRequest.number,
-      );
-      for (const event of stoppedEvents) {
-        const detection = detectRateLimitMessage(event.message);
-        if (!detection) continue;
-        if (
-          !detectedRateLimitResetAt ||
-          detection.resetAt.getTime() > detectedRateLimitResetAt.getTime()
-        ) {
-          detectedRateLimitResetAt = detection.resetAt;
-        }
-        note(
-          `◦ rate-limit message on PR #${pullRequest.number} (${gitHubClient.pullRequestUrl(pullRequest.number)}) — ` +
-            `reset at ${detection.resetAt.toISOString()}` +
-            (detection.durationWasParsed ? "" : " (fallback window)"),
-          2,
-        );
-      }
-    } catch (error) {
-      note(
-        `◦ failed to scan PR #${pullRequest.number} timeline: ${(error as Error).message}`,
-        2,
-      );
-    }
-
-    // The "Copilot stopped work due to an error" timeline event no longer
-    // carries the rate-limit message body — GitHub now surfaces it only in
-    // the cloud-agent workflow run logs. Scan recent failed Copilot agent
-    // runs on this PR's head branch and apply the same detector to the
-    // combined log text so the pause actually triggers.
-    try {
-      const failureLogs = await gitHubClient.listRecentCopilotAgentFailureLogs(
-        pullRequest.headRefName,
-      );
-      for (const run of failureLogs) {
-        // Anchor the detector to the workflow run's finishedAt so old
-        // logs don't produce a perpetually-fresh "now + N minutes" window
-        // every iteration. (The rate-limit message is emitted near the
-        // run's end, so `finishedAt` ≈ when the agent reported it.) Skip
-        // detections whose reset instant is already in the past — that
-        // rate-limit window has elapsed and is not actionable.
-        const runFinishedAt = new Date(run.finishedAt);
-        const detection = detectRateLimitMessage(run.logText, runFinishedAt);
-        if (!detection) continue;
-        if (detection.resetAt.getTime() <= Date.now()) {
-          continue;
-        }
-        if (
-          !detectedRateLimitResetAt ||
-          detection.resetAt.getTime() > detectedRateLimitResetAt.getTime()
-        ) {
-          detectedRateLimitResetAt = detection.resetAt;
-        }
-        note(
-          `◦ rate-limit message in workflow run #${run.runId} ("${run.runName}") on PR #${pullRequest.number} — ` +
-            `reset at ${detection.resetAt.toISOString()}` +
-            (detection.durationWasParsed ? "" : " (fallback window)"),
-          2,
-        );
-      }
-    } catch (error) {
-      note(
-        `◦ failed to scan workflow logs for PR #${pullRequest.number}: ${(error as Error).message}`,
-        2,
-      );
-    }
-  }
-  if (detectedRateLimitResetAt) {
-    await sessionStore.setRateLimitedUntil(detectedRateLimitResetAt);
-    bullet(
-      `pausing until ${detectedRateLimitResetAt.toISOString()} ` +
-        `(≈${formatDuration(detectedRateLimitResetAt.getTime() - Date.now())} from now)`,
-    );
-    note(
-      "Skipping plan execution this iteration. Subsequent iterations will be " +
-        "skipped until the window elapses.",
-    );
-    return;
-  }
-  bullet("no active rate-limit messages detected");
 
   // --- Plan -------------------------------------------------------------
   const plan = buildPlan(snapshot, config.maxConcurrency);
@@ -474,22 +285,60 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   if (plan.actions.length === 0) {
     bullet("0 actions to execute");
   } else {
-    bullet(`${plan.actions.length} action(s) to execute`);
+    bullet(
+      `${plan.actions.length} action(s) to execute` +
+        (plan.actions.length > 1 ? ` — running concurrently` : ""),
+    );
     for (let i = 0; i < plan.actions.length; i++) {
-      const action = plan.actions[i]!;
-      note(`[${i + 1}/${plan.actions.length}] → ${describeAction(action, snapshot, gitHubClient)}`, 2);
-      try {
-        await executeAction(
-          gitHubClient,
-          sessionStore,
-          action,
-          config.dryRun,
-          localCopilotChatClient,
-          { owner: config.owner, repo: config.repo },
-        );
-        note(`[${i + 1}/${plan.actions.length}] ✓ done${config.dryRun ? " (dry-run)" : ""}`, 2);
-      } catch (error) {
-        note(`[${i + 1}/${plan.actions.length}] ✗ failed: ${(error as Error).message}`, 2);
+      note(
+        `[${i + 1}/${plan.actions.length}] → ${describeAction(plan.actions[i]!, snapshot, gitHubClient)}`,
+        2,
+      );
+    }
+
+    if (!config.dryRun) {
+      const actionContext = {
+        owner: config.owner,
+        repo: config.repo,
+        issues: snapshot.issues,
+        pullRequests: snapshot.pullRequests,
+      };
+
+      const results = await Promise.allSettled(
+        plan.actions.map((action) =>
+          executeAction(
+            gitHubClient,
+            sessionStore,
+            claudeAgentClient,
+            action,
+            false,
+            actionContext,
+          ),
+        ),
+      );
+
+      blank();
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i]!;
+        const prefix = `[${i + 1}/${plan.actions.length}]`;
+        if (result.status === "fulfilled") {
+          const actionResult: ExecuteActionResult = result.value;
+          if (actionResult.noCommitsPushed) {
+            note(`${prefix} ⚠ done — no new commits pushed to branch (Claude ran but made no changes)`, 2);
+          } else {
+            note(`${prefix} ✓ done`, 2);
+          }
+        } else {
+          note(
+            `${prefix} ✗ failed: ${(result.reason as Error).message}`,
+            2,
+          );
+        }
+      }
+    } else {
+      blank();
+      for (let i = 0; i < plan.actions.length; i++) {
+        note(`[${i + 1}/${plan.actions.length}] ✓ done (dry-run)`, 2);
       }
     }
   }
@@ -530,4 +379,3 @@ main().catch((error: unknown) => {
   console.error(`[${timestamp()}] Fatal error:`, error);
   process.exitCode = 1;
 });
-

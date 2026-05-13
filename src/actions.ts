@@ -1,26 +1,77 @@
-import { buildMergedPullRequestBody } from "./orchestrator.js";
-import type { AgentSessionPhase, OrchestratorAction } from "./types.js";
+import { buildMergedPullRequestBody, CHECKS_TIMEOUT_MS } from "./orchestrator.js";
+import type {
+  AgentSessionPhase,
+  AgentSessionResult,
+  AgentSessionStatus,
+  Issue,
+  OrchestratorAction,
+  PullRequest,
+} from "./types.js";
 
 export interface ActionGitHubClient {
-  createIssueComment(issueNumber: number, body: string): Promise<{ id: number }>;
-  assignIssueToCopilot(issueNumber: number): Promise<void>;
-  unassignIssueFromCopilot(issueNumber: number): Promise<void>;
-  assignPullRequestToCopilot(pullRequestNumber: number): Promise<void>;
-  unassignPullRequestFromCopilot(pullRequestNumber: number): Promise<void>;
+  getDefaultBranch(): Promise<string>;
+  createPullRequest(input: {
+    title: string;
+    body: string;
+    head: string;
+    base: string;
+    draft?: boolean;
+  }): Promise<{ number: number; headSha: string }>;
   updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void>;
-  mergePullRequest(pullRequestNumber: number): Promise<void>;
   squashMergePullRequest(
     pullRequestNumber: number,
     subject: string,
     body: string,
   ): Promise<void>;
-  resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void>;
-  requestCopilotReview(pullRequestNumber: number): Promise<void>;
-  resetPullRequestForCopilotReview(pullRequestNumber: number): Promise<void>;
-  closePullRequest(pullRequestNumber: number): Promise<void>;
+  listFailingCheckRuns(input: {
+    pullRequestNumber: number;
+    headSha: string;
+  }): Promise<Array<{ name: string; logExcerpt: string }>>;
+  cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
+  postComment(pullRequestNumber: number, body: string): Promise<void>;
 }
 
-export interface ActionLocalCopilotChatClient {
+export interface ActionClaudeAgentClient {
+  implementIssue(params: {
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    issueTitle: string;
+    issueBody: string;
+    baseBranch: string;
+  }): Promise<{
+    branch: string;
+    pullRequestTitle: string;
+    pullRequestBody: string;
+    headSha: string;
+  }>;
+  selfReview(params: {
+    owner: string;
+    repo: string;
+    pullRequestNumber: number;
+    pullRequestTitle: string;
+    pullRequestBody: string;
+    headRefName: string;
+    baseRefName: string;
+    issueNumber?: number;
+    issueTitle?: string;
+    issueBody?: string;
+  }): Promise<{ madeChanges: boolean; headSha: string }>;
+  resolveMergeConflicts(params: {
+    owner: string;
+    repo: string;
+    pullRequestNumber: number;
+    headRefName: string;
+    baseRefName: string;
+  }): Promise<{ headSha: string }>;
+  addressFailingChecks(params: {
+    owner: string;
+    repo: string;
+    pullRequestNumber: number;
+    headRefName: string;
+    baseRefName: string;
+    failingChecks: ReadonlyArray<{ name: string; logExcerpt: string }>;
+  }): Promise<{ headSha: string }>;
   generateFinalDescription(params: {
     owner: string;
     repo: string;
@@ -28,6 +79,7 @@ export interface ActionLocalCopilotChatClient {
     pullRequestTitle: string;
     pullRequestBody: string;
     headRefName: string;
+    baseRefName: string;
     closingIssueNumbers: readonly number[];
   }): Promise<string>;
 }
@@ -37,132 +89,239 @@ export interface ActionSessionStore {
     issueNumber?: number | undefined;
     pullRequestNumber?: number;
     phase: AgentSessionPhase;
-    status?: "queued" | "in_progress" | "completed" | "failed";
-    result?: {
-      pullRequestBody?: string;
-      pullRequestHeadSha?: string;
-      generatedDescription?: string;
-      promptCommentId?: number;
-    };
+    status?: AgentSessionStatus;
+    result?: AgentSessionResult;
   }): Promise<unknown>;
 }
 
 export interface ExecuteActionContext {
   owner: string;
   repo: string;
+  /** All open issues in the snapshot — used to look up issue title/body when implementing. */
+  issues: ReadonlyArray<Issue>;
+  /** All open pull requests in the snapshot — used to look up branch / base. */
+  pullRequests: ReadonlyArray<PullRequest>;
+}
+
+function findIssue(context: ExecuteActionContext, issueNumber: number): Issue {
+  const issue = context.issues.find((candidate) => candidate.number === issueNumber);
+  if (!issue) {
+    throw new Error(`Issue #${issueNumber} not found in the current snapshot.`);
+  }
+  return issue;
+}
+
+function findPullRequest(
+  context: ExecuteActionContext,
+  pullRequestNumber: number,
+): PullRequest {
+  const pullRequest = context.pullRequests.find(
+    (candidate) => candidate.number === pullRequestNumber,
+  );
+  if (!pullRequest) {
+    throw new Error(`Pull request #${pullRequestNumber} not found in the current snapshot.`);
+  }
+  return pullRequest;
+}
+
+export interface ExecuteActionResult {
+  /**
+   * True when a branch-modifying action (address-review-comments,
+   * address-failing-checks, resolve-conflicts) completed but the branch HEAD
+   * SHA did not change — i.e. Claude ran but pushed no new commits.
+   */
+  noCommitsPushed?: boolean;
 }
 
 export async function executeAction(
   gitHubClient: ActionGitHubClient,
   sessionStore: ActionSessionStore,
+  claudeAgentClient: ActionClaudeAgentClient,
   action: OrchestratorAction,
   dryRun: boolean,
-  localCopilotChatClient: ActionLocalCopilotChatClient,
   context: ExecuteActionContext,
-): Promise<void> {
+): Promise<ExecuteActionResult> {
   if (dryRun) {
-    return;
+    return {};
   }
 
   switch (action.type) {
-    case "start-implementation":
-      if (action.reassignCopilot) {
-        // Unassign first so the re-assignment fires a fresh GitHub
-        // assignment event, nudging the Copilot coding agent to pick up
-        // the issue after a prior `copilot-did-not-acknowledge` failure.
-        await gitHubClient.unassignIssueFromCopilot(action.issueNumber);
-      }
-      await gitHubClient.assignIssueToCopilot(action.issueNumber);
+    case "start-implementation": {
+      const issue = findIssue(context, action.issueNumber);
+      const baseBranch = await gitHubClient.getDefaultBranch();
+      const implementation = await claudeAgentClient.implementIssue({
+        owner: context.owner,
+        repo: context.repo,
+        issueNumber: issue.number,
+        issueTitle: issue.title,
+        issueBody: issue.body,
+        baseBranch,
+      });
+      const created = await gitHubClient.createPullRequest({
+        title: implementation.pullRequestTitle,
+        body: implementation.pullRequestBody,
+        head: implementation.branch,
+        base: baseBranch,
+      });
       await sessionStore.createSession({
-        issueNumber: action.issueNumber,
+        issueNumber: issue.number,
+        pullRequestNumber: created.number,
         phase: "implementation",
-      });
-      return;
-    case "request-review":
-      if (action.resolveReviewThreads) {
-        await gitHubClient.resolvePullRequestReviewThreads(action.pullRequestNumber);
-      }
-      if (action.resetDraftState) {
-        // Reset GitHub Copilot's review state via the documented
-        // draft → ready-for-review toggle before re-requesting review.
-        // Required after a "Copilot wasn't able to review any files"
-        // failure — otherwise the new review request can be ignored.
-        await gitHubClient.resetPullRequestForCopilotReview(action.pullRequestNumber);
-      }
-      await gitHubClient.requestCopilotReview(action.pullRequestNumber);
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        pullRequestNumber: action.pullRequestNumber,
-        phase: "review",
-      });
-      return;
-    case "address-review-comments": {
-      if (action.reassignCopilot) {
-        // After a prior `copilot-did-not-acknowledge` failure, cycle the
-        // Copilot assignee on the PR before re-posting the @copilot
-        // prompt comment. This gives the coding agent a fresh trigger
-        // event to pick up the job.
-        await gitHubClient.unassignPullRequestFromCopilot(action.pullRequestNumber);
-        await gitHubClient.assignPullRequestToCopilot(action.pullRequestNumber);
-      }
-      const { id: promptCommentId } = await gitHubClient.createIssueComment(
-        action.pullRequestNumber,
-        `@copilot Please address every review comment in this pull request and push the changes. (${action.reviewCommentCount} review comments were found.)`,
-      );
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        pullRequestNumber: action.pullRequestNumber,
-        phase: "address-review-comments",
+        status: "completed",
         result: {
-          pullRequestHeadSha: action.pullRequestHeadSha,
-          promptCommentId,
+          pullRequestHeadSha: created.headSha,
+          pullRequestBody: implementation.pullRequestBody,
         },
       });
-      return;
+      await gitHubClient.postComment(
+        created.number,
+        `Implemented issue #${issue.number}: opened this PR.`,
+      );
+      return {};
     }
+
+    case "self-review": {
+      const pullRequest = findPullRequest(context, action.pullRequestNumber);
+      const issue =
+        action.issueNumber !== undefined
+          ? context.issues.find((i) => i.number === action.issueNumber)
+          : undefined;
+      const result = await claudeAgentClient.selfReview({
+        owner: context.owner,
+        repo: context.repo,
+        pullRequestNumber: pullRequest.number,
+        pullRequestTitle: pullRequest.title,
+        pullRequestBody: pullRequest.body,
+        headRefName: pullRequest.headRefName,
+        baseRefName: pullRequest.baseRefName,
+        ...(issue !== undefined && {
+          issueNumber: issue.number,
+          issueTitle: issue.title,
+          issueBody: issue.body,
+        }),
+      });
+      await sessionStore.createSession({
+        issueNumber: action.issueNumber,
+        pullRequestNumber: pullRequest.number,
+        phase: "self-review",
+        status: "completed",
+        result: {
+          madeChanges: result.madeChanges,
+          pullRequestHeadSha: result.headSha,
+        },
+      });
+      const reviewComment = result.madeChanges
+        ? "Reviewed code and pushed fixes."
+        : "Reviewed code, no issues found.";
+      await gitHubClient.postComment(pullRequest.number, reviewComment);
+      return {};
+    }
+
     case "address-failing-checks": {
-      if (action.reassignCopilot) {
-        await gitHubClient.unassignPullRequestFromCopilot(action.pullRequestNumber);
-        await gitHubClient.assignPullRequestToCopilot(action.pullRequestNumber);
-      }
-      const { id: promptCommentId } = await gitHubClient.createIssueComment(
-        action.pullRequestNumber,
-        "@copilot One or more status checks (e.g. CI, tests) are failing on " +
-          "this pull request. Please investigate the failing checks, fix " +
-          "the underlying problems, and push the changes so the checks pass.",
+      const pullRequest = findPullRequest(context, action.pullRequestNumber);
+      // Cancel any runs that are still in progress so Claude doesn't try to
+      // diagnose a job that hasn't finished yet.
+      const cancelledCount = await gitHubClient.cancelInProgressWorkflowRunsForHeadSha(
+        pullRequest.headSha,
       );
+      if (cancelledCount > 0) {
+        const pushedAt = pullRequest.headCommitPushedAt;
+        const pendingMs = pushedAt !== undefined ? Date.now() - Date.parse(pushedAt) : undefined;
+        const pendingDesc =
+          pendingMs !== undefined
+            ? (() => {
+                const totalSecs = Math.floor(pendingMs / 1000);
+                const m = Math.floor(totalSecs / 60);
+                const s = totalSecs % 60;
+                return m > 0 ? `${m}m ${s}s` : `${s}s`;
+              })()
+            : "unknown duration";
+        const thresholdMin = Math.round(CHECKS_TIMEOUT_MS / 60_000);
+        console.log(
+          `[vibrator] Cancelled ${cancelledCount} in-progress workflow run(s) for PR #${pullRequest.number} ` +
+          `because CI checks have been pending for ${pendingDesc}, exceeding the ${thresholdMin}-minute timeout threshold.`,
+        );
+      }
+      const failingChecks = await gitHubClient.listFailingCheckRuns({
+        pullRequestNumber: pullRequest.number,
+        headSha: pullRequest.headSha,
+      });
+      const update = await claudeAgentClient.addressFailingChecks({
+        owner: context.owner,
+        repo: context.repo,
+        pullRequestNumber: pullRequest.number,
+        headRefName: pullRequest.headRefName,
+        baseRefName: pullRequest.baseRefName,
+        failingChecks,
+      });
+      const checksNoCommits = update.headSha === pullRequest.headSha;
+      if (checksNoCommits) {
+        console.warn(
+          `[vibrator] WARNING: address-failing-checks on PR #${pullRequest.number} ` +
+          `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
+          `Claude ran but pushed no new commits. ` +
+          `Failing checks that were sent to Claude: ${failingChecks.map((c) => c.name).join(", ") || "(none)"}`,
+        );
+      }
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
-        pullRequestNumber: action.pullRequestNumber,
+        pullRequestNumber: pullRequest.number,
         phase: "address-failing-checks",
-        result: {
-          pullRequestHeadSha: action.pullRequestHeadSha,
-          promptCommentId,
-        },
+        status: "completed",
+        result: { pullRequestHeadSha: update.headSha },
       });
-      return;
+      const checksComment = checksNoCommits
+        ? "Investigated failing CI checks; no code changes were needed."
+        : `Addressed failing CI checks and pushed a fix (${failingChecks.map((c) => c.name).join(", ") || "unknown checks"}).`;
+      await gitHubClient.postComment(pullRequest.number, checksComment);
+      return { noCommitsPushed: checksNoCommits };
     }
-    case "write-final-description": {
-      // New flow: run a local Copilot chat session inside a checkout of the
-      // PR branch to generate the final description, update the PR body via
-      // the GitHub REST API, then squash-merge the PR using the description
-      // as the commit message body. This replaces the previous flow that
-      // posted an `@copilot` comment on the PR and waited for Copilot to
-      // edit the description out-of-band.
-      const description = await localCopilotChatClient.generateFinalDescription({
+
+    case "resolve-conflicts": {
+      const pullRequest = findPullRequest(context, action.pullRequestNumber);
+      const update = await claudeAgentClient.resolveMergeConflicts({
+        owner: context.owner,
+        repo: context.repo,
+        pullRequestNumber: pullRequest.number,
+        headRefName: pullRequest.headRefName,
+        baseRefName: pullRequest.baseRefName,
+      });
+      const conflictsNoCommits = update.headSha === pullRequest.headSha;
+      if (conflictsNoCommits) {
+        console.warn(
+          `[vibrator] WARNING: resolve-conflicts on PR #${pullRequest.number} ` +
+          `completed but the branch HEAD SHA did not change (${pullRequest.headSha}). ` +
+          `Claude ran but pushed no new commits.`,
+        );
+      }
+      await sessionStore.createSession({
+        issueNumber: action.issueNumber,
+        pullRequestNumber: pullRequest.number,
+        phase: "resolve-conflicts",
+        status: "completed",
+        result: { pullRequestHeadSha: update.headSha },
+      });
+      const conflictsComment = conflictsNoCommits
+        ? "Investigated merge conflicts; no changes were needed."
+        : "Resolved merge conflicts and pushed updated branch.";
+      await gitHubClient.postComment(pullRequest.number, conflictsComment);
+      return { noCommitsPushed: conflictsNoCommits };
+    }
+
+    case "squash-merge": {
+      const pullRequest = findPullRequest(context, action.pullRequestNumber);
+      const description = await claudeAgentClient.generateFinalDescription({
         owner: context.owner,
         repo: context.repo,
         pullRequestNumber: action.pullRequestNumber,
         pullRequestTitle: action.pullRequestTitle,
         pullRequestBody: action.pullRequestBody,
         headRefName: action.pullRequestHeadRefName,
+        baseRefName: pullRequest.baseRefName,
         closingIssueNumbers: action.closingIssueNumbers,
       });
 
-      const mergedBody = buildMergedPullRequestBody(
-        description,
-        action.closingIssueNumbers,
-      );
+      const mergedBody = buildMergedPullRequestBody(description, action.closingIssueNumbers);
 
       await gitHubClient.updatePullRequestBody(action.pullRequestNumber, mergedBody);
       await gitHubClient.squashMergePullRequest(
@@ -171,69 +330,14 @@ export async function executeAction(
         mergedBody,
       );
 
-      // Record the work as a completed final-description session so it shows
-      // up in history and so the orchestrator's planning machinery sees the
-      // phase as already finished (the PR will also disappear from
-      // listOpenPullRequests on the next iteration).
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         pullRequestNumber: action.pullRequestNumber,
-        phase: "final-description",
+        phase: "squash-merge",
         status: "completed",
-        result: {
-          pullRequestBody: mergedBody,
-          generatedDescription: description,
-        },
+        result: { pullRequestBody: mergedBody },
       });
-      return;
-    }
-    case "merge-pull-request":
-      await gitHubClient.updatePullRequestBody(
-        action.pullRequestNumber,
-        buildMergedPullRequestBody(action.pullRequestBody, action.closingIssueNumbers),
-      );
-      await gitHubClient.mergePullRequest(action.pullRequestNumber);
-      return;
-    case "resolve-conflicts": {
-      if (action.reassignCopilot) {
-        await gitHubClient.unassignPullRequestFromCopilot(action.pullRequestNumber);
-        await gitHubClient.assignPullRequestToCopilot(action.pullRequestNumber);
-      }
-      const { id: promptCommentId } = await gitHubClient.createIssueComment(
-        action.pullRequestNumber,
-        "@copilot This pull request has merge conflicts. Please resolve the conflicts and push the changes.",
-      );
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        pullRequestNumber: action.pullRequestNumber,
-        phase: "resolve-conflicts",
-        result: {
-          pullRequestHeadSha: action.pullRequestHeadSha,
-          promptCommentId,
-        },
-      });
-      return;
-    }
-    case "abandon-empty-pull-request": {
-      // Post a brief explanatory comment so the trail of why the PR was
-      // closed is visible in the GitHub UI, then close the PR. After
-      // closing, cycle the Copilot assignee on the linked issue so the
-      // coding agent starts a fresh attempt on a clean branch.
-      await gitHubClient.createIssueComment(
-        action.pullRequestNumber,
-        "Closing this draft PR because Copilot's coding-agent run aborted " +
-          "before any file changes were pushed (typically a rate-limit or " +
-          "transient failure). Re-assigning the linked issue so Copilot " +
-          "starts a fresh attempt with a clean branch.",
-      );
-      await gitHubClient.closePullRequest(action.pullRequestNumber);
-      await gitHubClient.unassignIssueFromCopilot(action.issueNumber);
-      await gitHubClient.assignIssueToCopilot(action.issueNumber);
-      await sessionStore.createSession({
-        issueNumber: action.issueNumber,
-        phase: "implementation",
-      });
-      return;
+      return {};
     }
   }
 }

@@ -3,46 +3,17 @@ import { join } from "node:path";
 
 import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
-import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "./types.js";
+import type {
+  Issue,
+  PullRequest,
+  RepositorySnapshot,
+} from "./types.js";
 
-/**
- * Pulls every plausible string field out of a GitHub timeline event so
- * downstream code can search the combined text for rate-limit phrases
- * and similar markers. The Copilot coding agent's "stopped work"
- * timeline events do not have a fixed payload shape — the human-visible
- * error message has appeared on `message`, `body`, `summary`, and
- * nested `error.message` at various times. Flatten them all into one
- * newline-joined string and let pattern matching decide what's
- * meaningful.
- */
-export function extractEventMessage(event: Record<string, unknown>): string {
-  const parts: string[] = [];
-  const visit = (value: unknown, depth: number): void => {
-    if (depth > 4 || value === null || value === undefined) return;
-    if (typeof value === "string") {
-      parts.push(value);
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item, depth + 1);
-      return;
-    }
-    if (typeof value === "object") {
-      for (const nested of Object.values(value as Record<string, unknown>)) {
-        visit(nested, depth + 1);
-      }
-    }
-  };
-  for (const [key, value] of Object.entries(event)) {
-    // Skip metadata fields that never carry the user-visible message.
-    if (key === "event" || key === "created_at" || key === "node_id" || key === "id") {
-      continue;
-    }
-    visit(value, 0);
-  }
-  return parts.join("\n");
+interface PullRequestInlineComment {
+  path: string;
+  line: number;
+  body: string;
 }
-
 
 function runShellCommand(command: string, args: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -80,10 +51,6 @@ interface GitHubIssueResponse {
   created_at: string;
   updated_at: string;
   pull_request?: object;
-  assignees?: Array<{ login: string }> | null;
-  // GitHub's Issue Types feature. The REST API returns the assigned type as
-  // a nested object on the issue payload, or null when the repository has
-  // not assigned a type. Distinct from labels.
   type?: { name?: string | null } | null;
 }
 
@@ -92,6 +59,7 @@ interface GitHubPullRequestResponse {
   title: string;
   body: string | null;
   head: { sha: string; ref: string };
+  base: { ref: string };
   state: "open" | "closed";
   draft: boolean;
   created_at: string;
@@ -103,63 +71,7 @@ interface GitHubPullRequestReviewResponse {
   user: { login: string } | null;
   state: string;
   body: string | null;
-}
-
-/**
- * Login of the GitHub Copilot pull-request review bot.
- */
-export const COPILOT_REVIEWER_LOGIN = "copilot-pull-request-reviewer";
-
-/**
- * Pattern matching the failure message Copilot posts as a review body when
- * it could not analyze the PR (e.g. "Copilot wasn't able to review any files
- * in this pull request."). A review matching this body must NEVER be
- * treated as a successful approval.
- */
-export const COPILOT_REVIEW_FAILURE_PATTERN = /wasn't able to review/i;
-
-/**
- * Pattern matching the success message Copilot posts when it has reviewed
- * the PR and found nothing worth commenting on (e.g. "Copilot reviewed N
- * files... and generated no comments." or "...generated no new comments.").
- * Only reviews matching this body (or an explicit APPROVED state) are
- * accepted as a clean review that authorizes squash-and-merge.
- */
-export const COPILOT_REVIEW_SUCCESS_PATTERN = /generated no (?:new )?comments/i;
-
-export function isFailedCopilotReview(review: {
-  authorLogin?: string | undefined;
-  body?: string | null | undefined;
-}): boolean {
-  if (review.authorLogin?.toLowerCase() !== COPILOT_REVIEWER_LOGIN) {
-    return false;
-  }
-  return COPILOT_REVIEW_FAILURE_PATTERN.test(review.body ?? "");
-}
-
-export function isCleanCopilotReview(review: {
-  authorLogin?: string | undefined;
-  state?: string | undefined;
-  body?: string | null | undefined;
-  reviewCommentCount?: number | undefined;
-}): boolean {
-  if (review.authorLogin?.toLowerCase() !== COPILOT_REVIEWER_LOGIN) {
-    return false;
-  }
-  if (review.state !== "COMMENTED" && review.state !== "APPROVED") {
-    return false;
-  }
-  if ((review.reviewCommentCount ?? 0) !== 0) {
-    return false;
-  }
-  const body = review.body ?? "";
-  if (COPILOT_REVIEW_FAILURE_PATTERN.test(body)) {
-    return false;
-  }
-  if (review.state === "APPROVED") {
-    return true;
-  }
-  return COPILOT_REVIEW_SUCCESS_PATTERN.test(body);
+  commit_id: string | null;
 }
 
 interface GraphQLResponse<T> {
@@ -176,6 +88,13 @@ interface PullRequestReviewThreadsQueryResponse {
       };
     } | null;
   } | null;
+}
+
+/** Identifier vibrator uses when posting reviews so we can recognize our own reviews later. */
+export const VIBRATOR_REVIEW_MARKER = "<!-- vibrator-review -->";
+
+export function isVibratorReview(body: string | null | undefined): boolean {
+  return !!body && body.includes(VIBRATOR_REVIEW_MARKER);
 }
 
 export interface GitHubClientOptions {
@@ -212,7 +131,8 @@ export class GitHubClient {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${this.apiBaseUrl}${path}`, {
+    const url = `${this.apiBaseUrl}${path}`;
+    const response = await fetch(url, {
       ...init,
       headers: {
         Accept: "application/vnd.github+json",
@@ -229,8 +149,55 @@ export class GitHubClient {
       );
     }
 
+    if (response.status === 403) {
+      throw Object.assign(
+        new Error(`GitHub request failed (403 Forbidden) for ${path}`),
+        { statusCode: 403 },
+      );
+    }
+
     if (!response.ok) {
-      throw new Error(`GitHub request failed (${response.status} ${response.statusText}) for ${path}`);
+      // Read the body for full triage context before throwing.
+      let responseBody: string;
+      try {
+        responseBody = await response.text();
+      } catch {
+        responseBody = "(could not read response body)";
+      }
+
+      // Redact auth from request headers for safe logging.
+      const requestHeaders: Record<string, string> = {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "vibrator",
+        ...(init?.headers as Record<string, string> ?? {}),
+      };
+      delete requestHeaders["Authorization"];
+
+      let requestBodySummary: string;
+      if (typeof init?.body === "string") {
+        try {
+          // Pretty-print JSON bodies for readability.
+          requestBodySummary = JSON.stringify(JSON.parse(init.body), null, 2);
+        } catch {
+          requestBodySummary = init.body;
+        }
+      } else {
+        requestBodySummary = "(no body)";
+      }
+
+      console.error(
+        `[vibrator] GitHub ${response.status} ${response.statusText} — full triage context:\n` +
+        `  Method : ${init?.method ?? "GET"}\n` +
+        `  URL    : ${url}\n` +
+        `  Request headers (redacted): ${JSON.stringify(requestHeaders)}\n` +
+        `  Request body:\n${requestBodySummary}\n` +
+        `  Response body:\n${responseBody}`,
+      );
+
+      throw new Error(
+        `GitHub request failed (${response.status} ${response.statusText}) for ${path}. ` +
+        `Response body: ${responseBody}`,
+      );
     }
 
     if (response.status === 204) {
@@ -293,6 +260,13 @@ export class GitHubClient {
     }
   }
 
+  async getDefaultBranch(): Promise<string> {
+    const data = await this.request<{ default_branch: string }>(
+      `/repos/${this.options.owner}/${this.options.repo}`,
+    );
+    return data.default_branch;
+  }
+
   async listOpenIssues(): Promise<Issue[]> {
     const issues = await this.getAllPages<GitHubIssueResponse>(
       `/repos/${this.options.owner}/${this.options.repo}/issues?state=open`,
@@ -306,7 +280,6 @@ export class GitHubClient {
         state: issue.state,
         createdAt: issue.created_at,
         updatedAt: issue.updated_at,
-        assignees: (issue.assignees ?? []).map((assignee) => assignee.login),
         type: issue.type?.name ?? null,
       }));
   }
@@ -319,46 +292,8 @@ export class GitHubClient {
       this.fetchOpenPullRequestGraphQLData(),
     ]);
 
-    // Per-PR timeline scan for Copilot agent failure state. The
-    // `copilot_work_finished_failure` timeline event is not exposed via
-    // GraphQL's typed `timelineItems(itemTypes:[…])` filter, so we fall
-    // back to REST timeline calls. Done in parallel to minimize latency
-    // for repos with several open PRs.
-    const failureStates = await Promise.all(
-      pullRequests.map(async (pullRequest) => {
-        try {
-          const [finishedEvents, failedFinishEvents] = await Promise.all([
-            this.listCopilotFinishedWorkEvents(pullRequest.number),
-            this.listCopilotFailedFinishEvents(pullRequest.number),
-          ]);
-          // `failedFinishEvents` is a subset of `finishedEvents` (any
-          // failure-finish is also a finish). Compute the most-recent
-          // finish timestamp across each set and report a failure iff the
-          // newest event in `failedFinishEvents` matches the newest event
-          // in `finishedEvents` (i.e. no successful finish has happened
-          // since the failure).
-          const newest = (events: Array<{ createdAt: string }>) =>
-            events.reduce(
-              (max, event) =>
-                Math.max(max, Date.parse(event.createdAt) || 0),
-              0,
-            );
-          const newestFinish = newest(finishedEvents);
-          const newestFailure = newest(failedFinishEvents);
-          return newestFailure > 0 && newestFailure >= newestFinish;
-        } catch {
-          return false;
-        }
-      }),
-    );
-
-    return pullRequests.map((pullRequest, index) => {
+    return pullRequests.map((pullRequest) => {
       const textForRegex = `${pullRequest.title}\n${pullRequest.body ?? ""}`;
-      // GitHub's "Development" sidebar / closingIssuesReferences is the
-      // authoritative source for which issues a PR closes — PRs opened by
-      // the Copilot coding agent often link via the sidebar rather than
-      // writing "Fixes #N" in the body. Merge it with any in-body keyword
-      // references so we don't miss either source.
       const graphQLData = prGraphQLData.get(pullRequest.number);
       const linkedFromGitHub = graphQLData?.closingIssueNumbers ?? [];
       const linkedFromBody = parseLinkedIssueNumbers(textForRegex);
@@ -371,13 +306,14 @@ export class GitHubClient {
         body: pullRequest.body ?? "",
         headSha: pullRequest.head.sha,
         headRefName: pullRequest.head.ref,
+        baseRefName: pullRequest.base.ref,
         state: pullRequest.state,
         draft: pullRequest.draft,
         hasMergeConflicts: graphQLData?.hasMergeConflicts ?? false,
-        hasCleanCopilotReviewOnHead: graphQLData?.hasCleanCopilotReviewOnHead ?? false,
-        copilotLastAgentRunFailed: failureStates[index] ?? false,
-        changedFiles: graphQLData?.changedFiles ?? 0,
+        hasCleanReviewOnHead: graphQLData?.hasCleanReviewOnHead ?? false,
+        unresolvedReviewCommentCount: graphQLData?.unresolvedReviewCommentCount ?? 0,
         checksStatus: graphQLData?.checksStatus ?? "none",
+        headCommitPushedAt: graphQLData?.headCommitPushedAt,
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
         linkedIssueNumbers,
@@ -392,14 +328,14 @@ export class GitHubClient {
       {
         closingIssueNumbers: number[];
         hasMergeConflicts: boolean;
-        hasCleanCopilotReviewOnHead: boolean;
-        changedFiles: number;
+        hasCleanReviewOnHead: boolean;
+        unresolvedReviewCommentCount: number;
         checksStatus: "success" | "failure" | "pending" | "none";
+        headCommitPushedAt: string | undefined;
       }
     >
   > {
     type ReviewNode = {
-      author: { login: string } | null;
       state: "PENDING" | "COMMENTED" | "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED";
       submittedAt: string | null;
       commit: { oid: string } | null;
@@ -413,14 +349,16 @@ export class GitHubClient {
             number: number;
             mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
             headRefOid: string;
-            changedFiles: number;
             closingIssuesReferences: { nodes: Array<{ number: number }> } | null;
             reviews: { nodes: ReviewNode[] } | null;
+            reviewThreads: {
+              nodes: Array<{ isResolved: boolean }>;
+            } | null;
             commits: {
               nodes: Array<{
                 commit: {
                   oid: string;
-                  statusCheckRollup: { state: string } | null;
+                  pushedDate: string | null;                  committedDate: string | null;                  statusCheckRollup: { state: string } | null;
                 };
               }>;
             } | null;
@@ -435,9 +373,10 @@ export class GitHubClient {
       {
         closingIssueNumbers: number[];
         hasMergeConflicts: boolean;
-        hasCleanCopilotReviewOnHead: boolean;
-        changedFiles: number;
+        hasCleanReviewOnHead: boolean;
+        unresolvedReviewCommentCount: number;
         checksStatus: "success" | "failure" | "pending" | "none";
+        headCommitPushedAt: string | undefined;
       }
     >();
     let after: string | null = null;
@@ -452,11 +391,9 @@ export class GitHubClient {
                   number
                   mergeable
                   headRefOid
-                  changedFiles
                   closingIssuesReferences(first: 50) { nodes { number } }
                   reviews(last: 30) {
                     nodes {
-                      author { login }
                       state
                       submittedAt
                       commit { oid }
@@ -464,10 +401,15 @@ export class GitHubClient {
                       comments { totalCount }
                     }
                   }
+                  reviewThreads(first: 100) {
+                    nodes { isResolved }
+                  }
                   commits(last: 1) {
                     nodes {
                       commit {
                         oid
+                        pushedDate
+                        committedDate
                         statusCheckRollup { state }
                       }
                     }
@@ -489,33 +431,20 @@ export class GitHubClient {
       for (const node of pullRequests.nodes) {
         const issueNumbers = node.closingIssuesReferences?.nodes.map((reference) => reference.number) ?? [];
         const reviewNodes = node.reviews?.nodes ?? [];
-        // A "clean" Copilot review = the Copilot review bot submitted a review
-        // on the current head sha that requested no changes, produced zero
-        // review comments, AND whose body explicitly indicates success
-        // ("generated no comments") — or is an APPROVED review. The body
-        // check is critical: when Copilot posts "Copilot wasn't able to
-        // review any files in this pull request." the GraphQL signals
-        // (COMMENTED + 0 comments) otherwise look identical to a successful
-        // empty review and would incorrectly authorize squash-and-merge.
-        const hasCleanCopilotReviewOnHead = reviewNodes.some((review) => {
-          if (review.commit?.oid !== node.headRefOid) {
-            return false;
-          }
-          return isCleanCopilotReview({
-            authorLogin: review.author?.login,
-            state: review.state,
-            body: review.body,
-            reviewCommentCount: review.comments.totalCount,
-          });
+        // A "clean review on head" = a vibrator-tagged review on the
+        // current head sha that contains no inline comments and is not
+        // a CHANGES_REQUESTED review.
+        const hasCleanReviewOnHead = reviewNodes.some((review) => {
+          if (review.commit?.oid !== node.headRefOid) return false;
+          if (!isVibratorReview(review.body)) return false;
+          if (review.state === "CHANGES_REQUESTED") return false;
+          if ((review.comments?.totalCount ?? 0) !== 0) return false;
+          return review.state === "APPROVED" || review.state === "COMMENTED";
         });
-        // Translate GitHub's StatusState enum on the head commit's rollup
-        // into the simplified four-state field the orchestrator consumes.
-        // EXPECTED/PENDING → pending; FAILURE/ERROR → failure;
-        // SUCCESS → success; missing rollup (or only the head-commit
-        // node is missing it) → none. We only inspect the rollup on the
-        // last commit returned by the GraphQL query — which is the
-        // head commit — to avoid being misled by older commits whose
-        // checks have since been superseded.
+
+        const unresolvedReviewCommentCount =
+          node.reviewThreads?.nodes.filter((thread) => !thread.isResolved).length ?? 0;
+
         const headCommitNode = node.commits?.nodes[0]?.commit;
         const rollupState = (
           headCommitNode?.oid === node.headRefOid
@@ -532,13 +461,17 @@ export class GitHubClient {
         } else {
           checksStatus = "none";
         }
+        const headCommitPushedAt =
+          headCommitNode?.oid === node.headRefOid
+            ? (headCommitNode?.pushedDate ?? headCommitNode?.committedDate ?? undefined)
+            : undefined;
         result.set(node.number, {
           closingIssueNumbers: [...new Set(issueNumbers)].sort((left, right) => left - right),
-          // UNKNOWN means GitHub hasn't computed mergeability yet — treat conservatively as no conflict.
           hasMergeConflicts: node.mergeable === "CONFLICTING",
-          hasCleanCopilotReviewOnHead,
-          changedFiles: node.changedFiles,
+          hasCleanReviewOnHead,
+          unresolvedReviewCommentCount,
           checksStatus,
+          headCommitPushedAt,
         });
       }
 
@@ -546,6 +479,115 @@ export class GitHubClient {
     } while (after);
 
     return result;
+  }
+
+  /**
+   * Create a pull request. Returns the new PR number and head SHA.
+   */
+  async createPullRequest(input: {
+    title: string;
+    body: string;
+    head: string;
+    base: string;
+    draft?: boolean;
+  }): Promise<{ number: number; headSha: string }> {
+    const response = await this.request<{
+      number: number;
+      head: { sha: string };
+    }>(`/repos/${this.options.owner}/${this.options.repo}/pulls`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: input.title,
+        body: input.body,
+        head: input.head,
+        base: input.base,
+        draft: input.draft ?? false,
+      }),
+    });
+    return { number: response.number, headSha: response.head.sha };
+  }
+
+  /**
+   * Submit a pull-request review.
+   *
+   * - No inline comments → APPROVE (clean review).
+   * - Inline comments present → COMMENT with inline threads. COMMENT is used
+   *   instead of REQUEST_CHANGES because GitHub forbids REQUEST_CHANGES on
+   *   PRs authored by the same token, and COMMENT still creates proper
+   *   unresolved review threads that the orchestrator can pick up.
+   *
+   * Fallback: if the GitHub API rejects inline comments with 422 "Line could
+   * not be resolved" (the comment targets a line not in the diff), we retry
+   * as a body-only COMMENT with all inline comments folded into the review
+   * body so no feedback is lost.
+   */
+  async createPullRequestReview(input: {
+    pullRequestNumber: number;
+    commitId: string;
+    body: string;
+    inlineComments: ReadonlyArray<PullRequestInlineComment>;
+  }): Promise<void> {
+    const bodyWithMarker = `${VIBRATOR_REVIEW_MARKER}\n\n${input.body}`.trim();
+
+    const postReview = async (
+      event: "APPROVE" | "COMMENT",
+      reviewBody: string,
+      comments: ReadonlyArray<PullRequestInlineComment>,
+    ): Promise<void> => {
+      await this.request(
+        `/repos/${this.options.owner}/${this.options.repo}/pulls/${input.pullRequestNumber}/reviews`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            commit_id: input.commitId,
+            body: reviewBody,
+            event,
+            comments: comments.map((comment) => ({
+              path: comment.path,
+              line: comment.line,
+              side: "RIGHT",
+              body: comment.body,
+            })),
+          }),
+        },
+      );
+    };
+
+    // Clean review: no inline comments → APPROVE.
+    // Issues found: use COMMENT (not REQUEST_CHANGES) so the same token that
+    // opened the PR can post inline review threads without a 422 error.
+    const event = input.inlineComments.length === 0 ? "APPROVE" : "COMMENT";
+
+    try {
+      await postReview(event, bodyWithMarker, input.inlineComments);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // "Line could not be resolved" — inline comment targets a line not
+      // visible in the diff. Fold all comments into the review body so the
+      // feedback is still recorded even without proper threads.
+      if (
+        input.inlineComments.length > 0 &&
+        message.includes("422") &&
+        message.includes("Line could not be resolved")
+      ) {
+        console.warn(
+          `[vibrator] Review inline comments could not be resolved to diff lines on PR #${input.pullRequestNumber}. ` +
+          `Falling back to body-only COMMENT review with ${input.inlineComments.length} comment(s) in body.`,
+        );
+        const commentSection = input.inlineComments
+          .map((c) => `**\`${c.path}\`** (line ${c.line})\n${c.body}`)
+          .join("\n\n---\n\n");
+        await postReview(
+          "COMMENT",
+          `${bodyWithMarker}\n\n---\n\n### Inline comments\n\n${commentSection}`,
+          [],
+        );
+        return;
+      }
+      throw error;
+    }
   }
 
   async createIssueComment(issueNumber: number, body: string): Promise<{ id: number }> {
@@ -560,169 +602,8 @@ export class GitHubClient {
     return { id: response.id };
   }
 
-  async assignIssueToCopilot(issueNumber: number): Promise<void> {
-    const issueNodeId = await this.getIssueNodeId(issueNumber);
-    await this.replaceAssignableActorsWithCopilot(issueNodeId, `issue #${issueNumber}`);
-  }
-
-  /**
-   * Unassign Copilot from an issue by replacing the assignee set with an
-   * empty list. Used to "kick" the Copilot coding agent into picking up the
-   * job after a prior assignment failed to result in any acknowledgment.
-   * Note: this also clears any other assignees on the issue — vibrator's
-   * normal flow keeps Copilot as the sole assignee, so this matches the
-   * existing `assignIssueToCopilot` semantics.
-   */
-  async unassignIssueFromCopilot(issueNumber: number): Promise<void> {
-    const issueNodeId = await this.getIssueNodeId(issueNumber);
-    await this.clearAssignableActors(issueNodeId);
-  }
-
-  /**
-   * Assign Copilot as the sole assignee on a pull request. Used as part of
-   * the unassign + re-assign retry path when a prior @copilot prompt comment
-   * on the PR was never acknowledged.
-   */
-  async assignPullRequestToCopilot(pullRequestNumber: number): Promise<void> {
-    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
-    await this.replaceAssignableActorsWithCopilot(
-      pullRequestNodeId,
-      `pull request #${pullRequestNumber}`,
-    );
-  }
-
-  /**
-   * Unassign Copilot from a pull request by replacing the assignee set with
-   * an empty list. Companion to `assignPullRequestToCopilot` for the
-   * unassign + re-assign retry path.
-   */
-  async unassignPullRequestFromCopilot(pullRequestNumber: number): Promise<void> {
-    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
-    await this.clearAssignableActors(pullRequestNodeId);
-  }
-
-  private async replaceAssignableActorsWithCopilot(
-    assignableNodeId: string,
-    label: string,
-  ): Promise<void> {
-    const copilotBotId = await this.getCopilotAssigneeId();
-    if (!copilotBotId) {
-      throw new Error(
-        `Cannot assign ${label} to Copilot: the Copilot coding agent is not available as an assignee on ${this.options.owner}/${this.options.repo}. Enable the Copilot coding agent for this repository and ensure your GITHUB_TOKEN has access.`,
-      );
-    }
-
-    const data = await this.graphqlRequest<{
-      replaceActorsForAssignable: {
-        assignable: {
-          assignees: { nodes: Array<{ login: string }> };
-        } | null;
-      };
-    }>(
-      `
-        mutation AssignCopilot($assignableId: ID!, $actorIds: [ID!]!) {
-          replaceActorsForAssignable(input: { assignableId: $assignableId, actorIds: $actorIds }) {
-            assignable {
-              ... on Issue {
-                assignees(first: 20) {
-                  nodes { login }
-                }
-              }
-              ... on PullRequest {
-                assignees(first: 20) {
-                  nodes { login }
-                }
-              }
-            }
-          }
-        }
-      `,
-      { assignableId: assignableNodeId, actorIds: [copilotBotId] },
-    );
-
-    const assignedLogins = data.replaceActorsForAssignable.assignable?.assignees.nodes.map(
-      (node) => node.login.toLowerCase(),
-    ) ?? [];
-    if (!assignedLogins.some((login) => login === "copilot" || login === "copilot-swe-agent")) {
-      throw new Error(
-        `Assigning ${label} to Copilot did not take effect (final assignees: ${assignedLogins.join(", ") || "none"}).`,
-      );
-    }
-  }
-
-  private async clearAssignableActors(assignableNodeId: string): Promise<void> {
-    await this.graphqlRequest(
-      `
-        mutation ClearAssignees($assignableId: ID!) {
-          replaceActorsForAssignable(input: { assignableId: $assignableId, actorIds: [] }) {
-            clientMutationId
-          }
-        }
-      `,
-      { assignableId: assignableNodeId },
-    );
-  }
-
-  private cachedCopilotAssigneeId: string | null | undefined;
-
-  private async getCopilotAssigneeId(): Promise<string | null> {
-    if (this.cachedCopilotAssigneeId !== undefined) {
-      return this.cachedCopilotAssigneeId;
-    }
-
-    const data = await this.graphqlRequest<{
-      repository: {
-        suggestedActors: {
-          nodes: Array<{ __typename: string; id: string; login: string }>;
-        };
-      } | null;
-    }>(
-      `
-        query SuggestedAssignees($owner: String!, $repo: String!) {
-          repository(owner: $owner, name: $repo) {
-            suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
-              nodes {
-                __typename
-                ... on Bot { id login }
-                ... on User { id login }
-                ... on Organization { id login }
-                ... on Mannequin { id login }
-              }
-            }
-          }
-        }
-      `,
-      { owner: this.options.owner, repo: this.options.repo },
-    );
-
-    const nodes = data.repository?.suggestedActors.nodes ?? [];
-    const copilotNode = nodes.find((node) => {
-      const login = node.login?.toLowerCase();
-      return login === "copilot" || login === "copilot-swe-agent";
-    });
-    this.cachedCopilotAssigneeId = copilotNode?.id ?? null;
-    return this.cachedCopilotAssigneeId;
-  }
-
-  private async getIssueNodeId(issueNumber: number): Promise<string> {
-    const data = await this.graphqlRequest<{
-      repository: { issue: { id: string } | null } | null;
-    }>(
-      `
-        query IssueNodeId($owner: String!, $repo: String!, $issueNumber: Int!) {
-          repository(owner: $owner, name: $repo) {
-            issue(number: $issueNumber) { id }
-          }
-        }
-      `,
-      { owner: this.options.owner, repo: this.options.repo, issueNumber },
-    );
-
-    const id = data.repository?.issue?.id;
-    if (!id) {
-      throw new Error(`Could not resolve node id for issue #${issueNumber}.`);
-    }
-    return id;
+  async postComment(pullRequestNumber: number, body: string): Promise<void> {
+    await this.createIssueComment(pullRequestNumber, body);
   }
 
   async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {
@@ -742,39 +623,14 @@ export class GitHubClient {
   }
 
   /**
-   * Closes a pull request without merging it. Used by the orchestrator to
-   * abandon a draft PR that Copilot opened but never managed to add any
-   * file changes to (typically because its cloud-agent run aborted before
-   * implementation began — most commonly a rate-limit exhaustion). After
-   * closing, the linked issue is re-assigned to Copilot to trigger a
-   * fresh attempt with a clean branch.
-   */
-  async closePullRequest(pullRequestNumber: number): Promise<void> {
-    await this.request(
-      `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: "closed" }),
-      },
-    );
-  }
-
-  /**
-   * Squash-merges a pull request using `gh pr merge --squash`, passing the
-   * provided subject and body as the commit message. We shell out to the
-   * `gh` CLI here (rather than using the REST merge endpoint) so the squashed
-   * commit's title and message body are exactly what the orchestrator
-   * generated for the final pull-request description.
+   * Squash-merges a pull request using `gh pr merge --squash`, passing
+   * the provided subject and body as the commit message.
    */
   async squashMergePullRequest(
     pullRequestNumber: number,
     subject: string,
     body: string,
   ): Promise<void> {
-    // Mark the PR ready for review first; draft PRs cannot be merged and
-    // `gh pr merge` returns a "Pull Request is still a draft" GraphQL error
-    // in that case. `gh pr ready` is a no-op on non-draft PRs.
     await runShellCommand("gh", [
       "pr",
       "ready",
@@ -816,14 +672,8 @@ export class GitHubClient {
       html_url: string | null;
     }
 
-    // Statuses that indicate a workflow run is awaiting approval. GitHub uses
-    // `action_required` for first-time-contributor approval and `waiting` for
-    // environment / deployment protection rule approvals.
     const PENDING_STATUSES = new Set(["action_required", "waiting"]);
 
-    // Fetch recent runs without a status filter and inspect each — the
-    // `?status=action_required` query filter has been observed to omit runs
-    // that the UI shows as "Action required", so we filter client-side.
     let response: { workflow_runs?: WorkflowRunResponse[] };
     try {
       response = await this.request<{ workflow_runs?: WorkflowRunResponse[] }>(
@@ -848,9 +698,6 @@ export class GitHubClient {
     for (const run of response.workflow_runs ?? []) {
       const actualStatus = run.status ?? "";
       const actualConclusion = run.conclusion ?? "";
-      // A run is awaiting approval if either its status indicates pending
-      // approval, or it's a completed run with conclusion=action_required
-      // (e.g. previously-run workflows needing re-approval).
       const isPending =
         PENDING_STATUSES.has(actualStatus) || actualConclusion === "action_required";
       if (!isPending) {
@@ -881,8 +728,6 @@ export class GitHubClient {
       return { approved: true };
     } catch (error) {
       const statusCode = (error as NodeJS.ErrnoException & { statusCode?: number }).statusCode;
-      // 403 is expected for same-repo branches — the /approve endpoint only works
-      // for fork PRs from first-time external contributors.
       if (statusCode === 403) {
         return {
           approved: false,
@@ -894,82 +739,192 @@ export class GitHubClient {
   }
 
   /**
-   * Toggle a pull request from "Ready for review" → draft → "Ready for review"
-   * to reset GitHub Copilot's pull-request review state. Copilot occasionally
-   * fails a review with "Copilot wasn't able to review any files in this
-   * pull request." (timeout, large diff, transient service issue). GitHub's
-   * documented recovery is to convert the PR to draft and back, which clears
-   * Copilot's cached state and lets a fresh review run. Used by the
-   * orchestrator before re-requesting a Copilot review after a failed
-   * attempt. No-op behaviour on draft PRs: still toggles via draft → ready.
+   * Return the unresolved review comments on a pull request, in order.
+   * Each entry includes the comment body, file path, line number (or
+   * null when the comment isn't attached to a specific line), and the
+   * author login. Used to seed the prompt sent to Claude when asked to
+   * address review comments.
    */
-  async resetPullRequestForCopilotReview(pullRequestNumber: number): Promise<void> {
-    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
-    await this.graphqlRequest(
-      `
-        mutation ConvertPullRequestToDraft($pullRequestId: ID!) {
-          convertPullRequestToDraft(input: { pullRequestId: $pullRequestId }) {
-            clientMutationId
-          }
-        }
-      `,
-      { pullRequestId: pullRequestNodeId },
-    );
-    await this.graphqlRequest(
-      `
-        mutation MarkPullRequestReadyForReview($pullRequestId: ID!) {
-          markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
-            clientMutationId
-          }
-        }
-      `,
-      { pullRequestId: pullRequestNodeId },
-    );
-  }
-
-  async requestCopilotReview(pullRequestNumber: number): Promise<void> {
-    const pullRequestNodeId = await this.getPullRequestNodeId(pullRequestNumber);
-
-    // Use the github.com-only `requestReviewsByLogin` GraphQL mutation to
-    // register a formal pull-request review request from the Copilot code
-    // review bot. The bot login requires the `[bot]` suffix on this mutation.
-    // `union: true` ensures any existing reviewers are preserved.
-    await this.graphqlRequest(
-      `
-        mutation RequestCopilotReview($pullRequestId: ID!, $botLogins: [String!]!) {
-          requestReviewsByLogin(
-            input: { pullRequestId: $pullRequestId, botLogins: $botLogins, union: true }
-          ) {
-            clientMutationId
-          }
-        }
-      `,
-      {
-        pullRequestId: pullRequestNodeId,
-        botLogins: ["copilot-pull-request-reviewer[bot]"],
-      },
-    );
-  }
-
-  private async getPullRequestNodeId(pullRequestNumber: number): Promise<string> {
-    const data = await this.graphqlRequest<{
-      repository: { pullRequest: { id: string } | null } | null;
-    }>(
-      `
-        query PullRequestNodeId($owner: String!, $repo: String!, $pullRequestNumber: Int!) {
-          repository(owner: $owner, name: $repo) {
-            pullRequest(number: $pullRequestNumber) { id }
-          }
-        }
-      `,
-      { owner: this.options.owner, repo: this.options.repo, pullRequestNumber },
-    );
-
-    const id = data.repository?.pullRequest?.id;
-    if (!id) {
-      throw new Error(`Could not resolve node id for pull request #${pullRequestNumber}.`);
+  async listUnresolvedReviewComments(pullRequestNumber: number): Promise<
+    Array<{ path: string; line: number | null; body: string; author: string }>
+  > {
+    interface ThreadComment {
+      databaseId: number;
+      path: string;
+      line: number | null;
+      body: string;
+      author: { login: string } | null;
     }
-    return id;
+    interface ThreadNode {
+      isResolved: boolean;
+      comments: { nodes: ThreadComment[] };
+    }
+    interface QueryResult {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            nodes: ThreadNode[];
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
+        } | null;
+      } | null;
+    }
+    const results: Array<{
+      path: string;
+      line: number | null;
+      body: string;
+      author: string;
+    }> = [];
+    let after: string | null = null;
+    do {
+      const data: QueryResult = await this.graphqlRequest<QueryResult>(
+        `
+          query UnresolvedReviewComments($owner: String!, $repo: String!, $pullRequestNumber: Int!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $pullRequestNumber) {
+                reviewThreads(first: 50, after: $after) {
+                  nodes {
+                    isResolved
+                    comments(first: 50) {
+                      nodes {
+                        databaseId
+                        path
+                        line
+                        body
+                        author { login }
+                      }
+                    }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          }
+        `,
+        {
+          owner: this.options.owner,
+          repo: this.options.repo,
+          pullRequestNumber,
+          after,
+        },
+      );
+      const threads = data.repository?.pullRequest?.reviewThreads;
+      if (!threads) break;
+      for (const thread of threads.nodes) {
+        if (thread.isResolved) continue;
+        for (const comment of thread.comments.nodes) {
+          results.push({
+            path: comment.path,
+            line: comment.line,
+            body: comment.body,
+            author: comment.author?.login ?? "unknown",
+          });
+        }
+      }
+      after = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
+    } while (after);
+    return results;
+  }
+
+  /**
+   * Return failing check runs for the head SHA of a pull request, with a
+   * short log excerpt for each. Used to seed the prompt for the
+   * `address-failing-checks` action.
+   */
+  async listFailingCheckRuns(input: {
+    pullRequestNumber: number;
+    headSha: string;
+  }): Promise<Array<{ name: string; logExcerpt: string }>> {
+    interface CheckRun {
+      id: number;
+      name: string;
+      conclusion: string | null;
+      status: string | null;
+      output?: { title?: string | null; summary?: string | null; text?: string | null } | null;
+    }
+    let response: { check_runs?: CheckRun[] };
+    try {
+      response = await this.request<{ check_runs?: CheckRun[] }>(
+        `/repos/${this.options.owner}/${this.options.repo}/commits/${input.headSha}/check-runs?per_page=100`,
+      );
+    } catch (error) {
+      const statusCode = (error as Error & { statusCode?: number }).statusCode;
+      // Token may lack check-runs access (403) or the ref may not exist (404).
+      // Return an empty list so Claude investigates with `gh pr checks` itself.
+      if (statusCode === 403 || statusCode === 404) {
+        return [];
+      }
+      throw error;
+    }
+    const allRuns = response.check_runs ?? [];
+    const failing = allRuns.filter(
+      (run) =>
+        run.conclusion === "failure" ||
+        run.conclusion === "timed_out" ||
+        // Include still-running/queued jobs so Claude knows they were cancelled
+        // and can re-trigger them if needed.
+        run.status === "in_progress" ||
+        run.status === "queued" ||
+        run.status === "waiting",
+    );
+    return failing.map((run) => {
+      const summary = run.output?.summary ?? "";
+      const text = run.output?.text ?? "";
+      const combined = [summary, text].filter(Boolean).join("\n\n");
+      const excerpt = combined.length > 4000 ? combined.slice(0, 4000) + "\n…(truncated)" : combined;
+      const statusNote =
+        run.conclusion === null
+          ? `(status: ${run.status ?? "unknown"} — run was cancelled before completing)`
+          : "";
+      return { name: run.name, logExcerpt: [statusNote, excerpt].filter(Boolean).join("\n") || "(no log excerpt available)" };
+    });
+  }
+
+  /**
+   * Cancel any workflow runs that are still in progress (status:
+   * in_progress, queued, or waiting) for the given commit SHA. This is
+   * called before Claude tries to address failing/timed-out checks so that
+   * the run is definitively finished before new fixes are pushed.
+   *
+   * Returns the number of runs that were cancelled.
+   */
+  async cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number> {
+    interface WorkflowRunListResponse {
+      total_count: number;
+      workflow_runs: Array<{ id: number; status: string | null; head_sha: string }>;
+    }
+
+    let response: WorkflowRunListResponse;
+    try {
+      response = await this.request<WorkflowRunListResponse>(
+        `/repos/${this.options.owner}/${this.options.repo}/actions/runs?head_sha=${encodeURIComponent(headSha)}&per_page=100`,
+      );
+    } catch (error) {
+      const statusCode = (error as Error & { statusCode?: number }).statusCode;
+      if (statusCode === 403 || statusCode === 404) {
+        return 0;
+      }
+      throw error;
+    }
+
+    const inProgressStatuses = new Set(["in_progress", "queued", "waiting", "requested", "pending"]);
+    const toCancel = (response.workflow_runs ?? []).filter(
+      (run) => run.status !== null && inProgressStatuses.has(run.status),
+    );
+
+    let cancelled = 0;
+    for (const run of toCancel) {
+      try {
+        await this.request<void>(
+          `/repos/${this.options.owner}/${this.options.repo}/actions/runs/${run.id}/cancel`,
+          { method: "POST" },
+        );
+        cancelled++;
+      } catch {
+        // Best-effort: ignore errors (run may have just completed).
+      }
+    }
+    return cancelled;
   }
 
   async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
@@ -982,9 +937,7 @@ export class GitHubClient {
         `
           mutation ResolveReviewThread($threadId: ID!) {
             resolveReviewThread(input: { threadId: $threadId }) {
-              thread {
-                id
-              }
+              thread { id }
             }
           }
         `,
@@ -1001,6 +954,7 @@ export class GitHubClient {
       authorLogin?: string;
       state?: string;
       body?: string | null;
+      commitId?: string | null;
     }>
   > {
     const reviews = await this.getAllPages<GitHubPullRequestReviewResponse>(
@@ -1016,6 +970,7 @@ export class GitHubClient {
           authorLogin?: string;
           state?: string;
           body?: string | null;
+          commitId?: string | null;
         } = { submittedAt: review.submitted_at };
         if (review.user?.login !== undefined) {
           result.authorLogin = review.user.login;
@@ -1024,331 +979,15 @@ export class GitHubClient {
           result.state = review.state;
         }
         result.body = review.body;
+        result.commitId = review.commit_id;
         return result;
       });
   }
 
   async countUnresolvedPullRequestReviewThreads(pullRequestNumber: number): Promise<number> {
     return (
-      await this.listUnresolvedPullRequestReviewThreadIds(
-        pullRequestNumber,
-      )
+      await this.listUnresolvedPullRequestReviewThreadIds(pullRequestNumber)
     ).length;
-  }
-
-  /**
-   * Returns timestamps of "Copilot finished work" timeline events on a
-   * pull request. These events are emitted by the Copilot coding agent
-   * each time it ends a session (whether it pushed commits or only
-   * replied with a comment such as "no change needed"). The orchestrator
-   * uses this signal to detect when an address-review-comments session is
-   * effectively complete even though no new commits were pushed.
-   *
-   * The GitHub REST timeline endpoint returns events with an `event`
-   * string field; the exact name for Copilot's session events may vary
-   * over time, so this matches any event whose name contains both
-   * "copilot" and a completion verb (finish/complete/end).
-   */
-  /**
-   * Returns timestamps of "Copilot started/queued/picked up work" timeline
-   * events on a pull request or issue. These events are emitted by the
-   * Copilot coding agent each time it picks up a job (whether triggered by
-   * an issue assignment, an @copilot prompt comment on a PR, or a review
-   * request). The reconciler uses this signal — together with "finished
-   * work" events and prompt-comment reactions — to detect when Copilot has
-   * acknowledged a request the orchestrator made.
-   *
-   * The exact event name is not stable; this matches any event whose name
-   * contains "copilot" and a start verb (start/begin/pick/queue/dispatch).
-   */
-  async listCopilotStartedWorkEvents(
-    issueOrPullRequestNumber: number,
-  ): Promise<Array<{ createdAt: string }>> {
-    interface TimelineEvent {
-      event?: string;
-      created_at?: string;
-    }
-    const events = await this.getAllPages<TimelineEvent>(
-      `/repos/${this.options.owner}/${this.options.repo}/issues/${issueOrPullRequestNumber}/timeline`,
-    );
-    return events
-      .filter((event): event is TimelineEvent & { created_at: string } => {
-        if (!event.created_at) return false;
-        const name = (event.event ?? "").toLowerCase();
-        if (!name.includes("copilot")) return false;
-        return (
-          name.includes("start") ||
-          name.includes("begin") ||
-          name.includes("pick") ||
-          name.includes("queue") ||
-          name.includes("dispatch")
-        );
-      })
-      .map((event) => ({ createdAt: event.created_at }));
-  }
-
-  /**
-   * Returns the list of reactions on a specific issue/PR comment. Used by
-   * the reconciler to detect Copilot's "eyes" reaction acknowledging an
-   * @copilot prompt comment.
-   */
-  async listIssueCommentReactions(
-    commentId: number,
-  ): Promise<Array<{ userLogin: string; content: string }>> {
-    interface ReactionResponse {
-      user: { login: string } | null;
-      content: string;
-    }
-    const reactions = await this.getAllPages<ReactionResponse>(
-      `/repos/${this.options.owner}/${this.options.repo}/issues/comments/${commentId}/reactions`,
-    );
-    return reactions
-      .filter((reaction): reaction is ReactionResponse & { user: { login: string } } =>
-        reaction.user !== null,
-      )
-      .map((reaction) => ({ userLogin: reaction.user.login, content: reaction.content }));
-  }
-
-  async listCopilotFinishedWorkEvents(
-    pullRequestNumber: number,
-  ): Promise<Array<{ createdAt: string }>> {
-    interface TimelineEvent {
-      event?: string;
-      created_at?: string;
-      actor?: { login?: string } | null;
-      performed_via_github_app?: { slug?: string } | null;
-    }
-    const events = await this.getAllPages<TimelineEvent>(
-      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/timeline`,
-    );
-    return events
-      .filter((event): event is TimelineEvent & { created_at: string } => {
-        if (!event.created_at) return false;
-        const name = (event.event ?? "").toLowerCase();
-        return (
-          name.includes("copilot") &&
-          (name.includes("finish") || name.includes("complete") || name.includes("end"))
-        );
-      })
-      .map((event) => ({ createdAt: event.created_at }));
-  }
-
-  /**
-   * Returns the subset of Copilot "finished work" timeline events that
-   * indicate a *failure* (e.g. `copilot_work_finished_failure`). Used by
-   * the reconciler to distinguish a clean Copilot turn (where the agent
-   * acknowledged the summon, ran, and finished) from a turn that aborted
-   * — most commonly because the user's premium-request quota was
-   * exhausted. The plain `listCopilotFinishedWorkEvents` method continues
-   * to return *all* finish events (success and failure both) so the
-   * acknowledgment-signal check remains a superset.
-   */
-  async listCopilotFailedFinishEvents(
-    pullRequestNumber: number,
-  ): Promise<Array<{ createdAt: string }>> {
-    interface TimelineEvent {
-      event?: string;
-      created_at?: string;
-    }
-    const events = await this.getAllPages<TimelineEvent>(
-      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/timeline`,
-    );
-    return events
-      .filter((event): event is TimelineEvent & { created_at: string } => {
-        if (!event.created_at) return false;
-        const name = (event.event ?? "").toLowerCase();
-        if (!name.includes("copilot")) return false;
-        // Match `copilot_work_finished_failure` and anything similar that
-        // GitHub introduces — any copilot event whose name carries both a
-        // "finish/complete/end" token and a "fail/error/abort/cancel" token.
-        const finishedToken =
-          name.includes("finish") || name.includes("complete") || name.includes("end");
-        const failureToken =
-          name.includes("fail") ||
-          name.includes("error") ||
-          name.includes("abort") ||
-          name.includes("cancel");
-        return finishedToken && failureToken;
-      })
-      .map((event) => ({ createdAt: event.created_at }));
-  }
-
-  /**
-   * Returns recent "Copilot stopped work due to an error" timeline events
-   * on a pull request, including any message body the event carries.
-   * The Copilot coding agent posts these when it aborts a session for
-   * any reason (rate-limit exhaustion, internal error, etc.). vibrator
-   * inspects the message body to detect rate-limit exhaustion and
-   * temporarily pauses dispatching new work.
-   *
-   * The exact event name is not part of GitHub's public REST spec and
-   * has changed over time; we therefore match any "copilot" event whose
-   * name suggests an abort (stop/error/fail/abort/cancel). We also
-   * surface every plausible text field on the event payload so the
-   * caller can run rate-limit detection across whichever field GitHub
-   * is using today.
-   */
-  async listCopilotStoppedWorkEvents(
-    pullRequestNumber: number,
-  ): Promise<Array<{ createdAt: string; message: string }>> {
-    // The Copilot agent's stopped-work timeline event isn't part of
-    // GitHub's typed REST schema; the message body can land on any of
-    // several string fields (`message`, `body`, nested `error.message`,
-    // etc.). Read pragmatically with an index signature.
-    interface TimelineEvent {
-      event?: string;
-      created_at?: string;
-      [key: string]: unknown;
-    }
-    const events = await this.getAllPages<TimelineEvent>(
-      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/timeline`,
-    );
-    return events
-      .filter((event): event is TimelineEvent & { created_at: string } => {
-        if (!event.created_at) return false;
-        const name = (event.event ?? "").toLowerCase();
-        if (!name.includes("copilot")) return false;
-        return (
-          name.includes("stop") ||
-          name.includes("error") ||
-          name.includes("fail") ||
-          name.includes("abort") ||
-          name.includes("cancel")
-        );
-      })
-      .map((event) => ({
-        createdAt: event.created_at,
-        message: extractEventMessage(event),
-      }));
-  }
-
-  /**
-   * Fetches plain-text log content from recent failed Copilot cloud-agent
-   * workflow runs on the given head branch. The Copilot coding agent's
-   * `copilot_work_finished_failure` timeline event does NOT carry the
-   * human-visible error body (e.g. "You've hit your rate limit. Please
-   * wait for your limit to reset in N minutes…"); that text only appears
-   * in the workflow run logs. Returning the raw log text lets the
-   * rate-limit detector apply its existing pattern match.
-   *
-   * Filters by `head_branch` (typically `pullRequest.headRefName`) and
-   * `conclusion === "failure"`. Caller can further constrain by
-   * `sinceIso` (ISO-8601) — runs created strictly before that timestamp
-   * are skipped. Best-effort: returns `[]` on 404 / permission errors,
-   * and silently skips runs whose logs cannot be retrieved.
-   */
-  async listRecentCopilotAgentFailureLogs(
-    headBranch: string,
-    sinceIso?: string,
-  ): Promise<
-    Array<{
-      runId: number;
-      runName: string;
-      createdAt: string;
-      finishedAt: string;
-      logText: string;
-    }>
-  > {
-    interface WorkflowRunResponse {
-      id: number;
-      name: string | null;
-      head_branch: string | null;
-      created_at: string;
-      updated_at: string | null;
-      status: string | null;
-      conclusion: string | null;
-    }
-    interface WorkflowJobResponse {
-      id: number;
-      name: string | null;
-      conclusion: string | null;
-    }
-
-    const sinceMs = sinceIso ? Date.parse(sinceIso) : 0;
-
-    // The Copilot cloud-agent runs are dispatched events. Pull recent
-    // failed runs on this branch; GitHub does not expose a single-branch
-    // filter for failed conclusions, so filter client-side.
-    let response: { workflow_runs?: WorkflowRunResponse[] };
-    try {
-      // `event=dynamic` matches Copilot's dispatched agent runs.
-      const encodedBranch = encodeURIComponent(headBranch);
-      response = await this.request<{ workflow_runs?: WorkflowRunResponse[] }>(
-        `/repos/${this.options.owner}/${this.options.repo}/actions/runs` +
-          `?branch=${encodedBranch}&per_page=20`,
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
-        return [];
-      }
-      throw error;
-    }
-
-    const failedRuns = (response.workflow_runs ?? []).filter((run) => {
-      if (run.conclusion !== "failure") return false;
-      if (run.head_branch !== headBranch) return false;
-      if (sinceMs > 0 && Date.parse(run.created_at) < sinceMs) return false;
-      // Only Copilot-agent runs are interesting. GitHub names them
-      // "Running Copilot cloud agent" or "Addressing comment on PR #N".
-      const name = (run.name ?? "").toLowerCase();
-      return name.includes("copilot") || name.includes("addressing comment");
-    });
-
-    const results: Array<{
-      runId: number;
-      runName: string;
-      createdAt: string;
-      finishedAt: string;
-      logText: string;
-    }> = [];
-
-    for (const run of failedRuns) {
-      let jobs: { jobs?: WorkflowJobResponse[] };
-      try {
-        jobs = await this.request<{ jobs?: WorkflowJobResponse[] }>(
-          `/repos/${this.options.owner}/${this.options.repo}/actions/runs/${run.id}/jobs`,
-        );
-      } catch {
-        continue;
-      }
-      // Concatenate logs from every failed job in the run.
-      const failedJobs = (jobs.jobs ?? []).filter((job) => job.conclusion === "failure");
-      let combinedLog = "";
-      for (const job of failedJobs) {
-        try {
-          const logResponse = await fetch(
-            `${this.apiBaseUrl}/repos/${this.options.owner}/${this.options.repo}/actions/jobs/${job.id}/logs`,
-            {
-              headers: {
-                Accept: "application/vnd.github+json",
-                Authorization: `Bearer ${this.options.token}`,
-                "User-Agent": "vibrator",
-              },
-            },
-          );
-          if (!logResponse.ok) continue;
-          combinedLog += "\n" + (await logResponse.text());
-        } catch {
-          // Best-effort — skip jobs whose logs we cannot fetch.
-        }
-      }
-      if (combinedLog.length === 0) continue;
-      results.push({
-        runId: run.id,
-        runName: run.name ?? "",
-        createdAt: run.created_at,
-        // For a completed workflow run, `updated_at` is when GitHub last
-        // wrote to the run — effectively when it finished. The agent's
-        // rate-limit message ("wait N minutes") is emitted near the end
-        // of the run, so anchoring the reset-window calculation here is
-        // far more accurate than `created_at` (which can be many minutes
-        // earlier).
-        finishedAt: run.updated_at ?? run.created_at,
-        logText: combinedLog,
-      });
-    }
-
-    return results;
   }
 
   private async listUnresolvedPullRequestReviewThreadIds(
@@ -1364,14 +1003,8 @@ export class GitHubClient {
             repository(owner: $owner, name: $repo) {
               pullRequest(number: $pullRequestNumber) {
                 reviewThreads(first: 100, after: $after) {
-                  nodes {
-                    id
-                    isResolved
-                  }
-                  pageInfo {
-                    hasNextPage
-                    endCursor
-                  }
+                  nodes { id isResolved }
+                  pageInfo { hasNextPage endCursor }
                 }
               }
             }

@@ -3,24 +3,26 @@ import assert from "node:assert/strict";
 
 import { executeAction } from "../src/actions.js";
 import type {
+  ActionClaudeAgentClient,
   ActionGitHubClient,
-  ActionLocalCopilotChatClient,
   ActionSessionStore,
   ExecuteActionContext,
 } from "../src/actions.js";
-import type { AgentSessionPhase, OrchestratorAction } from "../src/types.js";
+import type {
+  AgentSessionPhase,
+  AgentSessionResult,
+  AgentSessionStatus,
+  Issue,
+  OrchestratorAction,
+  PullRequest,
+} from "../src/types.js";
 
 type SessionInput = {
-  issueNumber: number | undefined;
+  issueNumber?: number | undefined;
   pullRequestNumber?: number;
   phase: AgentSessionPhase;
-  status?: "queued" | "in_progress" | "completed" | "failed";
-  result?: {
-    pullRequestBody?: string;
-    pullRequestHeadSha?: string;
-    generatedDescription?: string;
-    promptCommentId?: number;
-  };
+  status?: AgentSessionStatus;
+  result?: AgentSessionResult;
 };
 
 interface Harness {
@@ -28,355 +30,420 @@ interface Harness {
   sessions: SessionInput[];
   gitHubClient: ActionGitHubClient;
   sessionStore: ActionSessionStore;
-  localCopilotChatClient: ActionLocalCopilotChatClient;
+  claudeAgentClient: ActionClaudeAgentClient;
   context: ExecuteActionContext;
 }
 
-function createHarness(overrides: { generatedDescription?: string } = {}): Harness {
+function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
+  return {
+    number: overrides.number,
+    title: overrides.title ?? `Issue ${overrides.number}`,
+    body: overrides.body ?? "",
+    state: overrides.state ?? "open",
+    createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
+    updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
+    type: overrides.type ?? null,
+  };
+}
+
+function createPullRequest(
+  overrides: Partial<PullRequest> & Pick<PullRequest, "number" | "linkedIssueNumbers">,
+): PullRequest {
+  return {
+    number: overrides.number,
+    title: overrides.title ?? `PR ${overrides.number}`,
+    body: overrides.body ?? "",
+    headSha: overrides.headSha ?? `sha-${overrides.number}`,
+    headRefName: overrides.headRefName ?? `branch-${overrides.number}`,
+    baseRefName: overrides.baseRefName ?? "main",
+    state: overrides.state ?? "open",
+    draft: overrides.draft ?? false,
+    hasMergeConflicts: overrides.hasMergeConflicts ?? false,
+    hasCleanReviewOnHead: overrides.hasCleanReviewOnHead ?? false,
+    unresolvedReviewCommentCount: overrides.unresolvedReviewCommentCount ?? 0,
+    checksStatus: overrides.checksStatus ?? "success",
+    headCommitPushedAt: overrides.headCommitPushedAt,
+    createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
+    updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
+    linkedIssueNumbers: overrides.linkedIssueNumbers,
+    closingIssueNumbers: overrides.closingIssueNumbers ?? overrides.linkedIssueNumbers,
+  };
+}
+
+function createHarness(input: {
+  issues?: Issue[];
+  pullRequests?: PullRequest[];
+  selfReviewMadeChanges?: boolean;
+  selfReviewHeadSha?: string;
+  generatedDescription?: string;
+  implementation?: {
+    branch: string;
+    pullRequestTitle: string;
+    pullRequestBody: string;
+    headSha: string;
+  };
+  failingCheckRuns?: Array<{ name: string; logExcerpt: string }>;
+  newPullRequest?: { number: number; headSha: string };
+}): Harness {
   const calls: string[] = [];
   const sessions: SessionInput[] = [];
+  const newPullRequest = input.newPullRequest ?? { number: 999, headSha: "sha-new" };
+
   const gitHubClient: ActionGitHubClient = {
-    async createIssueComment(issueNumber: number, body: string): Promise<{ id: number }> {
-      calls.push(`comment:${issueNumber}:${body}`);
-      return { id: 1000 + issueNumber };
+    async getDefaultBranch(): Promise<string> {
+      calls.push("get-default-branch");
+      return "main";
     },
-    async assignIssueToCopilot(issueNumber: number): Promise<void> {
-      calls.push(`assign:${issueNumber}`);
+    async createPullRequest(args): Promise<{ number: number; headSha: string }> {
+      calls.push(
+        `create-pr:${args.head}->${args.base}:${args.title}:${args.body.replace(/\n/g, "\\n")}`,
+      );
+      return newPullRequest;
     },
-    async unassignIssueFromCopilot(issueNumber: number): Promise<void> {
-      calls.push(`unassign-issue:${issueNumber}`);
-    },
-    async assignPullRequestToCopilot(pullRequestNumber: number): Promise<void> {
-      calls.push(`assign-pr:${pullRequestNumber}`);
-    },
-    async unassignPullRequestFromCopilot(pullRequestNumber: number): Promise<void> {
-      calls.push(`unassign-pr:${pullRequestNumber}`);
-    },
-    async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {
+    async updatePullRequestBody(pullRequestNumber, body): Promise<void> {
       calls.push(`update-body:${pullRequestNumber}:${body}`);
     },
-    async mergePullRequest(pullRequestNumber: number): Promise<void> {
-      calls.push(`merge:${pullRequestNumber}`);
-    },
-    async squashMergePullRequest(
-      pullRequestNumber: number,
-      subject: string,
-      body: string,
-    ): Promise<void> {
+    async squashMergePullRequest(pullRequestNumber, subject, body): Promise<void> {
       calls.push(`squash-merge:${pullRequestNumber}:${subject}:${body}`);
     },
-    async resolvePullRequestReviewThreads(pullRequestNumber: number): Promise<void> {
-      calls.push(`resolve:${pullRequestNumber}`);
+    async listFailingCheckRuns(args) {
+      calls.push(`list-failing:${args.pullRequestNumber}:${args.headSha}`);
+      return input.failingCheckRuns ?? [];
     },
-    async requestCopilotReview(pullRequestNumber: number): Promise<void> {
-      calls.push(`request-review:${pullRequestNumber}`);
+    async cancelInProgressWorkflowRunsForHeadSha(headSha) {
+      calls.push(`cancel-in-progress:${headSha}`);
+      return 0;
     },
-    async resetPullRequestForCopilotReview(pullRequestNumber: number): Promise<void> {
-      calls.push(`reset-pr:${pullRequestNumber}`);
-    },
-    async closePullRequest(pullRequestNumber: number): Promise<void> {
-      calls.push(`close-pr:${pullRequestNumber}`);
+    async postComment(pullRequestNumber, body) {
+      calls.push(`post-comment:${pullRequestNumber}:${body}`);
     },
   };
+
   const sessionStore: ActionSessionStore = {
-    async createSession(input: SessionInput): Promise<unknown> {
-      sessions.push(input);
-      return input;
+    async createSession(session: SessionInput): Promise<unknown> {
+      sessions.push(session);
+      return session;
     },
   };
-  const generatedDescription = overrides.generatedDescription ?? "Generated description";
-  const localCopilotChatClient: ActionLocalCopilotChatClient = {
-    async generateFinalDescription(params): Promise<string> {
-      calls.push(`generate:${params.pullRequestNumber}`);
-      return generatedDescription;
+
+  const claudeAgentClient: ActionClaudeAgentClient = {
+    async implementIssue(params) {
+      calls.push(`implement:${params.issueNumber}:${params.baseBranch}`);
+      return (
+        input.implementation ?? {
+          branch: `vibrator/issue-${params.issueNumber}`,
+          pullRequestTitle: `Resolve issue #${params.issueNumber}`,
+          pullRequestBody: `Closes #${params.issueNumber}`,
+          headSha: "sha-impl",
+        }
+      );
+    },
+    async selfReview(params) {
+      calls.push(`self-review:${params.pullRequestNumber}`);
+      return {
+        madeChanges: input.selfReviewMadeChanges ?? false,
+        headSha: input.selfReviewHeadSha ?? "sha-after-self-review",
+      };
+    },
+    async resolveMergeConflicts(params) {
+      calls.push(`resolve-conflicts:${params.pullRequestNumber}`);
+      return { headSha: "sha-after-resolve" };
+    },
+    async addressFailingChecks(params) {
+      calls.push(
+        `address-checks:${params.pullRequestNumber}:${params.failingChecks.length}-checks`,
+      );
+      return { headSha: "sha-after-checks" };
+    },
+    async generateFinalDescription(params) {
+      calls.push(`generate-desc:${params.pullRequestNumber}`);
+      return input.generatedDescription ?? "Final description.";
     },
   };
+
   return {
     calls,
     sessions,
     gitHubClient,
     sessionStore,
-    localCopilotChatClient,
-    context: { owner: "acme", repo: "widgets" },
+    claudeAgentClient,
+    context: {
+      owner: "acme",
+      repo: "widgets",
+      issues: input.issues ?? [],
+      pullRequests: input.pullRequests ?? [],
+    },
   };
 }
 
-async function run(harness: Harness, action: OrchestratorAction, dryRun = false): Promise<void> {
+async function run(
+  harness: Harness,
+  action: OrchestratorAction,
+  dryRun = false,
+): Promise<void> {
   await executeAction(
     harness.gitHubClient,
     harness.sessionStore,
+    harness.claudeAgentClient,
     action,
     dryRun,
-    harness.localCopilotChatClient,
     harness.context,
   );
 }
 
-test("executeAction assigns the issue to Copilot when starting implementation", async () => {
-  const harness = createHarness();
+test("executeAction implements an issue, opens a PR, and records the session", async () => {
+  const harness = createHarness({
+    issues: [createIssue({ number: 7, title: "Add widget", body: "Make it." })],
+    implementation: {
+      branch: "vibrator/issue-7-add-widget",
+      pullRequestTitle: "Add widget",
+      pullRequestBody: "Added widget.\n\nCloses #7",
+      headSha: "sha-impl-7",
+    },
+    newPullRequest: { number: 100, headSha: "sha-impl-7" },
+  });
 
   await run(harness, { type: "start-implementation", issueNumber: 7 });
 
-  assert.deepEqual(harness.calls, ["assign:7"]);
-  assert.deepEqual(harness.sessions, [
-    { issueNumber: 7, phase: "implementation" },
-  ]);
-});
-
-test("executeAction resolves review threads before requesting another review", async () => {
-  const harness = createHarness();
-
-  await run(harness, {
-    type: "request-review",
-    issueNumber: 9,
-    pullRequestNumber: 12,
-    resolveReviewThreads: true,
-  });
-
-  assert.deepEqual(harness.calls, ["resolve:12", "request-review:12"]);
-  assert.deepEqual(harness.sessions, [
-    { issueNumber: 9, pullRequestNumber: 12, phase: "review" },
-  ]);
-});
-
-test("executeAction skips review-thread resolution for a first review request", async () => {
-  const harness = createHarness();
-
-  await run(harness, {
-    type: "request-review",
-    issueNumber: 3,
-    pullRequestNumber: 10,
-  });
-
-  assert.deepEqual(harness.calls, ["request-review:10"]);
-});
-
-test("executeAction toggles the PR draft state before re-requesting review when reset is requested", async () => {
-  const harness = createHarness();
-
-  await run(harness, {
-    type: "request-review",
-    issueNumber: 3,
-    pullRequestNumber: 10,
-    resetDraftState: true,
-  });
-
-  // The draft/ready toggle must happen before the new review request so
-  // Copilot picks up the reset state. Resolve threads (when present) must
-  // still run first so the reset doesn't leave stale unresolved threads.
-  assert.deepEqual(harness.calls, ["reset-pr:10", "request-review:10"]);
-});
-
-test("executeAction resolves threads, resets draft state, then requests review when both flags are set", async () => {
-  const harness = createHarness();
-
-  await run(harness, {
-    type: "request-review",
-    issueNumber: 3,
-    pullRequestNumber: 10,
-    resolveReviewThreads: true,
-    resetDraftState: true,
-  });
-
-  assert.deepEqual(harness.calls, ["resolve:10", "reset-pr:10", "request-review:10"]);
-});
-
-test("executeAction generates a description via the local copilot CLI and squash-merges the PR", async () => {
-  const harness = createHarness({ generatedDescription: "Polished description" });
-
-  await run(harness, {
-    type: "write-final-description",
-    issueNumber: 3,
-    pullRequestNumber: 10,
-    pullRequestTitle: "Add widget",
-    pullRequestHeadRefName: "feature/add-widget",
-    closingIssueNumbers: [],
-    pullRequestBody: "Current PR body",
-  });
-
   assert.deepEqual(harness.calls, [
-    "generate:10",
-    "update-body:10:Polished description",
-    "squash-merge:10:Add widget:Polished description",
+    "get-default-branch",
+    "implement:7:main",
+    "create-pr:vibrator/issue-7-add-widget->main:Add widget:Added widget.\\n\\nCloses #7",
+    "post-comment:100:Implemented issue #7: opened this PR.",
   ]);
   assert.deepEqual(harness.sessions, [
     {
-      issueNumber: 3,
-      pullRequestNumber: 10,
-      phase: "final-description",
+      issueNumber: 7,
+      pullRequestNumber: 100,
+      phase: "implementation",
       status: "completed",
       result: {
-        pullRequestBody: "Polished description",
-        generatedDescription: "Polished description",
+        pullRequestHeadSha: "sha-impl-7",
+        pullRequestBody: "Added widget.\n\nCloses #7",
       },
     },
   ]);
 });
 
-test("executeAction appends missing closing references to the generated description before merging", async () => {
+test("executeAction runs a self-review and records whether changes were made", async () => {
+  const pullRequest = createPullRequest({
+    number: 10,
+    linkedIssueNumbers: [5],
+    headSha: "sha-head-10",
+  });
   const harness = createHarness({
-    generatedDescription: "Summary of changes.\n\nMore details.",
+    pullRequests: [pullRequest],
+    selfReviewMadeChanges: false,
+    selfReviewHeadSha: "sha-after-self-review",
   });
 
   await run(harness, {
-    type: "write-final-description",
-    issueNumber: 3,
+    type: "self-review",
+    issueNumber: 5,
     pullRequestNumber: 10,
-    pullRequestTitle: "Fix bug",
-    pullRequestHeadRefName: "fix/bug",
-    closingIssueNumbers: [3, 8],
-    pullRequestBody: "Current PR body",
+    pullRequestHeadSha: "sha-head-10",
   });
 
-  const expectedBody = "Summary of changes.\n\nMore details.\n\nCloses #3\n\nCloses #8";
-  assert.deepEqual(harness.calls, [
-    "generate:10",
-    `update-body:10:${expectedBody}`,
-    `squash-merge:10:Fix bug:${expectedBody}`,
+  assert.deepEqual(harness.calls, ["self-review:10", "post-comment:10:Reviewed code, no issues found."]);
+  assert.deepEqual(harness.sessions, [
+    {
+      issueNumber: 5,
+      pullRequestNumber: 10,
+      phase: "self-review",
+      status: "completed",
+      result: {
+        madeChanges: false,
+        pullRequestHeadSha: "sha-after-self-review",
+      },
+    },
   ]);
 });
 
-test("executeAction stores the current PR head sha when requesting review comment fixes", async () => {
-  const harness = createHarness();
+test("executeAction records madeChanges=true when the self-review commits changes", async () => {
+  const pullRequest = createPullRequest({
+    number: 11,
+    linkedIssueNumbers: [6],
+    headSha: "sha-head-11",
+  });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    selfReviewMadeChanges: true,
+    selfReviewHeadSha: "sha-after-fixes",
+  });
 
   await run(harness, {
-    type: "address-review-comments",
-    issueNumber: 4,
+    type: "self-review",
+    issueNumber: 6,
     pullRequestNumber: 11,
-    pullRequestHeadSha: "sha-123",
-    reviewCommentCount: 2,
+    pullRequestHeadSha: "sha-head-11",
   });
+
+  assert.deepEqual(harness.calls, ["self-review:11", "post-comment:11:Reviewed code and pushed fixes."]);
+  assert.deepEqual(harness.sessions, [
+    {
+      issueNumber: 6,
+      pullRequestNumber: 11,
+      phase: "self-review",
+      status: "completed",
+      result: {
+        madeChanges: true,
+        pullRequestHeadSha: "sha-after-fixes",
+      },
+    },
+  ]);
+});
+
+test("executeAction passes failing check logs to Claude", async () => {
+  const pullRequest = createPullRequest({
+    number: 13,
+    linkedIssueNumbers: [10],
+    checksStatus: "failure",
+    headSha: "sha-13",
+  });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    failingCheckRuns: [
+      { name: "lint", logExcerpt: "missing semicolon" },
+      { name: "test", logExcerpt: "1 failing test" },
+    ],
+  });
+
+  await run(harness, {
+    type: "address-failing-checks",
+    issueNumber: 10,
+    pullRequestNumber: 13,
+    pullRequestHeadSha: "sha-13",
+  });
+
+  assert.deepEqual(harness.calls, [
+    "cancel-in-progress:sha-13",
+    "list-failing:13:sha-13",
+    "address-checks:13:2-checks",
+    "post-comment:13:Addressed failing CI checks and pushed a fix (lint, test).",
+  ]);
+  assert.deepEqual(harness.sessions, [
+    {
+      issueNumber: 10,
+      pullRequestNumber: 13,
+      phase: "address-failing-checks",
+      status: "completed",
+      result: { pullRequestHeadSha: "sha-after-checks" },
+    },
+  ]);
+});
+
+test("executeAction asks Claude to resolve merge conflicts", async () => {
+  const pullRequest = createPullRequest({
+    number: 14,
+    linkedIssueNumbers: [11],
+    hasMergeConflicts: true,
+  });
+  const harness = createHarness({ pullRequests: [pullRequest] });
+
+  await run(harness, {
+    type: "resolve-conflicts",
+    issueNumber: 11,
+    pullRequestNumber: 14,
+    pullRequestHeadSha: "sha-14",
+  });
+
+  assert.deepEqual(harness.calls, ["resolve-conflicts:14", "post-comment:14:Resolved merge conflicts and pushed updated branch."]);
 
   assert.deepEqual(harness.sessions, [
     {
-      issueNumber: 4,
-      pullRequestNumber: 11,
-      phase: "address-review-comments",
-      result: { pullRequestHeadSha: "sha-123", promptCommentId: 1011 },
+      issueNumber: 11,
+      pullRequestNumber: 14,
+      phase: "resolve-conflicts",
+      status: "completed",
+      result: { pullRequestHeadSha: "sha-after-resolve" },
     },
   ]);
 });
 
-test("executeAction is a no-op when dry-run is enabled", async () => {
-  const harness = createHarness();
+test("executeAction generates the final description, updates the PR body, and squash-merges", async () => {
+  const pullRequest = createPullRequest({
+    number: 15,
+    linkedIssueNumbers: [3],
+    closingIssueNumbers: [3],
+    headRefName: "branch-15",
+  });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    generatedDescription: "Polished description",
+  });
 
-  await run(
-    harness,
+  await run(harness, {
+    type: "squash-merge",
+    issueNumber: 3,
+    pullRequestNumber: 15,
+    pullRequestTitle: "Add widget",
+    pullRequestHeadRefName: "branch-15",
+    closingIssueNumbers: [3],
+    pullRequestBody: "Old body",
+  });
+
+  const expectedBody = "Polished description\n\nCloses #3";
+  assert.deepEqual(harness.calls, [
+    "generate-desc:15",
+    `update-body:15:${expectedBody}`,
+    `squash-merge:15:Add widget:${expectedBody}`,
+  ]);
+  assert.deepEqual(harness.sessions, [
     {
-      type: "write-final-description",
       issueNumber: 3,
-      pullRequestNumber: 10,
-      pullRequestTitle: "T",
-      pullRequestHeadRefName: "b",
-      closingIssueNumbers: [],
-      pullRequestBody: "body",
+      pullRequestNumber: 15,
+      phase: "squash-merge",
+      status: "completed",
+      result: { pullRequestBody: expectedBody },
     },
-    true,
-  );
+  ]);
+});
+
+test("executeAction appends missing closing references to the generated description on merge", async () => {
+  const pullRequest = createPullRequest({
+    number: 16,
+    linkedIssueNumbers: [3, 8],
+    closingIssueNumbers: [3, 8],
+    headRefName: "branch-16",
+  });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    generatedDescription: "Summary.",
+  });
+
+  await run(harness, {
+    type: "squash-merge",
+    issueNumber: 3,
+    pullRequestNumber: 16,
+    pullRequestTitle: "Fix",
+    pullRequestHeadRefName: "branch-16",
+    closingIssueNumbers: [3, 8],
+    pullRequestBody: "Old body",
+  });
+
+  const expectedBody = "Summary.\n\nCloses #3\n\nCloses #8";
+  assert.equal(harness.calls[0], "generate-desc:16");
+  assert.equal(harness.calls[1], `update-body:16:${expectedBody}`);
+  assert.equal(harness.calls[2], `squash-merge:16:Fix:${expectedBody}`);
+  assert.equal(harness.calls.length, 3);
+});
+
+test("executeAction is a no-op when dry-run is enabled", async () => {
+  const harness = createHarness({
+    issues: [createIssue({ number: 7 })],
+  });
+
+  await run(harness, { type: "start-implementation", issueNumber: 7 }, true);
 
   assert.deepEqual(harness.calls, []);
   assert.deepEqual(harness.sessions, []);
 });
 
-test("executeAction unassigns and re-assigns Copilot on the issue when start-implementation has reassignCopilot=true", async () => {
-  const harness = createHarness();
+test("executeAction throws when start-implementation cannot find the issue in the snapshot", async () => {
+  const harness = createHarness({ issues: [] });
 
-  await run(harness, {
-    type: "start-implementation",
-    issueNumber: 7,
-    reassignCopilot: true,
-  });
-
-  assert.deepEqual(harness.calls, ["unassign-issue:7", "assign:7"]);
-});
-
-test("executeAction cycles the Copilot assignee on the PR before re-posting an address-review-comments prompt", async () => {
-  const harness = createHarness();
-
-  await run(harness, {
-    type: "address-review-comments",
-    issueNumber: 4,
-    pullRequestNumber: 11,
-    pullRequestHeadSha: "sha-xyz",
-    reviewCommentCount: 3,
-    reassignCopilot: true,
-  });
-
-  const expectedComment =
-    "comment:11:@copilot Please address every review comment in this pull request and push the changes. (3 review comments were found.)";
-  assert.deepEqual(harness.calls, ["unassign-pr:11", "assign-pr:11", expectedComment]);
-});
-
-test("executeAction posts an address-failing-checks prompt and records the head sha", async () => {
-  const harness = createHarness();
-
-  await run(harness, {
-    type: "address-failing-checks",
-    issueNumber: 4,
-    pullRequestNumber: 11,
-    pullRequestHeadSha: "sha-xyz",
-  });
-
-  assert.equal(harness.calls.length, 1);
-  assert.match(
-    harness.calls[0] ?? "",
-    /^comment:11:@copilot One or more status checks /,
+  await assert.rejects(
+    () => run(harness, { type: "start-implementation", issueNumber: 999 }),
+    /Issue #999 not found/,
   );
-  assert.deepEqual(harness.sessions, [
-    {
-      issueNumber: 4,
-      pullRequestNumber: 11,
-      phase: "address-failing-checks",
-      result: { pullRequestHeadSha: "sha-xyz", promptCommentId: 1011 },
-    },
-  ]);
-});
-
-test("executeAction cycles the Copilot assignee on the PR before re-posting an address-failing-checks prompt", async () => {
-  const harness = createHarness();
-
-  await run(harness, {
-    type: "address-failing-checks",
-    issueNumber: 4,
-    pullRequestNumber: 11,
-    pullRequestHeadSha: "sha-xyz",
-    reassignCopilot: true,
-  });
-
-  assert.equal(harness.calls[0], "unassign-pr:11");
-  assert.equal(harness.calls[1], "assign-pr:11");
-  assert.match(harness.calls[2] ?? "", /^comment:11:@copilot One or more status checks /);
-});
-
-test("executeAction cycles the Copilot assignee on the PR before re-posting a resolve-conflicts prompt", async () => {  const harness = createHarness();
-
-  await run(harness, {
-    type: "resolve-conflicts",
-    issueNumber: 4,
-    pullRequestNumber: 11,
-    pullRequestHeadSha: "sha-xyz",
-    reassignCopilot: true,
-  });
-
-  assert.equal(harness.calls[0], "unassign-pr:11");
-  assert.equal(harness.calls[1], "assign-pr:11");
-  assert.match(harness.calls[2] ?? "", /^comment:11:@copilot This pull request has merge conflicts/);
-});
-
-test("executeAction abandon-empty-pull-request closes the PR and re-assigns the linked issue", async () => {
-  const harness = createHarness();
-
-  await run(harness, {
-    type: "abandon-empty-pull-request",
-    issueNumber: 42,
-    pullRequestNumber: 117,
-  });
-
-  assert.match(harness.calls[0] ?? "", /^comment:117:Closing this draft PR/);
-  assert.equal(harness.calls[1], "close-pr:117");
-  assert.equal(harness.calls[2], "unassign-issue:42");
-  assert.equal(harness.calls[3], "assign:42");
-  assert.deepEqual(harness.sessions, [
-    { issueNumber: 42, phase: "implementation" },
-  ]);
 });
