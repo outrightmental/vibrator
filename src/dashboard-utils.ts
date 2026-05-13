@@ -5,6 +5,7 @@ export function broadcastRepositorySnapshot(
   snapshot: RepositorySnapshot,
   owner: string,
   repo: string,
+  overrideSessionCount?: number,
 ): void {
   const openPRs = snapshot.pullRequests.filter((pr) => pr.state === "open");
   const draftPRs = openPRs.filter((pr) => pr.draft);
@@ -16,14 +17,16 @@ export function broadcastRepositorySnapshot(
     pending: readyPRs.filter((pr) => pr.checksStatus === "pending").length,
   };
 
+  const activeSessionCount = overrideSessionCount ?? snapshot.agentSessions.filter((s) => s.status === "in_progress").length;
+
   globalEventEmitter.emit("broadcast-github-activity", {
-    content: `Repository snapshot: ${snapshot.issues.length} open issues, ${openPRs.length} PRs (${draftPRs.length} draft, ${readyPRs.length} ready), ${snapshot.agentSessions.length} active sessions, checks: ${checkStats.success} success, ${checkStats.failure} failed, ${checkStats.pending} pending`,
+    content: `Repository snapshot: ${snapshot.issues.length} open issues, ${openPRs.length} PRs (${draftPRs.length} draft, ${readyPRs.length} ready), ${activeSessionCount} active sessions, checks: ${checkStats.success} success, ${checkStats.failure} failed, ${checkStats.pending} pending`,
     repo: `${owner}/${repo}`,
     issueCount: snapshot.issues.length,
     prCount: openPRs.length,
     draftCount: draftPRs.length,
     readyCount: readyPRs.length,
-    sessionCount: snapshot.agentSessions.length,
+    sessionCount: activeSessionCount,
     checkStats,
   });
 }

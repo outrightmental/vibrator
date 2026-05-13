@@ -317,7 +317,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   });
 
   // Broadcast repository snapshot and PR updates to dashboard
-  broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+  broadcastRepositorySnapshot(snapshot, config.owner, config.repo, preReconcileActiveSessions.length);
   for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
     const draftLabel = pr.draft ? "[DRAFT]" : "";
     const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
