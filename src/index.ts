@@ -6,6 +6,7 @@ import { executeAction, type ExecuteActionResult } from "./actions.js";
 import { createClaudeAgentClient } from "./claude-agent.js";
 import {
   buildDefaultSessionStorePath,
+  getGhToken,
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
@@ -87,7 +88,7 @@ async function broadcastBetweenCycleActivity(
     const gitHubClient = new GitHubClient({
       owner: config.owner,
       repo: config.repo,
-      token: config.token,
+      token: await getGhToken(),
     });
     const sessionStore = new FileSessionStore(config.sessionStorePath);
 
@@ -186,8 +187,6 @@ function describeSession(
 interface Config {
   owner: string;
   repo: string;
-  token: string;
-  anthropicApiKey: string;
   claudeModel: string | undefined;
   maxConcurrency: number;
   intervalMs: number;
@@ -219,15 +218,6 @@ function parseArgs(argv: string[]): Config {
   }
 
   const { owner, repo } = parseRepositorySlug(repository);
-  const token = process.env.GITHUB_TOKEN;
-  if (!token) {
-    throw new Error("Set GITHUB_TOKEN before running vibrator.");
-  }
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-  if (!anthropicApiKey) {
-    throw new Error("Set ANTHROPIC_API_KEY before running vibrator.");
-  }
-
   const maxConcurrency = Number.parseInt(process.env.MAX_CONCURRENCY ?? "3", 10);
   const intervalMs = Number.parseInt(process.env.LOOP_INTERVAL_MS ?? "60000", 10);
   const once = argv.includes("--once");
@@ -239,8 +229,6 @@ function parseArgs(argv: string[]): Config {
   return {
     owner,
     repo,
-    token,
-    anthropicApiKey,
     claudeModel,
     maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
     intervalMs: Number.isNaN(intervalMs) ? 60000 : intervalMs,
@@ -255,13 +243,12 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   const gitHubClient = new GitHubClient({
     owner: config.owner,
     repo: config.repo,
-    token: config.token,
+    token: await getGhToken(),
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
-  const claudeAgentClient = createClaudeAgentClient({
-    anthropicApiKey: config.anthropicApiKey,
-    ...(config.claudeModel !== undefined && { claudeModel: config.claudeModel }),
-  });
+  const claudeAgentClient = createClaudeAgentClient(
+    config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {},
+  );
 
   globalEventEmitter.emit("iteration-start", {
     iterationNumber,

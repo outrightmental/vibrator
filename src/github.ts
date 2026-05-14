@@ -1,5 +1,33 @@
 import { spawn } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join } from "node:path";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Returns the GitHub token for the currently authenticated `gh` CLI user.
+ * Throws with a clear message if the user is not logged in.
+ */
+export async function getGhToken(): Promise<string> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("gh", ["auth", "token"]));
+  } catch (error) {
+    throw new Error(
+      `Could not retrieve GitHub token from the gh CLI. ` +
+      `Make sure you are logged in with \`gh auth login\`. ` +
+      `(${String(error)})`,
+    );
+  }
+  const token = stdout.trim();
+  if (!token) {
+    throw new Error(
+      `The gh CLI returned an empty token. Run \`gh auth login\` to authenticate.`,
+    );
+  }
+  return token;
+}
 
 import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
@@ -248,7 +276,7 @@ export class GitHubClient {
         );
       } catch (error) {
         if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
-          console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check token permissions or repository slug).`);
+          console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check gh auth permissions or repository slug).`);
           return results;
         }
         throw error;

@@ -137,8 +137,6 @@ interface ClaudeAgentClientOptions {
   claudeCommand?: string;
   /** Path / command for the `gh` CLI used to fetch PR branches. */
   ghCommand?: string;
-  /** Anthropic API key. When omitted, falls back to ANTHROPIC_API_KEY env. */
-  anthropicApiKey?: string;
   /** Model to pass to the claude CLI via --model. When omitted, falls back to CLAUDE_MODEL env. */
   claudeModel?: string;
   /**
@@ -463,7 +461,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
   private readonly claudeCommand: string;
   private readonly ghCommand: string;
-  private readonly anthropicApiKey: string | undefined;
   private readonly claudeModel: string | undefined;
   private readonly claudeTimeoutMs: number;
 
@@ -471,7 +468,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
     this.claudeCommand = options.claudeCommand ?? "claude";
     this.ghCommand = options.ghCommand ?? "gh";
-    this.anthropicApiKey = options.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY;
     this.claudeModel = options.claudeModel ?? process.env.CLAUDE_MODEL;
     const envTimeout = process.env.CLAUDE_TIMEOUT_MS;
     this.claudeTimeoutMs =
@@ -729,16 +725,11 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   }
 
   private async runClaude(prompt: string, cwd: string): Promise<string> {
-    if (!this.anthropicApiKey) {
-      throw new Error(
-        "ANTHROPIC_API_KEY is not set. Provide it via the environment or the ClaudeAgentClient constructor.",
-      );
-    }
-
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ANTHROPIC_API_KEY: this.anthropicApiKey,
-    };
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    // Use the local Claude Code subscription, not the Anthropic Platform API.
+    // Removing ANTHROPIC_API_KEY forces the claude CLI to authenticate via
+    // the subscription credentials in ~/.claude/.credentials.json.
+    delete env.ANTHROPIC_API_KEY;
     // Avoid the `gh` CLI inside Claude's tool use picking up vibrator's
     // own GitHub token (which may have different permissions than the
     // user's `gh auth` setup).
