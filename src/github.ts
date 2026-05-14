@@ -1,7 +1,15 @@
-import { spawn } from "node:child_process";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
+
+import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
+import { FileSessionStore } from "./session-store.js";
+import type {
+  Commit,
+  Issue,
+  PullRequest,
+  RepositorySnapshot,
+} from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -28,15 +36,6 @@ export async function getGhToken(): Promise<string> {
   }
   return token;
 }
-
-import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
-import { FileSessionStore } from "./session-store.js";
-import type {
-  Commit,
-  Issue,
-  PullRequest,
-  RepositorySnapshot,
-} from "./types.js";
 
 interface PullRequestInlineComment {
   path: string;
