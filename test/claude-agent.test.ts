@@ -8,6 +8,8 @@ import {
   FINAL_DESCRIPTION_START_MARKER,
   IMPLEMENTATION_PAYLOAD_END_MARKER,
   IMPLEMENTATION_PAYLOAD_START_MARKER,
+  isClaudeUsageLimitMessage,
+  parseUsageResetTimeMs,
 } from "../src/claude-agent.js";
 
 test("extractFinalDescription returns the text between the sentinel markers", () => {
@@ -56,4 +58,44 @@ test("extractImplementationPayload returns undefined when markers are missing", 
 test("extractImplementationPayload returns undefined for malformed JSON", () => {
   const stdout = `${IMPLEMENTATION_PAYLOAD_START_MARKER}\nnot json\n${IMPLEMENTATION_PAYLOAD_END_MARKER}`;
   assert.equal(extractImplementationPayload(stdout), undefined);
+});
+
+test("isClaudeUsageLimitMessage detects out-of-extra-usage text", () => {
+  const message = "You're out of extra usage - resets 6:40pm (America/Los_Angeles)";
+  assert.equal(isClaudeUsageLimitMessage(message), true);
+});
+
+test("isClaudeUsageLimitMessage returns false for unrelated errors", () => {
+  assert.equal(isClaudeUsageLimitMessage("network timeout"), false);
+});
+
+test("parseUsageResetTimeMs parses same-day reset times", () => {
+  const now = new Date(2026, 4, 14, 17, 0, 0, 0);
+  const parsed = parseUsageResetTimeMs(
+    "You're out of extra usage - resets 6:40pm (America/Los_Angeles)",
+    now,
+  );
+  assert.equal(parsed !== undefined, true);
+  const date = new Date(parsed!);
+  assert.equal(date.getFullYear(), 2026);
+  assert.equal(date.getMonth(), 4);
+  assert.equal(date.getDate(), 14);
+  assert.equal(date.getHours(), 18);
+  assert.equal(date.getMinutes(), 40);
+});
+
+test("parseUsageResetTimeMs rolls to next day when time already passed", () => {
+  const now = new Date(2026, 4, 14, 23, 0, 0, 0);
+  const parsed = parseUsageResetTimeMs("usage limit reached, resets 6:40pm", now);
+  assert.equal(parsed !== undefined, true);
+  const date = new Date(parsed!);
+  assert.equal(date.getFullYear(), 2026);
+  assert.equal(date.getMonth(), 4);
+  assert.equal(date.getDate(), 15);
+  assert.equal(date.getHours(), 18);
+  assert.equal(date.getMinutes(), 40);
+});
+
+test("parseUsageResetTimeMs returns undefined when reset time is missing", () => {
+  assert.equal(parseUsageResetTimeMs("You're out of extra usage"), undefined);
 });
