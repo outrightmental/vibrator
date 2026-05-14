@@ -224,7 +224,7 @@ function parseArgs(argv: string[]): Config {
   const dryRun = argv.includes("--dry-run");
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
-  const claudeModel = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
+  const claudeModel = process.env.CLAUDE_MODEL;
 
   return {
     owner,
