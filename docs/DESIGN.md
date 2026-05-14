@@ -47,11 +47,17 @@ system:
 
 - Replacing GitHub project management.
 - Replacing human product direction.
-- Bypassing branch protection, required checks, or repository policy.
+- Inventing custom merge semantics outside GitHub's own controls.
 - Maintaining a central server. `vibrator` is designed as a local or
   scheduled process that can be stopped and restarted.
 - Inventing a custom workflow language. It intentionally leans on
   issue text, PR metadata, GitHub APIs, `gh`, `git`, and `claude`.
+
+`vibrator` still treats GitHub as the merge authority. Its default path
+is a normal squash merge after the review/fix loop is clean. If the `gh`
+CLI reports that the merge is blocked specifically because the base
+branch policy requires an administrator bypass, `vibrator` retries that
+same squash merge with `--admin` rather than failing the loop outright.
 
 ## Architecture
 

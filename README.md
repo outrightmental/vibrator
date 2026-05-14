@@ -55,6 +55,8 @@ On every iteration, `vibrator`:
    merging.
 9. Generates a polished final PR description with Claude, updates the
    PR body, preserves or appends closing references, and squash-merges.
+   If GitHub rejects that merge only because an administrator bypass is
+   required, `vibrator` retries with `gh pr merge --admin`.
 
 The result is not "AI writes code once." It is a full SDLC loop for
 agentic repositories, powered end-to-end by your local CLI authentication.

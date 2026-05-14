@@ -118,6 +118,9 @@ The loop collects issue references from:
 
 Before merge, missing closing references are appended to the final PR
 body so GitHub can close the intended issues after the squash merge.
+If the initial squash merge fails only because GitHub requires an
+administrator bypass for the base branch policy, the loop retries with
+`gh pr merge --admin`.
 
 ## Recommended operating style
 
@@ -125,7 +128,8 @@ body so GitHub can close the intended issues after the squash merge.
 - Put real acceptance criteria in issue bodies.
 - Use dependency phrases instead of relying on issue order alone.
 - Start with `--dry-run --once` and a low `MAX_CONCURRENCY`.
-- Let branch protection and CI define the hard merge gate.
+- Let branch protection and CI define the normal merge gate; admin
+  bypass remains an explicit GitHub-controlled fallback.
 - Treat the generated final description as the permanent change record.
 
 ## Failure modes to watch
