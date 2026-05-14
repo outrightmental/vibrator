@@ -477,6 +477,60 @@ function slugifyIssueTitle(title: string): string {
 }
 
 const DEFAULT_CLAUDE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const DEFAULT_QUOTA_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
+
+let claudeQuotaBlockedUntilMs: number | undefined;
+
+export function isClaudeUsageLimitMessage(message: string): boolean {
+  return /out of extra usage|out of usage|hit your limit|rate limit|quota|usage limit/i.test(
+    message,
+  );
+}
+
+/**
+ * Parse a quota-reset timestamp from Claude CLI output.
+ *
+ * Supported examples:
+ * - "resets 6:40pm (America/Los_Angeles)"
+ * - "reset at 10:15 AM"
+ *
+ * Returns an epoch-millis timestamp in local time, or undefined if parsing fails.
+ */
+export function parseUsageResetTimeMs(message: string, now: Date = new Date()): number | undefined {
+  const match = message.match(/\breset(?:s)?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*([ap]m)\b/i);
+  if (!match) {
+    return undefined;
+  }
+
+  const rawHour = Number.parseInt(match[1]!, 10);
+  const minute = Number.parseInt(match[2]!, 10);
+  const period = match[3]!.toLowerCase();
+
+  if (Number.isNaN(rawHour) || Number.isNaN(minute) || rawHour < 1 || rawHour > 12 || minute < 0 || minute > 59) {
+    return undefined;
+  }
+
+  const hours24 = (rawHour % 12) + (period === "pm" ? 12 : 0);
+  const reset = new Date(now);
+  reset.setSeconds(0, 0);
+  reset.setHours(hours24, minute, 0, 0);
+
+  if (reset.getTime() <= now.getTime()) {
+    reset.setDate(reset.getDate() + 1);
+  }
+
+  return reset.getTime();
+}
+
+function formatLocalTime(epochMs: number): string {
+  return new Date(epochMs).toLocaleString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    month: "short",
+    day: "numeric",
+  });
+}
 
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
@@ -800,20 +854,32 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       }
     };
 
-    const tryBuildQuotaMessage = (message: string): string | undefined => {
-      if (!/hit your limit|rate limit|quota|usage limit/i.test(message)) {
+    const tryBuildQuotaMessage = (message: string): { text: string; blockedUntilMs: number } | undefined => {
+      if (!isClaudeUsageLimitMessage(message)) {
         return undefined;
       }
+
+      const blockedUntilMs =
+        parseUsageResetTimeMs(message) ?? Date.now() + DEFAULT_QUOTA_BACKOFF_MS;
+
       const resetLine = message
         .split(/\r?\n/)
         .map((line) => line.trim())
-        .find((line) => /reset/i.test(line));
-      return (
+        .find((line) => /reset|out of extra usage/i.test(line));
+
+      const text =
         "Claude CLI usage limit reached" +
         (resetLine ? ` (${resetLine}).` : ".") +
-        " This action is temporarily blocked and will succeed after quota resets."
-      );
+        ` Skipping Claude actions until approximately ${formatLocalTime(blockedUntilMs)} local time.`;
+
+      return { text, blockedUntilMs };
     };
+
+    if (claudeQuotaBlockedUntilMs !== undefined && Date.now() < claudeQuotaBlockedUntilMs) {
+      throw new Error(
+        `Claude CLI usage limit reached. Skipping Claude actions until approximately ${formatLocalTime(claudeQuotaBlockedUntilMs)} local time.`,
+      );
+    }
 
     try {
       const result = await runCommand(
@@ -853,7 +919,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       const message = error instanceof Error ? error.message : String(error);
       const quotaMessage = tryBuildQuotaMessage(message);
       if (quotaMessage) {
-        throw new Error(quotaMessage, { cause: error });
+        claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;
+        throw new Error(quotaMessage.text, { cause: error });
       }
       throw error;
     }
