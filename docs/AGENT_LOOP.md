@@ -131,7 +131,7 @@ body so GitHub can close the intended issues after the squash merge.
 ## Failure modes to watch
 
 - **`claude` CLI not found / not authenticated**: install Claude Code
-  and ensure `ANTHROPIC_API_KEY` is set.
+  and run `claude login` to authenticate with your Claude Code subscription.
 - **`gh` CLI not authenticated for the repo**: vibrator relies on `gh`
   to clone the repo and check out PR branches. Run `gh auth login`.
 - **No PR appears after start-implementation**: check the iteration

@@ -137,8 +137,6 @@ interface ClaudeAgentClientOptions {
   claudeCommand?: string;
   /** Path / command for the `gh` CLI used to fetch PR branches. */
   ghCommand?: string;
-  /** Anthropic API key. When omitted, falls back to ANTHROPIC_API_KEY env. */
-  anthropicApiKey?: string;
   /** Model to pass to the claude CLI via --model. When omitted, falls back to CLAUDE_MODEL env. */
   claudeModel?: string;
   /**
@@ -168,6 +166,8 @@ interface RunCommandOptions {
   cwd?: string;
   input?: string;
   captureStdout?: boolean;
+  /** Capture stderr and include it in non-zero-exit error messages. */
+  captureStderr?: boolean;
   /** Called with each decoded stdout chunk as it arrives (requires captureStdout: true). */
   onStdoutChunk?: (chunk: string) => void;
   /**
@@ -196,7 +196,7 @@ function runCommand(
       stdio: [
         options.input !== undefined ? "pipe" : "inherit",
         options.captureStdout ? "pipe" : "inherit",
-        options.onStderrChunk ? "pipe" : "inherit",
+        options.onStderrChunk || options.captureStderr ? "pipe" : "inherit",
       ],
     });
 
@@ -215,6 +215,7 @@ function runCommand(
     }
 
     const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     if (options.captureStdout && child.stdout) {
       child.stdout.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
@@ -222,10 +223,15 @@ function runCommand(
       });
     }
 
-    if (options.onStderrChunk && child.stderr) {
+    if ((options.onStderrChunk || options.captureStderr) && child.stderr) {
       child.stderr.on("data", (chunk: Buffer) => {
-        process.stderr.write(chunk);
-        options.onStderrChunk!(chunk.toString("utf8"));
+        if (options.onStderrChunk) {
+          process.stderr.write(chunk);
+          options.onStderrChunk(chunk.toString("utf8"));
+        }
+        if (options.captureStderr) {
+          stderrChunks.push(chunk);
+        }
       });
     }
 
@@ -236,6 +242,18 @@ function runCommand(
 
     child.on("close", (code) => {
       clearTimeout(killTimer);
+      const stdoutText = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderrText = Buffer.concat(stderrChunks).toString("utf8");
+
+      const summarizeOutput = (text: string): string => {
+        const trimmed = text.trim();
+        if (!trimmed) return "";
+        const limit = 1500;
+        return trimmed.length > limit ? trimmed.slice(trimmed.length - limit) : trimmed;
+      };
+
+      const outputSummary = summarizeOutput(stderrText) || summarizeOutput(stdoutText);
+
       if (timedOut) {
         reject(
           new Error(
@@ -247,12 +265,13 @@ function runCommand(
       if (code !== 0) {
         reject(
           new Error(
-            `Command \`${command} ${args.join(" ")}\` exited with non-zero status ${code ?? "unknown"}.`,
+            `Command \`${command} ${args.join(" ")}\` exited with non-zero status ${code ?? "unknown"}.` +
+              (outputSummary ? `\n${outputSummary}` : ""),
           ),
         );
         return;
       }
-      resolve(Buffer.concat(stdoutChunks).toString("utf8"));
+      resolve(stdoutText);
     });
 
     if (options.input !== undefined && child.stdin) {
@@ -463,7 +482,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
   private readonly claudeCommand: string;
   private readonly ghCommand: string;
-  private readonly anthropicApiKey: string | undefined;
   private readonly claudeModel: string | undefined;
   private readonly claudeTimeoutMs: number;
 
@@ -471,7 +489,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
     this.claudeCommand = options.claudeCommand ?? "claude";
     this.ghCommand = options.ghCommand ?? "gh";
-    this.anthropicApiKey = options.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY;
     this.claudeModel = options.claudeModel ?? process.env.CLAUDE_MODEL;
     const envTimeout = process.env.CLAUDE_TIMEOUT_MS;
     this.claudeTimeoutMs =
@@ -729,16 +746,11 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   }
 
   private async runClaude(prompt: string, cwd: string): Promise<string> {
-    if (!this.anthropicApiKey) {
-      throw new Error(
-        "ANTHROPIC_API_KEY is not set. Provide it via the environment or the ClaudeAgentClient constructor.",
-      );
-    }
-
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ANTHROPIC_API_KEY: this.anthropicApiKey,
-    };
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    // Use the local Claude Code subscription, not the Anthropic Platform API.
+    // Removing ANTHROPIC_API_KEY forces the claude CLI to authenticate via
+    // the subscription credentials in ~/.claude/.credentials.json.
+    delete env.ANTHROPIC_API_KEY;
     // Avoid the `gh` CLI inside Claude's tool use picking up vibrator's
     // own GitHub token (which may have different permissions than the
     // user's `gh auth` setup).
@@ -788,6 +800,21 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       }
     };
 
+    const tryBuildQuotaMessage = (message: string): string | undefined => {
+      if (!/hit your limit|rate limit|quota|usage limit/i.test(message)) {
+        return undefined;
+      }
+      const resetLine = message
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => /reset/i.test(line));
+      return (
+        "Claude CLI usage limit reached" +
+        (resetLine ? ` (${resetLine}).` : ".") +
+        " This action is temporarily blocked and will succeed after quota resets."
+      );
+    };
+
     try {
       const result = await runCommand(
         this.claudeCommand,
@@ -801,6 +828,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         {
           cwd,
           captureStdout: true,
+          captureStderr: true,
           env,
           timeoutMs: this.claudeTimeoutMs,
           // Use stderr for the live preview: the Claude CLI writes its
@@ -821,6 +849,11 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       if (isTTY) {
         clearInterval(ticker);
         process.stdout.write("\n");
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const quotaMessage = tryBuildQuotaMessage(message);
+      if (quotaMessage) {
+        throw new Error(quotaMessage, { cause: error });
       }
       throw error;
     }

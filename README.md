@@ -57,7 +57,7 @@ On every iteration, `vibrator`:
    PR body, preserves or appends closing references, and squash-merges.
 
 The result is not "AI writes code once." It is a full SDLC loop for
-agentic repositories, powered end-to-end by your Anthropic API key.
+agentic repositories, powered end-to-end by your local CLI authentication.
 
 ## The big idea
 
@@ -87,18 +87,18 @@ Install dependencies:
 npm install
 ```
 
-Copy the environment template:
+Authenticate the CLI tools (once, if not already done):
+
+```bash
+gh auth login
+claude login
+```
+
+Optionally copy the environment template to set a default repository:
 
 ```bash
 cp .env.example .env
-```
-
-Set at least:
-
-```env
-GITHUB_TOKEN=your_github_token_here
-GITHUB_REPOSITORY=owner/repo
-ANTHROPIC_API_KEY=sk-ant-...
+# edit .env and set GITHUB_REPOSITORY=owner/repo
 ```
 
 Run a safe one-shot preview:
@@ -120,21 +120,22 @@ The repository slug can be omitted from the CLI when
 ## Requirements
 
 - Node.js 18+
-- A GitHub token with `contents:write`, `pull_requests:write`, and
-  `issues:read` access to the target repository.
-- An Anthropic API key with access to Claude Code (set in
-  `ANTHROPIC_API_KEY`).
-- The `claude` CLI (Claude Code) installed locally and on `PATH`.
-- The `gh` CLI installed locally and on `PATH` — used to clone the
-  repo, check out PR branches, and perform the final squash merge.
+- The `claude` CLI (Claude Code) installed locally, on `PATH`, and
+  logged in via `claude login`. Uses your Claude Code subscription —
+  no API key required.
+- The `gh` CLI installed locally, on `PATH`, and logged in via
+  `gh auth login` with `contents:write`, `pull_requests:write`, and
+  `issues:read` access to the target repository. Used for all GitHub
+  API calls, repo cloning, PR checkouts, and squash merges.
 - `git` on `PATH`.
 
 ## Configuration
 
+Authentication is handled entirely by the `gh` and `claude` CLI tools.
+No API keys or tokens need to be set as environment variables.
+
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `GITHUB_TOKEN` | Yes | - | Token used for GitHub REST and GraphQL calls. |
-| `ANTHROPIC_API_KEY` | Yes | - | API key the `claude` CLI uses. |
 | `GITHUB_REPOSITORY` | No | - | Default `owner/repo` when the CLI argument is omitted. |
 | `MAX_CONCURRENCY` | No | `3` | Maximum active work items across open PRs and in-flight implementations. |
 | `LOOP_INTERVAL_MS` | No | `60000` | Delay between loop iterations. |
