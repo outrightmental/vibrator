@@ -157,12 +157,23 @@ export async function executeAction(
         issueBody: issue.body,
         baseBranch,
       });
+      const pullRequestBody = buildMergedPullRequestBody(implementation.pullRequestBody, [
+        issue.number,
+      ]);
       const created = await gitHubClient.createPullRequest({
         title: implementation.pullRequestTitle,
-        body: implementation.pullRequestBody,
+        body: pullRequestBody,
         head: implementation.branch,
         base: baseBranch,
       });
+      if (!created.created) {
+        const existingPullRequest = context.pullRequests.find(
+          (pullRequest) => pullRequest.headRefName === implementation.branch,
+        );
+        if (existingPullRequest !== undefined && existingPullRequest.body.trim() !== pullRequestBody.trim()) {
+          await gitHubClient.updatePullRequestBody(created.number, pullRequestBody);
+        }
+      }
       // Only create a session if this is a new PR.
       if (created.created) {
         await sessionStore.createSession({
@@ -172,7 +183,7 @@ export async function executeAction(
           status: "completed",
           result: {
             pullRequestHeadSha: created.headSha,
-            pullRequestBody: implementation.pullRequestBody,
+            pullRequestBody,
           },
         });
       }
