@@ -999,6 +999,9 @@ class DashboardUI {
       subtitle.textContent = \`\${pairs.length} item\${pairs.length !== 1 ? 's' : ''} · \${active} in progress · \${done} completed\`;
     }
 
+    // Clear any empty-state placeholder (initial "Connecting" div or prior "all done" message)
+    content.querySelector('.lifecycle-empty')?.remove();
+
     // Re-render all pills (keyed by issue number via data attribute)
     const existingKeys = new Set(
       [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber)
