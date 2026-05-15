@@ -8,6 +8,7 @@ import {
   FINAL_DESCRIPTION_START_MARKER,
   IMPLEMENTATION_PAYLOAD_END_MARKER,
   IMPLEMENTATION_PAYLOAD_START_MARKER,
+  isRebaseInProgress,
   isClaudeUsageLimitMessage,
   parseUsageResetTimeMs,
 } from "../src/claude-agent.js";
@@ -98,4 +99,22 @@ test("parseUsageResetTimeMs rolls to next day when time already passed", () => {
 
 test("parseUsageResetTimeMs returns undefined when reset time is missing", () => {
   assert.equal(parseUsageResetTimeMs("You're out of extra usage"), undefined);
+});
+
+test("isRebaseInProgress returns true when rebase-merge exists", async () => {
+  const exists = async (path: string): Promise<boolean> => path.endsWith("/.git/rebase-merge");
+  const result = await isRebaseInProgress("/tmp/repo", exists);
+  assert.equal(result, true);
+});
+
+test("isRebaseInProgress returns true when rebase-apply exists", async () => {
+  const exists = async (path: string): Promise<boolean> => path.endsWith("/.git/rebase-apply");
+  const result = await isRebaseInProgress("/tmp/repo", exists);
+  assert.equal(result, true);
+});
+
+test("isRebaseInProgress returns false when no rebase state exists", async () => {
+  const exists = async (): Promise<boolean> => false;
+  const result = await isRebaseInProgress("/tmp/repo", exists);
+  assert.equal(result, false);
 });

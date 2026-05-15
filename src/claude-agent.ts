@@ -162,6 +162,16 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+export async function isRebaseInProgress(
+  repoDir: string,
+  pathExistsFn: (path: string) => Promise<boolean> = pathExists,
+): Promise<boolean> {
+  return (
+    (await pathExistsFn(join(repoDir, ".git", "rebase-merge"))) ||
+    (await pathExistsFn(join(repoDir, ".git", "rebase-apply")))
+  );
+}
+
 interface RunCommandOptions {
   cwd?: string;
   input?: string;
@@ -668,7 +678,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       // Rebase finished cleanly — no conflicts (race with the remote).
       return this.pushAndReportHead(repoDir, params.headRefName, { forceWithLease: true });
     } catch (error) {
-      const rebaseInProgress = await this.isRebaseInProgress(repoDir);
+      const rebaseInProgress = await isRebaseInProgress(repoDir);
       if (!rebaseInProgress) {
         throw new Error(
           `Failed to rebase PR #${params.pullRequestNumber} onto origin/${params.baseRefName}: ${(error as Error).message}`,
@@ -682,13 +692,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const prompt = buildResolveConflictsPrompt(params);
     await this.runClaude(prompt, repoDir);
     return this.pushAndReportHead(repoDir, params.headRefName, { forceWithLease: true });
-  }
-
-  private async isRebaseInProgress(repoDir: string): Promise<boolean> {
-    return (
-      (await pathExists(join(repoDir, ".git", "rebase-merge"))) ||
-      (await pathExists(join(repoDir, ".git", "rebase-apply")))
-    );
   }
 
   async addressFailingChecks(
