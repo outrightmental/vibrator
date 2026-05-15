@@ -272,204 +272,84 @@ body {
   overflow-y: auto;
   font-size: 12px;
   line-height: 1.6;
+  padding: 6px;
 }
 
-.phase-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.phase-content::-webkit-scrollbar-track {
-  background: rgba(0, 255, 136, 0.1);
-}
-
-.phase-content::-webkit-scrollbar-thumb {
-  background: rgba(0, 255, 136, 0.5);
-  border-radius: 4px;
-}
-
-.log-line {
-  padding: 5px 0;
-  animation: fadeIn 0.3s ease-in;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateX(-10px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-.log-line.success {
-  color: #00ff88;
-}
-
-.log-line.warning {
-  color: #ffaa00;
-}
-
-.log-line.error {
-  color: #ff0055;
-}
-
-.log-line.info {
-  color: #0088ff;
-}
-
-.broadcast-event {
-  padding: 12px 14px;
-  margin: 8px 0;
-  border-left: 3px solid var(--event-color, #ff00ff);
-  border-radius: 2px;
-  animation: broadcastEventEntry 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-  position: relative;
-  overflow: hidden;
-  cursor: default;
-}
-
-.broadcast-event-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.broadcast-event-header-left {
+/* ── Panel A: Cylinder rows ── */
+.cylinder-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 255, 136, 0.08);
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
-.broadcast-event-worker-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
+.cylinder-row.active {
+  background: rgba(var(--cyl-color-rgb, 0, 255, 136), 0.06);
+  border-left: 3px solid var(--cyl-color, #00ff88);
+  padding-left: 9px;
+  box-shadow: inset 0 0 20px rgba(0,0,0,0.2);
+}
+
+.cylinder-row.done {
+  opacity: 0.65;
+}
+
+.cylinder-row.error {
+  border-left: 3px solid #ff0055;
+  padding-left: 9px;
+}
+
+.cylinder-dot {
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
+  background: var(--cyl-color, #00ff88);
+  box-shadow: 0 0 6px var(--cyl-color, #00ff88);
   flex-shrink: 0;
+  opacity: 0.45;
+  transition: opacity 0.3s ease;
 }
 
-.broadcast-event-type {
-  font-weight: 700;
+.cylinder-row.active .cylinder-dot {
+  opacity: 1;
+}
+
+.cylinder-dot.pulsing {
+  animation: cylPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes cylPulse {
+  0%, 100% { box-shadow: 0 0 6px var(--cyl-color, #00ff88); opacity: 1; }
+  50%       { box-shadow: 0 0 18px var(--cyl-color, #00ff88), 0 0 30px var(--cyl-color, #00ff88); opacity: 0.8; }
+}
+
+.cylinder-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.cylinder-label {
   font-size: 10px;
+  font-weight: 700;
+  color: var(--cyl-color, #00ff88);
+  text-shadow: 0 0 5px var(--cyl-color, rgba(0, 255, 136, 0.5));
   text-transform: uppercase;
-  letter-spacing: 2px;
+  letter-spacing: 1px;
 }
 
-.broadcast-event-time {
+.cylinder-status-text {
   font-size: 10px;
-  color: rgba(0, 255, 136, 0.35);
-  flex-shrink: 0;
-}
-
-.broadcast-event-flow {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.broadcast-event-row {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 1px 0;
-}
-
-.broadcast-event-row.before-row {
   color: rgba(255, 255, 255, 0.45);
-}
-
-.broadcast-event-row.how-row {
-  color: rgba(0, 255, 136, 0.65);
-  padding-left: 4px;
-}
-
-.broadcast-event-row.after-row {
-  color: #ffffff;
-  font-weight: 600;
-}
-
-.broadcast-event-tag {
-  display: inline-block;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
-  padding: 1px 4px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.broadcast-event-row.before-row .broadcast-event-tag {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.5);
-}
-
-.broadcast-event-row.how-row .broadcast-event-tag {
-  background: rgba(0, 255, 136, 0.15);
-  color: rgba(0, 255, 136, 0.8);
-  border: 1px solid rgba(0, 255, 136, 0.3);
-}
-
-.broadcast-event-row.after-row .broadcast-event-tag {
-  color: #000;
-}
-
-.broadcast-event-excellence {
-  margin-top: 7px;
-  padding-top: 5px;
-  border-top: 1px solid rgba(255, 255, 136, 0.15);
-  font-size: 10px;
-  color: rgba(255, 255, 136, 0.75);
-  font-style: italic;
-  line-height: 1.4;
-}
-
-@keyframes broadcastEventEntry {
-  0% {
-    transform: translateX(50px) scale(0.88);
-    opacity: 0;
-    filter: brightness(4) blur(4px);
-  }
-  20% {
-    transform: translateX(-6px) scale(1.05);
-    opacity: 1;
-    filter: brightness(2.5) blur(0);
-  }
-  55% {
-    transform: translateX(2px) scale(1.01);
-    filter: brightness(1.4);
-  }
-  100% {
-    transform: translateX(0) scale(1);
-    filter: brightness(1);
-  }
-}
-
-@keyframes broadcastEventExit {
-  0% {
-    opacity: 1;
-    transform: scale(1);
-    max-height: 200px;
-    margin: 8px 0;
-    padding: 12px 14px;
-    border-width: 3px;
-  }
-  40% {
-    opacity: 0.3;
-    transform: translateX(30px) scale(0.93);
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(60px) scale(0.87);
-    max-height: 0;
-    margin: 0;
-    padding: 0;
-    border-width: 0;
-  }
-}
-
-.broadcast-event.exiting {
-  animation: broadcastEventExit 0.6s ease-in forwards;
+  white-space: nowrap;
   overflow: hidden;
-  pointer-events: none;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.cylinder-row.active .cylinder-status-text {
+  color: rgba(255, 255, 255, 0.8);
 }
 
 /* ── Panel B: Lifecycle cards ── */
@@ -710,12 +590,6 @@ class DashboardUI {
     this.iterationNumber = 0;
     this.nextCycleTime = null;
     this.bannerTimeout = null;
-    this.broadcastQueue = [];
-    this.broadcastProcessing = false;
-    this.BROADCAST_FANFARE_MS = 3000;
-    this.BROADCAST_MAX_ITEMS = 15;
-    this.workerColors = ['#00ff88', '#ff00ff', '#0088ff', '#ffff00', '#ff8800'];
-    this.workerMap = {};
     this.init();
   }
 
@@ -1097,26 +971,27 @@ class DashboardUI {
   }
 
   handleActionStart(message) {
-    const actionDesc = message.data.description || message.data.type;
-    const workerIndex = (message.data.actionIndex || 1) - 1;
+    const idx = (message.data.actionIndex || 1) - 1;
 
-    const prMatch = (actionDesc || '').match(/PR #(\d+)/);
-    const issueMatch = (actionDesc || '').match(/issue #(\d+)/i);
-    if (prMatch) this.workerMap['pr:' + prMatch[1]] = workerIndex;
-    if (issueMatch) this.workerMap['issue:' + issueMatch[1]] = workerIndex;
+    if (idx >= 0 && idx < this.cylinders.length) {
+      const cyl = this.cylinders[idx];
+      cyl.status = 'active';
+      cyl.actionType = message.data.type || null;
+      cyl.issueNumber = message.data.issueNumber ?? null;
+      cyl.prNumber = message.data.pullRequestNumber ?? null;
 
-    const color = this.getWorkerColor(null, workerIndex);
-    const content = this.getCurrentPhaseContent();
-    if (!content) return;
-    const line = document.createElement('div');
-    line.className = 'log-line info';
-    line.style.cssText = 'border-left: 2px solid ' + color + '; padding-left: 6px;';
-    line.innerHTML = '<span style="color:' + color + '; margin-right:4px;">●</span>'
-      + '<span style="color:rgba(255,255,255,0.5);">[' + new Date().toLocaleTimeString() + ']</span> '
-      + this.escapeHtml('▶ [' + message.data.actionIndex + '/' + message.data.totalActions + '] ' + actionDesc);
-    content.appendChild(line);
-    content.scrollTop = content.scrollHeight;
-    if (content.children.length > 100) content.removeChild(content.firstChild);
+      if (cyl.issueNumber != null) this.cylinderByIssue.set(cyl.issueNumber, idx);
+      if (cyl.prNumber != null)    this.cylinderByPR.set(cyl.prNumber, idx);
+
+      this.renderPanelA();
+      this.renderPanelB();
+    }
+
+    const actionDesc = message.data.description || message.data.type || 'action';
+    this.addEventToStream(
+      \`▶ [\${message.data.actionIndex}/\${message.data.totalActions}] \${actionDesc}\`,
+      idx, 'info'
+    );
   }
 
   handleActionComplete(message) {
@@ -1146,48 +1021,11 @@ class DashboardUI {
 
   handleWorkflowApproval(message) {
     const runName = message.data.runName || 'unknown';
-    this.addLogLine('success', \`✓ Workflow approved: \${runName}\`);
-    this.enqueueBroadcastEvent({
-      category: 'ci',
-      label: 'WORKFLOW',
-      stateBefore: 'Workflow "' + runName + '" was awaiting approval',
-      changeHow: 'Vibrator automatically approved the workflow run',
-      stateAfter: '✅ Workflow "' + runName + '" approved and queued',
-      excellence: 'CI pipeline unblocked — automated approval keeps development flowing',
-      workerIndex: undefined,
-    });
-  }
-
-  handleBroadcastEvent(message) {
-    const category = message.type === 'broadcast-ci-status' ? 'ci' :
-                     message.type === 'broadcast-commit' ? 'commit' :
-                     message.type === 'broadcast-pr-update' ? 'pr' :
-                     message.type === 'broadcast-issue-update' ? 'issue' : 'info';
-
-    const label = message.type.replace('broadcast-', '').replace(/-/g, ' ').toUpperCase();
-
-    let workerIndex = message.data.workerIndex !== undefined ? message.data.workerIndex : undefined;
-    if (workerIndex === undefined) {
-      const prNum = message.data.prNumber;
-      const issueNum = message.data.issueNumber;
-      if (prNum !== undefined) workerIndex = this.workerMap['pr:' + prNum];
-      if (issueNum !== undefined && workerIndex === undefined) workerIndex = this.workerMap['issue:' + issueNum];
-    }
-
-    this.enqueueBroadcastEvent({
-      category,
-      label,
-      stateBefore: message.data.stateBefore || message.data.content || '',
-      changeHow: message.data.changeHow || '',
-      stateAfter: message.data.stateAfter || '',
-      excellence: message.data.excellence || '',
-      workerIndex,
-    });
+    this.addEventToStream(\`✅ Workflow approved: \${runName}\`, -1, 'success');
   }
 
   handleLogMessage(message) {
-    const level = message.data.level || 'info';
-    this.addLogLine(level, message.data.message || '');
+    this.addEventToStream(message.data.message || '', -1, message.data.level || 'info');
   }
 
   handleSnapshotUpdate(message) {
@@ -1232,127 +1070,6 @@ class DashboardUI {
     }
 
     this.addEventToStream(content, cylinderIdx, 'info');
-  }
-
-  addLogLine(level, text) {
-    const content = this.getCurrentPhaseContent();
-    if (!content) return;
-
-    const line = document.createElement('div');
-    line.className = \`log-line \${level}\`;
-    line.textContent = \`[\${new Date().toLocaleTimeString()}] \${text}\`;
-    content.appendChild(line);
-    content.scrollTop = content.scrollHeight;
-
-    if (content.children.length > 100) {
-      content.removeChild(content.firstChild);
-    }
-  }
-
-  enqueueBroadcastEvent(eventData) {
-    this.broadcastQueue.push(eventData);
-    if (!this.broadcastProcessing) {
-      this.processNextBroadcastEvent();
-    }
-  }
-
-  processNextBroadcastEvent() {
-    if (this.broadcastQueue.length === 0) {
-      this.broadcastProcessing = false;
-      return;
-    }
-    this.broadcastProcessing = true;
-    const eventData = this.broadcastQueue.shift();
-    this.displayBroadcastEvent(eventData);
-    setTimeout(() => this.processNextBroadcastEvent(), this.BROADCAST_FANFARE_MS);
-  }
-
-  getWorkerColor(category, workerIndex) {
-    if (workerIndex !== undefined && workerIndex !== null && workerIndex >= 0) {
-      return this.workerColors[workerIndex % this.workerColors.length];
-    }
-    const categoryColors = { commit: '#00ff88', pr: '#0088ff', ci: '#ffff00', issue: '#ff8800' };
-    return (category && categoryColors[category]) || '#ff00ff';
-  }
-
-  escapeHtml(text) {
-    const div = document.createElement('div');
-    div.appendChild(document.createTextNode(String(text)));
-    return div.innerHTML;
-  }
-
-  displayBroadcastEvent(eventData) {
-    const broadcastContent = document.getElementById('phase-broadcast-content');
-    if (!broadcastContent) return;
-
-    const { category, label, stateBefore, changeHow, stateAfter, excellence, workerIndex } = eventData;
-    const color = this.getWorkerColor(category, workerIndex);
-    const r = parseInt(color.slice(1, 3), 16);
-    const g = parseInt(color.slice(3, 5), 16);
-    const b = parseInt(color.slice(5, 7), 16);
-    const time = new Date().toLocaleTimeString();
-
-    const card = document.createElement('div');
-    card.className = 'broadcast-event';
-    card.style.cssText = 'border-left-color:' + color + ';background:rgba(' + r + ',' + g + ',' + b + ',0.07);';
-
-    const nowTagStyle = 'background:' + color + ';';
-    const dotStyle = 'background:' + color + ';box-shadow:0 0 6px ' + color + ';';
-    const typeStyle = 'color:' + color + ';';
-
-    const excellenceHtml = excellence
-      ? '<div class="broadcast-event-excellence">✨ ' + this.escapeHtml(excellence) + '</div>'
-      : '';
-
-    card.innerHTML =
-      '<div class="broadcast-event-header">'
-      + '<div class="broadcast-event-header-left">'
-      + '<span class="broadcast-event-worker-dot" style="' + dotStyle + '"></span>'
-      + '<span class="broadcast-event-type" style="' + typeStyle + '">' + this.escapeHtml(label || (category || 'event').toUpperCase()) + '</span>'
-      + '</div>'
-      + '<span class="broadcast-event-time">' + time + '</span>'
-      + '</div>'
-      + '<div class="broadcast-event-flow">'
-      + '<div class="broadcast-event-row before-row">'
-      + '<span class="broadcast-event-tag">WAS</span>'
-      + '<span>' + this.escapeHtml(stateBefore || '') + '</span>'
-      + '</div>'
-      + '<div class="broadcast-event-row how-row">'
-      + '<span class="broadcast-event-tag">HOW</span>'
-      + '<span>' + this.escapeHtml(changeHow || '') + '</span>'
-      + '</div>'
-      + '<div class="broadcast-event-row after-row">'
-      + '<span class="broadcast-event-tag" style="' + nowTagStyle + '">NOW</span>'
-      + '<span>' + this.escapeHtml(stateAfter || '') + '</span>'
-      + '</div>'
-      + '</div>'
-      + excellenceHtml;
-
-    // Newest events appear at top — conveyor belt pushes older ones down
-    if (broadcastContent.firstChild) {
-      broadcastContent.insertBefore(card, broadcastContent.firstChild);
-    } else {
-      broadcastContent.appendChild(card);
-    }
-    broadcastContent.scrollTop = 0;
-
-    // Evict oldest items beyond limit with slide-away animation
-    const children = broadcastContent.children;
-    if (children.length > this.BROADCAST_MAX_ITEMS) {
-      const toEvict = children[this.BROADCAST_MAX_ITEMS];
-      if (toEvict && !toEvict.classList.contains('exiting')) {
-        toEvict.classList.add('exiting');
-        const evictTarget = toEvict;
-        setTimeout(function() {
-          if (evictTarget.parentNode) evictTarget.parentNode.removeChild(evictTarget);
-        }, 650);
-      }
-    }
-  }
-
-  getCurrentPhaseContent() {
-    const phase = this.currentPhase || 'implementation';
-    return document.getElementById(\`phase-\${phase}-content\`);
   }
 
   updateConnectionStatus(connected) {
