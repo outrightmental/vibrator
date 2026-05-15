@@ -1018,7 +1018,13 @@ class DashboardUI {
 
       if (!pill) {
         pill = this.createPill(pair);
-        content.appendChild(pill);
+        const allExisting = [...content.querySelectorAll('.lifecycle-pill')];
+        const anchor = allExisting.find(el => parseInt(el.dataset.issueNumber, 10) > pair.issue.number);
+        if (anchor) {
+          content.insertBefore(pill, anchor);
+        } else {
+          content.appendChild(pill);
+        }
       } else {
         this.updatePill(pill, pair);
       }
