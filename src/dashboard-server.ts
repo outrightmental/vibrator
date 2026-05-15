@@ -256,6 +256,7 @@ body {
   flex-direction: column;
   gap: 8px;
   min-height: 52px;
+  overflow-x: hidden;
 }
 
 .lifecycle-empty {
@@ -433,6 +434,7 @@ body {
 .phase-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   font-size: 12px;
   line-height: 1.6;
 }
