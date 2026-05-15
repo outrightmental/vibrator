@@ -253,10 +253,9 @@ body {
 
 .lifecycle-content {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
   min-height: 52px;
-  align-items: flex-start;
 }
 
 .lifecycle-empty {
@@ -272,8 +271,6 @@ body {
   display: flex;
   height: 52px;
   min-width: 380px;
-  flex: 1;
-  max-width: 600px;
   animation: pillAppear 0.4s cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 
