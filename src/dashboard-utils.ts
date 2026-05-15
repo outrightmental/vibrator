@@ -1,6 +1,64 @@
 import { globalEventEmitter } from "./event-emitter.js";
 import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
+export interface LifecyclePair {
+  issue: { number: number; title: string; state: string };
+  pr: { number: number; title: string; state: string; draft: boolean; checksStatus: string } | null;
+  /** absent=no PR, planning=implementation in plan, active=PR open, completed=PR closed */
+  prPhase: "absent" | "planning" | "active" | "completed";
+  /** Stable color slot index (issue.number % palette length) */
+  colorIndex: number;
+}
+
+export function broadcastLifecycleUpdate(
+  snapshot: RepositorySnapshot,
+  planningIssueNumbers: ReadonlySet<number> = new Set(),
+  completedIssueNumbers: ReadonlySet<number> = new Set(),
+): void {
+  const pairs: LifecyclePair[] = [];
+  const pairedIssueNumbers = new Set<number>();
+
+  // Pair each open PR with its closing issues (falling back to linked issues)
+  for (const pr of snapshot.pullRequests) {
+    const issueNums =
+      pr.closingIssueNumbers.length > 0 ? pr.closingIssueNumbers : pr.linkedIssueNumbers;
+    for (const issueNumber of issueNums) {
+      if (pairedIssueNumbers.has(issueNumber)) continue;
+      const issue = snapshot.issues.find((i) => i.number === issueNumber);
+      if (!issue) continue;
+      pairedIssueNumbers.add(issueNumber);
+      pairs.push({
+        issue: { number: issue.number, title: issue.title, state: issue.state },
+        pr: {
+          number: pr.number,
+          title: pr.title,
+          state: pr.state,
+          draft: pr.draft,
+          checksStatus: pr.checksStatus,
+        },
+        prPhase: completedIssueNumbers.has(issueNumber) ? "completed" : "active",
+        colorIndex: issue.number % 6,
+      });
+    }
+  }
+
+  // Issues not yet paired get an absent or planning right half
+  for (const issue of snapshot.issues) {
+    if (pairedIssueNumbers.has(issue.number)) continue;
+    pairs.push({
+      issue: { number: issue.number, title: issue.title, state: issue.state },
+      pr: null,
+      prPhase: planningIssueNumbers.has(issue.number) ? "planning" : "absent",
+      colorIndex: issue.number % 6,
+    });
+  }
+
+  // Stable display order: ascending issue number
+  pairs.sort((a, b) => a.issue.number - b.issue.number);
+
+  globalEventEmitter.emit("lifecycle-update", { pairs });
+}
+
 export function broadcastRepositorySnapshot(
   snapshot: RepositorySnapshot,
   owner: string,
