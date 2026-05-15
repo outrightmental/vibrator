@@ -446,6 +446,23 @@ function buildAddressFailingChecksPrompt(params: AddressFailingChecksParams): st
   ].join("\n");
 }
 
+function buildPushConflictResolutionPrompt(branch: string): string {
+  return [
+    `A git merge conflict occurred while preparing to push branch \`${branch}\` to origin.`,
+    "",
+    "The repository is currently in an in-progress merge state.",
+    "",
+    "Instructions:",
+    "1. Run `git status` and inspect all conflicted files.",
+    "2. Resolve every conflict carefully, preserving both local and remote intent where appropriate.",
+    "3. Stage resolved files with `git add`.",
+    "4. Complete the merge by creating a commit (`git commit`) with a clear message.",
+    "5. Do not run `git push` yourself; stop after the merge commit succeeds.",
+    "",
+    "If a safe resolution is not possible, stop and explain why.",
+  ].join("\n");
+}
+
 function buildFinalDescriptionPrompt(params: GenerateFinalDescriptionParams): string {
   const closingReferences =
     params.closingIssueNumbers.length === 0
@@ -582,6 +599,16 @@ function formatLocalTime(epochMs: number): string {
     month: "short",
     day: "numeric",
   });
+}
+
+function buildPushRecoveryBackupBranchName(branch: string): string {
+  const sanitizedBranch = branch
+    .replace(/[^a-zA-Z0-9/_-]+/g, "-")
+    .replace(/\//g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return `vibrator/recovery-${sanitizedBranch || "branch"}-${Date.now()}`;
 }
 
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
@@ -932,23 +959,55 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       }
     }
 
+    const backupBranch = buildPushRecoveryBackupBranchName(branch);
+    await runCommand("git", ["branch", backupBranch, "HEAD"], { cwd: repoDir });
+
     console.warn(
-      `[vibrator] Push for ${branch} was rejected as non-fast-forward; merging origin/${branch} and retrying.`,
+      `[vibrator] Push for ${branch} was rejected as non-fast-forward. Preserved recovery point at ${backupBranch}; integrating origin/${branch} before retrying.`,
     );
 
-    await runCommand("git", ["fetch", "origin", branch], { cwd: repoDir });
-    try {
-      // Prefer local conflict resolutions while still preserving remote commits.
-      await runCommand("git", ["merge", `origin/${branch}`, "-X", "ours", "--no-edit"], {
-        cwd: repoDir,
-      });
-    } catch (error) {
-      throw new Error(
-        `Push rejected as non-fast-forward and failed to merge origin/${branch} before retry: ${error}`,
-      );
-    }
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      await runCommand("git", ["fetch", "origin", branch], { cwd: repoDir });
 
-    await runCommand("git", pushArgs, { cwd: repoDir, captureStderr: true });
+      try {
+        await runCommand("git", ["merge", `origin/${branch}`, "--no-edit"], {
+          cwd: repoDir,
+          captureStderr: true,
+        });
+      } catch (error) {
+        const mergeInProgress = await pathExists(join(repoDir, ".git", "MERGE_HEAD"));
+        if (!mergeInProgress) {
+          throw new Error(
+            `Push rejected as non-fast-forward and merge of origin/${branch} failed before retry: ${error}`,
+          );
+        }
+
+        console.warn(
+          `[vibrator] Merge conflict while integrating origin/${branch} before push retry (${attempt}/${maxRetries}); delegating resolution to Claude.`,
+        );
+        await this.runClaude(buildPushConflictResolutionPrompt(branch), repoDir);
+
+        const stillMerging = await pathExists(join(repoDir, ".git", "MERGE_HEAD"));
+        if (stillMerging) {
+          throw new Error(
+            `Claude did not complete merge-conflict resolution for ${branch}; merge is still in progress. Recovery branch: ${backupBranch}`,
+          );
+        }
+      }
+
+      try {
+        await runCommand("git", pushArgs, { cwd: repoDir, captureStderr: true });
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isNonFastForwardPushError(message) || attempt === maxRetries) {
+          throw new Error(
+            `Failed to push ${branch} after ${attempt} non-fast-forward recovery attempt(s). Recovery branch: ${backupBranch}. ${message}`,
+          );
+        }
+      }
+    }
   }
 
   private async runClaude(prompt: string, cwd: string): Promise<string> {
