@@ -221,6 +221,168 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Panel B: Issue → PR Lifecycle ─────────────────────────────────────── */
+
+.lifecycle-section {
+  padding: 12px 30px;
+  border-bottom: 1px solid rgba(0, 255, 136, 0.25);
+  background: rgba(5, 8, 20, 0.7);
+  flex-shrink: 0;
+}
+
+.lifecycle-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.lifecycle-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: rgba(0, 255, 136, 0.7);
+}
+
+.lifecycle-subtitle {
+  font-size: 10px;
+  color: rgba(0, 255, 136, 0.35);
+  letter-spacing: 1px;
+}
+
+.lifecycle-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 52px;
+}
+
+.lifecycle-empty {
+  font-size: 11px;
+  color: rgba(0, 255, 136, 0.4);
+  letter-spacing: 1px;
+  align-self: center;
+  padding: 10px 0;
+}
+
+/* Two-halved pill */
+.lifecycle-pill {
+  display: flex;
+  height: 52px;
+  min-width: 380px;
+  animation: pillAppear 0.4s cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+@keyframes pillAppear {
+  from { opacity: 0; transform: scaleX(0.85); }
+  to   { opacity: 1; transform: scaleX(1); }
+}
+
+.pill-issue-half {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 16px;
+  border: 2px solid var(--pill-color);
+  border-right: none;
+  border-radius: 999px 0 0 999px;
+  background: rgba(var(--pill-rgb), 0.1);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pill-pr-half {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 16px;
+  border-radius: 0 999px 999px 0;
+  transition: background 0.5s ease, opacity 0.5s ease;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* absent: ghost right half, full border separates the two halves */
+.pill-pr-half.absent {
+  border: 2px dashed rgba(128, 128, 128, 0.2);
+  opacity: 0.35;
+}
+
+/* planning: colored dashed border, pulsing */
+.pill-pr-half.planning {
+  border: 2px dashed var(--pill-color);
+  background: transparent;
+  animation: planningPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes planningPulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}
+
+/* active: solid border, subtle fill */
+.pill-pr-half.active {
+  border: 2px solid var(--pill-color);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--pill-rgb), 0.14);
+}
+
+/* completed: solid fill — satisfying final state */
+.pill-pr-half.completed {
+  border: 2px solid var(--pill-color);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--pill-rgb), 0.38);
+  box-shadow: inset 0 0 14px rgba(var(--pill-rgb), 0.2);
+}
+
+.pill-label {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--pill-color);
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+.pill-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pill-number {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--pill-color);
+  white-space: nowrap;
+}
+
+.pill-title {
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.pill-badge {
+  font-size: 8px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--pill-color);
+  color: var(--pill-color);
+  opacity: 0.7;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── End Panel B ─────────────────────────────────────────────────────── */
+
 .main-content {
   flex: 1;
   display: flex;
@@ -606,6 +768,18 @@ body {
 
   private generateJS(): string {
     return `
+// Palette of 6 distinct neon colours used to colour-coordinate pills with
+// worker threads. Colour slot = issueNumber % PILL_PALETTE.length, which
+// keeps the assignment stable for the lifetime of the SDLC cycle.
+const PILL_PALETTE = [
+  { hex: '#00ff88', rgb: '0,255,136' },   // green
+  { hex: '#ff00ff', rgb: '255,0,255' },   // magenta
+  { hex: '#0088ff', rgb: '0,136,255' },   // blue
+  { hex: '#ffff00', rgb: '255,255,0' },   // yellow
+  { hex: '#ff6600', rgb: '255,102,0' },   // orange
+  { hex: '#aa00ff', rgb: '170,0,255' },   // purple
+];
+
 class DashboardUI {
   constructor() {
     this.appContainer = document.getElementById('app');
@@ -622,7 +796,7 @@ class DashboardUI {
     this.broadcastProcessing = false;
     this.BROADCAST_FANFARE_MS = 3000;
     this.BROADCAST_MAX_ITEMS = 15;
-    this.workerColors = ['#00ff88', '#ff00ff', '#0088ff', '#ffff00', '#ff8800'];
+    this.workerColors = ['#00ff88', '#ff00ff', '#0088ff', '#ffff00', '#ff6600', '#aa00ff'];
     this.workerMap = {};
     this.init();
   }
@@ -642,7 +816,7 @@ class DashboardUI {
       <div class="header">
         <div>
           <div class="header-title">⚡ VIBRATOR</div>
-          <div class="header-repo">AI SDLC BROADCAST</div>
+          <div class="header-repo">AI SDLC Dashboard</div>
         </div>
         <div class="iteration-info">
           <div class="iteration-label">Iteration</div>
@@ -651,6 +825,15 @@ class DashboardUI {
         <div class="countdown">
           <div class="countdown-label">Next Cycle In</div>
           <div class="countdown-timer" id="countdown-timer">--:--</div>
+        </div>
+      </div>
+      <div class="lifecycle-section">
+        <div class="lifecycle-header">
+          <div class="lifecycle-title">Panel B — Issue → PR Lifecycle</div>
+          <div class="lifecycle-subtitle" id="lifecycle-subtitle">waiting for snapshot…</div>
+        </div>
+        <div id="lifecycle-content" class="lifecycle-content">
+          <div class="lifecycle-empty">Connecting to vibrator…</div>
         </div>
       </div>
       <div class="main-content">
@@ -670,7 +853,7 @@ class DashboardUI {
       <div class="status-bar">
         <div class="status-item">
           <div class="status-indicator active"></div>
-          <span>Vibrator Active</span>
+          <span>Dashboard Active</span>
         </div>
         <div class="stats">
           <div class="stat">
@@ -766,6 +949,9 @@ class DashboardUI {
       case 'broadcast-review-comment':
       case 'broadcast-issue-update':
         this.handleBroadcastEvent(message);
+        break;
+      case 'lifecycle-update':
+        this.handleLifecycleUpdate(message);
         break;
       case 'log-message':
         this.handleLogMessage(message);
@@ -946,7 +1132,7 @@ class DashboardUI {
     if (workerIndex !== undefined && workerIndex !== null && workerIndex >= 0) {
       return this.workerColors[workerIndex % this.workerColors.length];
     }
-    const categoryColors = { commit: '#00ff88', pr: '#0088ff', ci: '#ffff00', issue: '#ff8800' };
+    const categoryColors = { commit: '#00ff88', pr: '#0088ff', ci: '#ffff00', issue: '#ff6600' };
     return (category && categoryColors[category]) || '#ff00ff';
   }
 
@@ -1028,6 +1214,134 @@ class DashboardUI {
   getCurrentPhaseContent() {
     const phase = this.currentPhase || 'implementation';
     return document.getElementById(\`phase-\${phase}-content\`);
+  }
+
+  handleLifecycleUpdate(message) {
+    const pairs = message.data.pairs;
+    if (!Array.isArray(pairs)) return;
+
+    const content = document.getElementById('lifecycle-content');
+    const subtitle = document.getElementById('lifecycle-subtitle');
+    if (!content) return;
+
+    if (pairs.length === 0) {
+      content.innerHTML = '<div class="lifecycle-empty">⚡ All issues complete — repository is clean</div>';
+      if (subtitle) subtitle.textContent = 'done';
+      return;
+    }
+
+    if (subtitle) {
+      const active = pairs.filter(p => p.prPhase === 'active' || p.prPhase === 'planning').length;
+      const done   = pairs.filter(p => p.prPhase === 'completed').length;
+      subtitle.textContent = \`\${pairs.length} item\${pairs.length !== 1 ? 's' : ''} · \${active} in progress · \${done} completed\`;
+    }
+
+    // Clear any empty-state placeholder (initial "Connecting" div or prior "all done" message)
+    content.querySelector('.lifecycle-empty')?.remove();
+
+    // Re-render all pills (keyed by issue number via data attribute)
+    const existingKeys = new Set(
+      [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber)
+    );
+    const incomingKeys = new Set(pairs.map(p => String(p.issue.number)));
+
+    // Remove pills that no longer exist
+    for (const key of existingKeys) {
+      if (!incomingKeys.has(key)) {
+        content.querySelector(\`[data-issue-number="\${key}"]\`)?.remove();
+      }
+    }
+
+    for (const pair of pairs) {
+      const key = String(pair.issue.number);
+      let pill = content.querySelector(\`[data-issue-number="\${key}"]\`);
+
+      if (!pill) {
+        pill = this.createPill(pair);
+        const allExisting = [...content.querySelectorAll('.lifecycle-pill')];
+        const anchor = allExisting.find(el => parseInt(el.dataset.issueNumber, 10) > pair.issue.number);
+        if (anchor) {
+          content.insertBefore(pill, anchor);
+        } else {
+          content.appendChild(pill);
+        }
+      } else {
+        this.updatePill(pill, pair);
+      }
+    }
+  }
+
+  createPill(pair) {
+    const color = PILL_PALETTE[pair.colorIndex % PILL_PALETTE.length];
+    const pill = document.createElement('div');
+    pill.className = 'lifecycle-pill';
+    pill.dataset.issueNumber = String(pair.issue.number);
+    pill.style.setProperty('--pill-color', color.hex);
+    pill.style.setProperty('--pill-rgb', color.rgb);
+    pill.style.setProperty('--pill-glow', \`rgba(\${color.rgb},0.3)\`);
+    pill.innerHTML = this.pillHTML(pair);
+    return pill;
+  }
+
+  updatePill(pill, pair) {
+    const color = PILL_PALETTE[pair.colorIndex % PILL_PALETTE.length];
+    pill.style.setProperty('--pill-color', color.hex);
+    pill.style.setProperty('--pill-rgb', color.rgb);
+    pill.style.setProperty('--pill-glow', \`rgba(\${color.rgb},0.3)\`);
+
+    const prHalf = pill.querySelector('.pill-pr-half');
+    if (prHalf) {
+      // Update only the PR half class/content so the pill doesn't flicker
+      prHalf.className = \`pill-pr-half \${pair.prPhase}\`;
+      prHalf.innerHTML = this.prHalfContent(pair);
+    }
+  }
+
+  pillHTML(pair) {
+    return \`
+      <div class="pill-issue-half">
+        <div class="pill-label">Issue</div>
+        <div class="pill-row">
+          <span class="pill-number">#\${pair.issue.number}</span>
+          <span class="pill-badge">\${pair.issue.state.toUpperCase()}</span>
+          <span class="pill-title">\${this.esc(pair.issue.title)}</span>
+        </div>
+      </div>
+      <div class="pill-pr-half \${pair.prPhase}">\${this.prHalfContent(pair)}</div>
+    \`;
+  }
+
+  prHalfContent(pair) {
+    if (!pair.pr) {
+      if (pair.prPhase === 'planning') {
+        return \`<div class="pill-label">PR</div><div class="pill-row"><span class="pill-title">implementing…</span></div>\`;
+      }
+      return \`<div class="pill-label">PR</div><div class="pill-row"><span class="pill-title">—</span></div>\`;
+    }
+    const badges = [];
+    if (pair.pr.draft) badges.push('DRAFT');
+    if (pair.prPhase === 'completed') badges.push('MERGED');
+    const checksIcon = pair.pr.checksStatus === 'success' ? '✓' :
+                       pair.pr.checksStatus === 'failure' ? '✗' :
+                       pair.pr.checksStatus === 'pending' ? '…' : '';
+    if (checksIcon) badges.push(checksIcon);
+    const badgeHTML = badges.map(b => \`<span class="pill-badge">\${b}</span>\`).join('');
+    return \`
+      <div class="pill-label">PR</div>
+      <div class="pill-row">
+        <span class="pill-number">#\${pair.pr.number}</span>
+        \${badgeHTML}
+        <span class="pill-title">\${this.esc(pair.pr.title)}</span>
+      </div>
+    \`;
+  }
+
+  esc(text) {
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   updateConnectionStatus(connected) {
