@@ -162,6 +162,16 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+export async function isRebaseInProgress(
+  repoDir: string,
+  pathExistsFn: (path: string) => Promise<boolean> = pathExists,
+): Promise<boolean> {
+  return (
+    (await pathExistsFn(join(repoDir, ".git", "rebase-merge"))) ||
+    (await pathExistsFn(join(repoDir, ".git", "rebase-apply")))
+  );
+}
+
 interface RunCommandOptions {
   cwd?: string;
   input?: string;
@@ -606,8 +616,16 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       );
     }
 
-    // Push the branch and capture the head SHA.
-    await runCommand("git", ["push", "--force-with-lease", "origin", branch], {
+    // Merge latest from base branch using 'theirs' strategy before pushing.
+    await runCommand("git", ["fetch", "origin", params.baseBranch], { cwd: repoDir });
+    try {
+          await runCommand("git", ["merge", `origin/${params.baseBranch}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
+    } catch (error) {
+      throw new Error(`Failed to merge latest from base branch before push: ${error}`);
+    }
+
+    // Push the branch and capture the head SHA (never force-push).
+    await runCommand("git", ["push", "origin", branch], {
       cwd: repoDir,
     });
     const headSha = (
@@ -660,16 +678,42 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // branch is fast-forward mergeable on GitHub.
     await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
     try {
-      await runCommand("git", ["rebase", `origin/${params.baseRefName}`], { cwd: repoDir });
+      await runCommand("git", ["rebase", `origin/${params.baseRefName}`], {
+        cwd: repoDir,
+        captureStdout: true,
+        captureStderr: true,
+      });
       // Rebase finished cleanly — no conflicts (race with the remote).
-      return this.pushAndReportHead(repoDir, params.headRefName, { forceWithLease: true });
-    } catch {
-      // Conflicts — let Claude resolve them.
+      // Merge latest from base branch using 'theirs' strategy before pushing.
+      await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
+      try {
+              await runCommand("git", ["merge", `origin/${params.baseRefName}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
+      } catch (error) {
+        throw new Error(`Failed to merge latest from base branch before push: ${error}`);
+      }
+      return this.pushAndReportHead(repoDir, params.headRefName, { forceWithLease: false });
+    } catch (error) {
+      const rebaseInProgress = await isRebaseInProgress(repoDir);
+      if (!rebaseInProgress) {
+        throw new Error(
+          `Failed to rebase PR #${params.pullRequestNumber} onto origin/${params.baseRefName}: ${(error as Error).message}`,
+        );
+      }
+      console.log(
+        `[vibrator] Rebase onto origin/${params.baseRefName} produced conflicts for PR #${params.pullRequestNumber}; delegating conflict resolution to Claude.`,
+      );
     }
 
     const prompt = buildResolveConflictsPrompt(params);
     await this.runClaude(prompt, repoDir);
-    return this.pushAndReportHead(repoDir, params.headRefName, { forceWithLease: true });
+    // Merge latest from base branch using 'theirs' strategy before pushing.
+    await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
+    try {
+            await runCommand("git", ["merge", `origin/${params.baseRefName}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
+    } catch (error) {
+      throw new Error(`Failed to merge latest from base branch before push: ${error}`);
+    }
+    return this.pushAndReportHead(repoDir, params.headRefName, { forceWithLease: false });
   }
 
   async addressFailingChecks(
@@ -786,9 +830,25 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     branch: string,
     options: { forceWithLease?: boolean } = {},
   ): Promise<AgentBranchUpdate> {
-    const args = ["push"];
-    if (options.forceWithLease) args.push("--force-with-lease");
-    args.push("origin", `HEAD:${branch}`);
+    // Always merge latest from base branch using 'theirs' strategy before pushing.
+    // Try to infer the base branch from the remote-tracking branch if possible.
+    let baseBranch = 'main';
+    try {
+      const branchInfo = await runCommand("git", ["for-each-ref", `refs/heads/${branch}`, "--format=%(upstream:short)"], { cwd: repoDir, captureStdout: true });
+      if (branchInfo && branchInfo.includes('/')) {
+        const parts = branchInfo.split('/');
+        if (parts[1]) {
+          baseBranch = parts[1].trim();
+        }
+      }
+    } catch {}
+    await runCommand("git", ["fetch", "origin", baseBranch], { cwd: repoDir });
+    try {
+      await runCommand("git", ["merge", `origin/${baseBranch}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
+    } catch (error) {
+      throw new Error(`Failed to merge latest from base branch before push: ${error}`);
+    }
+    const args = ["push", "origin", `HEAD:${branch}`];
     await runCommand("git", args, { cwd: repoDir });
     const headSha = (
       await runCommand("git", ["rev-parse", "HEAD"], {

@@ -9,6 +9,24 @@ import {
   VIBRATOR_REVIEW_MARKER,
 } from "../src/github.js";
 
+function captureStderr(t: test.TestContext): { output: () => string } {
+  let stderrOutput = "";
+  const stderrWriteMock = t.mock.method(
+    process.stderr,
+    "write",
+    (chunk: string | Uint8Array): boolean => {
+      stderrOutput += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      return true;
+    },
+  );
+  t.after(() => {
+    stderrWriteMock.mock.restore();
+  });
+  return {
+    output: () => stderrOutput,
+  };
+}
+
 test("isVibratorReview returns true when the review body carries the marker", () => {
   assert.equal(
     isVibratorReview(`${VIBRATOR_REVIEW_MARKER}\n\nLooks good.`),
@@ -23,6 +41,7 @@ test("isVibratorReview returns false for reviews from other sources", () => {
 });
 
 test("squashMergePullRequest retries with --admin when branch policy blocks merge", async (t) => {
+  const stderr = captureStderr(t);
   const spawnCalls: Array<{ command: string; args: readonly string[] }> = [];
   let mergeAttempts = 0;
 
@@ -101,9 +120,11 @@ test("squashMergePullRequest retries with --admin when branch policy blocks merg
     "outrightmental/readtheroom",
     "--admin",
   ]);
+  assert.match(stderr.output(), /base branch policy prohibits the merge/);
 });
 
 test("squashMergePullRequest does not retry unrelated gh merge failures", async (t) => {
+  const stderr = captureStderr(t);
   const spawnMock = t.mock.method(
     childProcess,
     "spawn",
@@ -143,4 +164,5 @@ test("squashMergePullRequest does not retry unrelated gh merge failures", async 
     client.squashMergePullRequest(160, "Subject", "Body"),
     /non-zero status 1/,
   );
+  assert.match(stderr.output(), /network failure/);
 });
