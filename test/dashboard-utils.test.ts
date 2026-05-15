@@ -155,6 +155,26 @@ test("broadcastLifecycleUpdate: falls back to linkedIssueNumbers when no closing
   assert.equal(pairs[0]?.pr?.number, 22);
 });
 
+test("broadcastLifecycleUpdate: planning and completed coexist without regressing planning to absent", async () => {
+  // Mirrors the real call in index.ts after a plan with both start-implementation
+  // and squash-merge actions: planningIssueNumbers and completedIssueNumbers are
+  // both non-empty. The planning issue has no PR in the snapshot (its PR was just
+  // created by the action and isn't reflected in the pre-action snapshot yet).
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 1 }), createIssue({ number: 2 })],
+    pullRequests: [createPR({ number: 10, closingIssueNumbers: [2] })],
+    agentSessions: [],
+  };
+
+  const eventP = captureNextLifecycleEvent();
+  broadcastLifecycleUpdate(snapshot, new Set([1]), new Set([2]));
+  const event = await eventP;
+
+  const pairs = event.data.pairs as LifecyclePair[];
+  assert.equal(pairs.find((p) => p.issue.number === 1)?.prPhase, "planning");
+  assert.equal(pairs.find((p) => p.issue.number === 2)?.prPhase, "completed");
+});
+
 test("broadcastLifecycleUpdate: colorIndex is stable (issueNumber % 6)", async () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 6 }), createIssue({ number: 7 }), createIssue({ number: 13 })],
