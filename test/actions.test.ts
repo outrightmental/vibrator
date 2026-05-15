@@ -205,7 +205,7 @@ test("executeAction implements an issue, opens a PR, and records the session", a
       pullRequestBody: "Added widget.\n\nCloses #7",
       headSha: "sha-impl-7",
     },
-    newPullRequest: { number: 100, headSha: "sha-impl-7" },
+    newPullRequest: { number: 100, headSha: "sha-impl-7", created: true },
   });
 
   await run(harness, { type: "start-implementation", issueNumber: 7 });
@@ -214,7 +214,6 @@ test("executeAction implements an issue, opens a PR, and records the session", a
     "get-default-branch",
     "implement:7:main",
     "create-pr:vibrator/issue-7-add-widget->main:Add widget:Added widget.\\n\\nCloses #7",
-    "post-comment:100:Implemented issue #7: opened this PR.",
   ]);
   assert.deepEqual(harness.sessions, [
     {
