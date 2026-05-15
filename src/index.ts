@@ -21,6 +21,7 @@ import {
   broadcastIssueUpdate,
   broadcastCommit,
   broadcastReviewComment,
+  broadcastLifecycleUpdate,
   emitLogMessage,
 } from "./dashboard-utils.js";
 import type {
@@ -96,6 +97,7 @@ async function broadcastBetweenCycleActivity(
 
     // Broadcast current repository state
     broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+    broadcastLifecycleUpdate(snapshot);
 
     // Broadcast any open PRs and their review comments
     for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
@@ -192,6 +194,7 @@ interface Config {
   intervalMs: number;
   once: boolean;
   dryRun: boolean;
+  noBrowser: boolean;
   sessionStorePath: string;
 }
 
@@ -222,6 +225,7 @@ function parseArgs(argv: string[]): Config {
   const intervalMs = Number.parseInt(process.env.LOOP_INTERVAL_MS ?? "60000", 10);
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
+  const noBrowser = argv.includes("--no-browser");
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
   const claudeModel = process.env.CLAUDE_MODEL;
@@ -234,6 +238,7 @@ function parseArgs(argv: string[]): Config {
     intervalMs: Number.isNaN(intervalMs) ? 60000 : intervalMs,
     once,
     dryRun,
+    noBrowser,
     sessionStorePath,
   };
 }
@@ -357,6 +362,15 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   const plan = buildPlan(snapshot, config.maxConcurrency);
   const blockedEntries = Object.entries(plan.blockedIssueNumbers);
 
+  // Emit Panel B lifecycle state — issues tagged as "planning" when their
+  // start-implementation action is in the current plan
+  const planningIssueNumbers = new Set(
+    plan.actions
+      .filter((a) => a.type === "start-implementation")
+      .map((a) => a.issueNumber),
+  );
+  broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
+
   section("Blocked issues");
   if (blockedEntries.length === 0) {
     note("(none)");
@@ -460,13 +474,15 @@ async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
 
-  // Start dashboard server
+  // Start the Dashboard server
   const dashboard = new DashboardServer({ port: 3000 });
   let dashboardReady = false;
   try {
     await dashboard.initialize();
     await dashboard.start();
-    await dashboard.openBrowser();
+    if (!config.noBrowser) {
+      await dashboard.openBrowser();
+    }
     dashboardReady = true;
   } catch (error) {
     console.error(
@@ -478,13 +494,14 @@ async function main(): Promise<void> {
   write(`vibrator starting · ${timestamp()}`);
   write(`repo: ${config.owner}/${config.repo} (${repositoryUrl})`);
   if (dashboardReady) {
-    write(`dashboard: ${dashboard.getUrl()}`);
+    write(`dashboard: ${dashboard.getUrl()}${config.noBrowser ? " (browser launch suppressed)" : ""}`);
   } else {
     write(`dashboard: failed to start (check if port 3000 is available)`);
   }
   const modeNotes: string[] = [];
   if (config.once) modeNotes.push("--once");
   if (config.dryRun) modeNotes.push("--dry-run");
+  if (config.noBrowser) modeNotes.push("--no-browser");
   write(
     `interval: ${formatDuration(config.intervalMs)} · concurrency: ${config.maxConcurrency}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
