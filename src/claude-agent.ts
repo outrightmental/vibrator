@@ -619,7 +619,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // Merge latest from base branch using 'theirs' strategy before pushing.
     await runCommand("git", ["fetch", "origin", params.baseBranch], { cwd: repoDir });
     try {
-      await runCommand("git", ["merge", `origin/${params.baseBranch}", "-X", "theirs", "--no-edit"], { cwd: repoDir });
+          await runCommand("git", ["merge", `origin/${params.baseBranch}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
     } catch (error) {
       throw new Error(`Failed to merge latest from base branch before push: ${error}`);
     }
@@ -687,7 +687,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       // Merge latest from base branch using 'theirs' strategy before pushing.
       await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
       try {
-        await runCommand("git", ["merge", `origin/${params.baseRefName}", "-X", "theirs", "--no-edit"], { cwd: repoDir });
+              await runCommand("git", ["merge", `origin/${params.baseRefName}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
       } catch (error) {
         throw new Error(`Failed to merge latest from base branch before push: ${error}`);
       }
@@ -709,7 +709,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // Merge latest from base branch using 'theirs' strategy before pushing.
     await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
     try {
-      await runCommand("git", ["merge", `origin/${params.baseRefName}", "-X", "theirs", "--no-edit"], { cwd: repoDir });
+            await runCommand("git", ["merge", `origin/${params.baseRefName}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
     } catch (error) {
       throw new Error(`Failed to merge latest from base branch before push: ${error}`);
     }
@@ -836,12 +836,15 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     try {
       const branchInfo = await runCommand("git", ["for-each-ref", `refs/heads/${branch}`, "--format=%(upstream:short)"], { cwd: repoDir, captureStdout: true });
       if (branchInfo && branchInfo.includes('/')) {
-        baseBranch = branchInfo.split('/')[1].trim();
+        const parts = branchInfo.split('/');
+        if (parts[1]) {
+          baseBranch = parts[1].trim();
+        }
       }
     } catch {}
     await runCommand("git", ["fetch", "origin", baseBranch], { cwd: repoDir });
     try {
-      await runCommand("git", ["merge", `origin/${baseBranch}", "-X", "theirs", "--no-edit"], { cwd: repoDir });
+      await runCommand("git", ["merge", `origin/${baseBranch}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
     } catch (error) {
       throw new Error(`Failed to merge latest from base branch before push: ${error}`);
     }
