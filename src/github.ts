@@ -253,9 +253,12 @@ export class GitHubClient {
         `  Response body:\n${responseBody}`,
       );
 
-      throw new Error(
-        `GitHub request failed (${response.status} ${response.statusText}) for ${path}. ` +
-        `Response body: ${responseBody}`,
+      throw Object.assign(
+        new Error(
+          `GitHub request failed (${response.status} ${response.statusText}) for ${path}. ` +
+          `Response body: ${responseBody}`,
+        ),
+        { statusCode: response.status },
       );
     }
 
@@ -572,21 +575,35 @@ export class GitHubClient {
     base: string;
     draft?: boolean;
   }): Promise<{ number: number; headSha: string }> {
-    const response = await this.request<{
-      number: number;
-      head: { sha: string };
-    }>(`/repos/${this.options.owner}/${this.options.repo}/pulls`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: input.title,
-        body: input.body,
-        head: input.head,
-        base: input.base,
-        draft: input.draft ?? false,
-      }),
-    });
-    return { number: response.number, headSha: response.head.sha };
+    try {
+      const response = await this.request<{
+        number: number;
+        head: { sha: string };
+      }>(`/repos/${this.options.owner}/${this.options.repo}/pulls`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: input.title,
+          body: input.body,
+          head: input.head,
+          base: input.base,
+          draft: input.draft ?? false,
+        }),
+      });
+      return { number: response.number, headSha: response.head.sha };
+    } catch (error) {
+      if ((error as { statusCode?: number }).statusCode !== 422) {
+        throw error;
+      }
+      // A PR already exists for this branch — look it up and return it.
+      const existing = await this.request<Array<{ number: number; head: { sha: string } }>>(
+        `/repos/${this.options.owner}/${this.options.repo}/pulls?state=open&head=${encodeURIComponent(`${this.options.owner}:${input.head}`)}`,
+      );
+      if (existing.length === 0) {
+        throw error;
+      }
+      return { number: existing[0]!.number, headSha: existing[0]!.head.sha };
+    }
   }
 
   /**
