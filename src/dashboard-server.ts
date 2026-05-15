@@ -958,6 +958,9 @@ class DashboardUI {
       case 'log-message':
         this.handleLogMessage(message);
         break;
+      case 'claude-thinking':
+        this.addLogLine('info', \`Claude [\${message.data.model}]: \${message.data.excerpt}\`);
+        break;
       default:
         this.addLogLine('info', \`[EVENT] \${message.type}: \${JSON.stringify(message.data)}\`);
     }
