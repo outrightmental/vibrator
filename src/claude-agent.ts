@@ -2,8 +2,124 @@ import { spawn } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { globalEventEmitter } from "./event-emitter.js";
 
 
+
+// ─── Thinking-preview extractor ─────────────────────────────────────────────
+
+/**
+ * Extracts a short readable preview from a raw verbose chunk emitted by the
+ * Claude CLI stderr stream. Strips ANSI codes, picks the last non-empty line,
+ * and truncates to a display-friendly length.
+ */
+export function extractThinkingPreview(chunk: string): string {
+  const plain = chunk
+    .replace(/\[[0-9;]*[A-Za-z]/g, "") // strip ANSI escape sequences
+    .replace(/\r/g, "");
+  const lines = plain
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  const last = lines.at(-1) ?? "";
+  return last.length > 120 ? `${last.slice(0, 117)}…` : last;
+}
+
+// ─── Multi-run terminal status board ────────────────────────────────────────
+
+interface StatusSlot {
+  label: string;
+  startTime: number;
+  thinking: string;
+}
+
+/**
+ * Manages N updating status lines at the bottom of the terminal (one per
+ * concurrent Claude run). On a TTY it uses ANSI cursor movement to redraw the
+ * lines in place every 500 ms; on non-TTY output it falls back to plain log
+ * lines so CI and piped consumers still see start/done messages.
+ */
+class StatusBoard {
+  private readonly slots = new Map<number, StatusSlot>();
+  private nextId = 0;
+  private timer: ReturnType<typeof setInterval> | undefined;
+
+  private get tty(): boolean {
+    return process.stderr.isTTY === true;
+  }
+
+  allocate(label: string): number {
+    const id = this.nextId++;
+    this.slots.set(id, { label, startTime: Date.now(), thinking: "" });
+    if (this.tty) {
+      // Reserve a blank terminal line for this slot.
+      process.stderr.write("\n");
+      if (!this.timer) {
+        this.timer = setInterval(() => { this.redraw(); }, 500);
+      }
+    } else {
+      process.stderr.write(`Claude [${label}] starting…\n`);
+    }
+    return id;
+  }
+
+  update(id: number, thinking: string): void {
+    const slot = this.slots.get(id);
+    if (slot && thinking) {
+      slot.thinking = thinking;
+    }
+  }
+
+  free(id: number, doneMessage: string): void {
+    if (!this.slots.has(id)) return;
+    if (this.tty) {
+      this.redrawWithReplacement(id, doneMessage);
+    } else {
+      process.stderr.write(`${doneMessage}\n`);
+    }
+    this.slots.delete(id);
+    if (this.slots.size === 0 && this.timer !== undefined) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  private fmtElapsed(startTime: number): string {
+    const secs = Math.floor((Date.now() - startTime) / 1000);
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  }
+
+  private renderSlot(slot: StatusSlot): string {
+    const elapsed = this.fmtElapsed(slot.startTime);
+    const tail = slot.thinking ? ` ▌ ${slot.thinking.slice(0, 80)}` : "";
+    return `[${elapsed}] Claude [${slot.label}]${tail}`;
+  }
+
+  private redraw(): void {
+    const count = this.slots.size;
+    if (count === 0) return;
+    process.stderr.write(`[${count}A`); // cursor up N lines
+    for (const slot of this.slots.values()) {
+      process.stderr.write(`\r[2K${this.renderSlot(slot)}\n`);
+    }
+  }
+
+  private redrawWithReplacement(targetId: number, replacement: string): void {
+    const count = this.slots.size;
+    if (count === 0) return;
+    process.stderr.write(`[${count}A`);
+    for (const [id, slot] of this.slots) {
+      const line = id === targetId ? replacement : this.renderSlot(slot);
+      process.stderr.write(`\r[2K${line}\n`);
+    }
+  }
+}
+
+const statusBoard = new StatusBoard();
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Local Claude coding-agent client. The default implementation shells out
@@ -236,7 +352,6 @@ function runCommand(
     if ((options.onStderrChunk || options.captureStderr) && child.stderr) {
       child.stderr.on("data", (chunk: Buffer) => {
         if (options.onStderrChunk) {
-          process.stderr.write(chunk);
           options.onStderrChunk(chunk.toString("utf8"));
         }
         if (options.captureStderr) {
@@ -1062,7 +1177,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       );
     }
 
-    console.log(`Claude [${modelDisplay}] starting…`);
+    const slotId = statusBoard.allocate(modelDisplay);
 
     try {
       const result = await runCommand(
@@ -1081,19 +1196,30 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           captureStderr: true,
           env,
           timeoutMs: this.claudeTimeoutMs,
-          // Stream verbose thinking output live: the Claude CLI writes tool
-          // calls, thinking tokens, and progress to stderr. Setting
-          // onStderrChunk causes runCommand to forward each chunk to
-          // process.stderr as it arrives so the output is visible in real time.
-          onStderrChunk: () => {},
+          onStderrChunk: (chunk: string) => {
+            const preview = extractThinkingPreview(chunk);
+            if (preview) {
+              statusBoard.update(slotId, preview);
+              globalEventEmitter.emit("claude-thinking", {
+                model: modelDisplay,
+                excerpt: preview,
+              });
+            }
+          },
         },
       );
 
-      console.log(`Claude [${modelDisplay}] done [${formatElapsed()}]`);
+      statusBoard.free(slotId, `Claude [${modelDisplay}] done [${formatElapsed()}]`);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const quotaMessage = tryBuildQuotaMessage(message);
+      statusBoard.free(
+        slotId,
+        quotaMessage
+          ? `Claude [${modelDisplay}] quota limit [${formatElapsed()}]`
+          : `Claude [${modelDisplay}] error [${formatElapsed()}]`,
+      );
       if (quotaMessage) {
         claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;
         throw new Error(quotaMessage.text, { cause: error });
