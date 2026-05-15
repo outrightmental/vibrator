@@ -12,7 +12,7 @@ It is for developers who want the fun part of vibe coding — expressing
 intent and reviewing outcomes — without babysitting every agent
 handoff.
 
-<img width="1512" height="945" alt="Vibrator by Outright Mental" src="https://github.com/user-attachments/assets/33076db7-ae9c-4712-97ce-07b87f71ada7" />
+<img width="1512" height="945" alt="Vibrator by Outright Mental" src="design/screenshot/outrightmental-vibrator-screenshot.png" />
 
 ## Why this exists
 
@@ -80,8 +80,8 @@ worker behind every action:
 
 See the deeper docs:
 
-- [Design overview](docs/DESIGN.md)
-- [Agent loop and PR lifecycle](docs/AGENT_LOOP.md)
+- [Design overview](design/SPEC.md)
+- [Agent loop and PR lifecycle](design/AGENT_LOOP.md)
 
 ## Quick start
 
