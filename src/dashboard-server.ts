@@ -721,7 +721,7 @@ class DashboardUI {
         <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
         <div class="cylinder-info">
           <div class="cylinder-label">CYL \${cyl.index} · \${cyl.colorName}</div>
-          <div class="cylinder-status-text">\${statusText}</div>
+          <div class="cylinder-status-text">\${escHtml(statusText)}</div>
         </div>
       \`;
       list.appendChild(row);
