@@ -16,7 +16,7 @@ export interface ActionGitHubClient {
     head: string;
     base: string;
     draft?: boolean;
-  }): Promise<{ number: number; headSha: string }>;
+  }): Promise<{ number: number; headSha: string; created: boolean }>;
   updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void>;
   squashMergePullRequest(
     pullRequestNumber: number,
@@ -163,20 +163,23 @@ export async function executeAction(
         head: implementation.branch,
         base: baseBranch,
       });
-      await sessionStore.createSession({
-        issueNumber: issue.number,
-        pullRequestNumber: created.number,
-        phase: "implementation",
-        status: "completed",
-        result: {
-          pullRequestHeadSha: created.headSha,
-          pullRequestBody: implementation.pullRequestBody,
-        },
-      });
-      await gitHubClient.postComment(
-        created.number,
-        `Implemented issue #${issue.number}: opened this PR.`,
-      );
+      // Only create a session and post the "opened" comment if this is a new PR.
+      if (created.created) {
+        await sessionStore.createSession({
+          issueNumber: issue.number,
+          pullRequestNumber: created.number,
+          phase: "implementation",
+          status: "completed",
+          result: {
+            pullRequestHeadSha: created.headSha,
+            pullRequestBody: implementation.pullRequestBody,
+          },
+        });
+        await gitHubClient.postComment(
+          created.number,
+          `Implemented issue #${issue.number}: opened this PR.`,
+        );
+      }
       return {};
     }
 

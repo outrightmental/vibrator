@@ -586,8 +586,9 @@ export class GitHubClient {
   }
 
   /**
-   * Create a pull request. Returns the new PR number and head SHA.
-   * If a PR already exists for the head branch, returns the existing PR.
+   * Create a pull request. Returns the PR number, head SHA, and a flag indicating
+   * whether the PR was newly created or already existed.
+   * If a PR already exists for the head branch, returns the existing PR with created=false.
    */
   async createPullRequest(input: {
     title: string;
@@ -595,11 +596,11 @@ export class GitHubClient {
     head: string;
     base: string;
     draft?: boolean;
-  }): Promise<{ number: number; headSha: string }> {
+  }): Promise<{ number: number; headSha: string; created: boolean }> {
     // Check if a PR already exists for this head branch to avoid 422.
     const existing = await this.findOpenPullRequestByHeadBranch(input.head);
     if (existing !== undefined) {
-      return existing;
+      return { ...existing, created: false };
     }
 
     const response = await this.request<{
@@ -616,7 +617,7 @@ export class GitHubClient {
         draft: input.draft ?? false,
       }),
     });
-    return { number: response.number, headSha: response.head.sha };
+    return { number: response.number, headSha: response.head.sha, created: true };
   }
 
   /**
