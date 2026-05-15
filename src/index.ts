@@ -456,6 +456,26 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
           );
         }
       }
+
+      // Emit "completed" lifecycle state for issues whose PRs were just squash-merged
+      const mergedIssueNumbers = new Set<number>();
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i]!;
+        const action = plan.actions[i]!;
+        if (result.status === "fulfilled" && action.type === "squash-merge") {
+          const mergedPR = snapshot.pullRequests.find((p) => p.number === action.pullRequestNumber);
+          if (mergedPR) {
+            const linked =
+              mergedPR.closingIssueNumbers.length > 0
+                ? mergedPR.closingIssueNumbers
+                : mergedPR.linkedIssueNumbers;
+            for (const n of linked) mergedIssueNumbers.add(n);
+          }
+        }
+      }
+      if (mergedIssueNumbers.size > 0) {
+        broadcastLifecycleUpdate(snapshot, new Set(), mergedIssueNumbers);
+      }
     } else {
       blank();
       for (let i = 0; i < plan.actions.length; i++) {

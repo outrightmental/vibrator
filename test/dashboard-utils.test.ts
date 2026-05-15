@@ -121,19 +121,22 @@ test("broadcastLifecycleUpdate: open PR paired via closingIssueNumbers gets acti
   assert.equal(pairs[0]?.pr?.number, 20);
 });
 
-test("broadcastLifecycleUpdate: closed PR paired via closingIssueNumbers gets completed prPhase", async () => {
+test("broadcastLifecycleUpdate: completedIssueNumbers overrides active to completed prPhase", async () => {
+  // snapshot.pullRequests only ever contains open PRs (listOpenPullRequests),
+  // so "completed" is reached via the completedIssueNumbers parameter, not pr.state.
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 11 })],
-    pullRequests: [createPR({ number: 21, closingIssueNumbers: [11], state: "closed" })],
+    pullRequests: [createPR({ number: 21, closingIssueNumbers: [11] })],
     agentSessions: [],
   };
 
   const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot);
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set([11]));
   const event = await eventP;
 
   const pairs = event.data.pairs as LifecyclePair[];
   assert.equal(pairs[0]?.prPhase, "completed");
+  assert.equal(pairs[0]?.pr?.number, 21);
 });
 
 test("broadcastLifecycleUpdate: falls back to linkedIssueNumbers when no closing refs", async () => {

@@ -13,6 +13,7 @@ export interface LifecyclePair {
 export function broadcastLifecycleUpdate(
   snapshot: RepositorySnapshot,
   planningIssueNumbers: ReadonlySet<number> = new Set(),
+  completedIssueNumbers: ReadonlySet<number> = new Set(),
 ): void {
   const pairs: LifecyclePair[] = [];
   const pairedIssueNumbers = new Set<number>();
@@ -35,7 +36,7 @@ export function broadcastLifecycleUpdate(
           draft: pr.draft,
           checksStatus: pr.checksStatus,
         },
-        prPhase: pr.state === "closed" ? "completed" : "active",
+        prPhase: completedIssueNumbers.has(issueNumber) ? "completed" : "active",
         colorIndex: issue.number % 6,
       });
     }
