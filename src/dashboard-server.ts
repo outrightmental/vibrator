@@ -555,6 +555,14 @@ body {
 const CYLINDER_COLORS = ['#00ffff', '#ff00ff', '#ffd700', '#00ff88', '#ff6600', '#cc44ff'];
 const CYLINDER_COLOR_NAMES = ['CYAN', 'MAGENTA', 'GOLD', 'GREEN', 'ORANGE', 'VIOLET'];
 
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 class DashboardUI {
   constructor() {
     this.appContainer = document.getElementById('app');
@@ -783,7 +791,7 @@ class DashboardUI {
       const t = issue.title.length > 30 ? issue.title.slice(0, 30) + '…' : issue.title;
       html += \`<div class="lifecycle-pill issue-pill">
         <div class="pill-number">Issue #\${issue.number}</div>
-        <div class="pill-title">\${t}</div>
+        <div class="pill-title">\${escHtml(t)}</div>
         <div class="pill-state">\${issue.state.toUpperCase()}</div>
       </div>\`;
     }
@@ -798,7 +806,7 @@ class DashboardUI {
           pr.checksStatus === 'pending' ? '⏳' : '⚪';
         html += \`<div class="lifecycle-pill pr-pill">
           <div class="pill-number">PR #\${pr.number}</div>
-          <div class="pill-title">\${t}</div>
+          <div class="pill-title">\${escHtml(t)}</div>
           <div class="pill-state">\${pr.draft ? 'DRAFT' : 'READY'} \${checkIcon}</div>
         </div>\`;
       }
