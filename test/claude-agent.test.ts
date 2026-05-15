@@ -10,6 +10,7 @@ import {
   IMPLEMENTATION_PAYLOAD_START_MARKER,
   isRebaseInProgress,
   isClaudeUsageLimitMessage,
+  parseOriginHeadBranch,
   parseUsageResetTimeMs,
 } from "../src/claude-agent.js";
 
@@ -99,6 +100,18 @@ test("parseUsageResetTimeMs rolls to next day when time already passed", () => {
 
 test("parseUsageResetTimeMs returns undefined when reset time is missing", () => {
   assert.equal(parseUsageResetTimeMs("You're out of extra usage"), undefined);
+});
+
+test("parseOriginHeadBranch extracts branch from origin short ref", () => {
+  assert.equal(parseOriginHeadBranch("origin/main"), "main");
+});
+
+test("parseOriginHeadBranch extracts branch from full remote ref path", () => {
+  assert.equal(parseOriginHeadBranch("refs/remotes/origin/release/2026"), "release/2026");
+});
+
+test("parseOriginHeadBranch returns undefined for non-origin refs", () => {
+  assert.equal(parseOriginHeadBranch("upstream/main"), undefined);
 });
 
 test("isRebaseInProgress returns true when rebase-merge exists", async () => {
