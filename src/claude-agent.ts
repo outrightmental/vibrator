@@ -73,7 +73,23 @@ class StatusBoard {
   free(id: number, doneMessage: string): void {
     if (!this.slots.has(id)) return;
     if (this.tty) {
-      this.redrawWithReplacement(id, doneMessage);
+      const count = this.slots.size;
+      if (count === 1) {
+        // Last active slot: replace its line in-place and stop.
+        this.redrawWithReplacement(id, doneMessage);
+      } else {
+        // Other slots still running: write done message at top of board and
+        // compact remaining live slots below it. This keeps the cursor anchor
+        // at `count` lines below the board top so subsequent redraws (which
+        // move up `count-1`) land correctly on the first remaining live slot.
+        process.stderr.write(`\x1b[${count}A`);
+        process.stderr.write(`\r\x1b[2K${doneMessage}\n`);
+        for (const [sid, slot] of this.slots) {
+          if (sid !== id) {
+            process.stderr.write(`\r\x1b[2K${this.renderSlot(slot)}\n`);
+          }
+        }
+      }
     } else {
       process.stderr.write(`${doneMessage}\n`);
     }
