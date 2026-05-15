@@ -582,7 +582,8 @@ class DashboardUI {
     this.appContainer = document.getElementById('app');
     this.events = [];
     this.maxConcurrency = 3;
-    this.cylinders = [];          // [{index,color,colorName,status,actionType,issueNumber,prNumber}]
+    this.cylinders = [];
+    this.initCylinders(this.maxConcurrency);
     this.issueCards = new Map();  // issueNumber -> {number,title,state}
     this.prCards = new Map();     // prNumber -> {number,title,state,draft,checksStatus,...}
     this.cylinderByIssue = new Map(); // issueNumber -> cylinderIdx (0-based)
