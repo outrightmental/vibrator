@@ -660,16 +660,35 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // branch is fast-forward mergeable on GitHub.
     await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
     try {
-      await runCommand("git", ["rebase", `origin/${params.baseRefName}`], { cwd: repoDir });
+      await runCommand("git", ["rebase", `origin/${params.baseRefName}`], {
+        cwd: repoDir,
+        captureStdout: true,
+        captureStderr: true,
+      });
       // Rebase finished cleanly — no conflicts (race with the remote).
       return this.pushAndReportHead(repoDir, params.headRefName, { forceWithLease: true });
-    } catch {
-      // Conflicts — let Claude resolve them.
+    } catch (error) {
+      const rebaseInProgress = await this.isRebaseInProgress(repoDir);
+      if (!rebaseInProgress) {
+        throw new Error(
+          `Failed to rebase PR #${params.pullRequestNumber} onto origin/${params.baseRefName}: ${(error as Error).message}`,
+        );
+      }
+      console.log(
+        `[vibrator] Rebase onto origin/${params.baseRefName} produced conflicts for PR #${params.pullRequestNumber}; delegating conflict resolution to Claude.`,
+      );
     }
 
     const prompt = buildResolveConflictsPrompt(params);
     await this.runClaude(prompt, repoDir);
     return this.pushAndReportHead(repoDir, params.headRefName, { forceWithLease: true });
+  }
+
+  private async isRebaseInProgress(repoDir: string): Promise<boolean> {
+    return (
+      (await pathExists(join(repoDir, ".git", "rebase-merge"))) ||
+      (await pathExists(join(repoDir, ".git", "rebase-apply")))
+    );
   }
 
   async addressFailingChecks(
