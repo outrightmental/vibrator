@@ -8,6 +8,7 @@ import {
   broadcastCommit,
   broadcastReviewComment,
   broadcastRepositorySnapshot,
+  broadcastLifecycleUpdate,
 } from "../src/dashboard-utils.js";
 import { globalEventEmitter } from "../src/event-emitter.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
@@ -284,4 +285,85 @@ test("broadcastRepositorySnapshot includes repo in stateBefore", async () => {
   const data = await dataPromise;
 
   assert.ok((data.stateBefore as string).includes("myorg/myrepo"), "stateBefore has owner/repo");
+});
+
+// broadcastLifecycleUpdate
+
+test("broadcastLifecycleUpdate: absent when no PR and not in planning set", async () => {
+  const issue = makeIssue({ number: 5, title: "Fix bug" });
+  const snapshot = { issues: [issue], pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ prPhase: string; pr: null }>;
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0]!.prPhase, "absent");
+  assert.equal(pairs[0]!.pr, null);
+});
+
+test("broadcastLifecycleUpdate: planning when issue is in planningIssueNumbers", async () => {
+  const issue = makeIssue({ number: 3 });
+  const snapshot = { issues: [issue], pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set([3]));
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ prPhase: string }>;
+  assert.equal(pairs[0]!.prPhase, "planning");
+});
+
+test("broadcastLifecycleUpdate: active when issue has a linked open PR", async () => {
+  const issue = makeIssue({ number: 10 });
+  const pr = makePR({ number: 20, closingIssueNumbers: [10] });
+  const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ prPhase: string; pr: { number: number } | null }>;
+  assert.equal(pairs[0]!.prPhase, "active");
+  assert.equal(pairs[0]!.pr?.number, 20);
+});
+
+test("broadcastLifecycleUpdate: completed when issue is in completedIssueNumbers", async () => {
+  const issue = makeIssue({ number: 7 });
+  const pr = makePR({ number: 8, closingIssueNumbers: [7] });
+  const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set([7]));
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ prPhase: string }>;
+  assert.equal(pairs[0]!.prPhase, "completed");
+});
+
+test("broadcastLifecycleUpdate: falls back to linkedIssueNumbers when closingIssueNumbers is empty", async () => {
+  const issue = makeIssue({ number: 4 });
+  const pr = makePR({ number: 9, closingIssueNumbers: [], linkedIssueNumbers: [4] });
+  const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ prPhase: string; pr: { number: number } | null }>;
+  assert.equal(pairs[0]!.prPhase, "active");
+  assert.equal(pairs[0]!.pr?.number, 9);
+});
+
+test("broadcastLifecycleUpdate: pairs are sorted in ascending issue-number order", async () => {
+  const issues = [makeIssue({ number: 30 }), makeIssue({ number: 5 }), makeIssue({ number: 17 })];
+  const snapshot = { issues, pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } }>;
+  assert.deepEqual(pairs.map((p) => p.issue.number), [5, 17, 30]);
+});
+
+test("broadcastLifecycleUpdate: colorIndex equals issue.number modulo 6", async () => {
+  const issues = [makeIssue({ number: 6 }), makeIssue({ number: 7 }), makeIssue({ number: 13 })];
+  const snapshot = { issues, pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number }; colorIndex: number }>;
+  assert.equal(pairs.find((p) => p.issue.number === 6)!.colorIndex, 0);
+  assert.equal(pairs.find((p) => p.issue.number === 7)!.colorIndex, 1);
+  assert.equal(pairs.find((p) => p.issue.number === 13)!.colorIndex, 1);
 });
