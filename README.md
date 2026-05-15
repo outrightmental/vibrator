@@ -119,6 +119,35 @@ npm start -- owner/repo
 The repository slug can be omitted from the CLI when
 `GITHUB_REPOSITORY` is set.
 
+## Dashboard
+
+`vibrator` opens a real-time **Dashboard** in your browser at
+`http://localhost:3000` when the loop starts. The Dashboard shows:
+
+- **Panel B — Issue → PR Lifecycle**: a row of two-halved pills, one per
+  open issue. The left half shows the issue; the right half shows the
+  linked pull request and transitions through four states:
+  - *(absent)* — no PR yet
+  - *dotted outline* — implementation is planned for this iteration
+  - *solid outline, filled* — PR is open and active
+  - *completed (full fill)* — PR is merged/closed
+
+  Each pill is colour-coded to a stable slot in the six-colour palette,
+  matching the worker thread assigned to that Issue+PR pair. When every
+  issue has been built and merged, Panel B is empty.
+
+- **Implementation / Review / Broadcast Feed** panels showing live
+  orchestrator logs and GitHub activity.
+
+To prevent the Dashboard from opening automatically, pass `--no-browser`:
+
+```bash
+npm start -- owner/repo --no-browser
+```
+
+The Dashboard server still starts; the URL is printed to stdout so you
+can open it manually.
+
 ## Requirements
 
 - Node.js 18+
@@ -136,12 +165,22 @@ The repository slug can be omitted from the CLI when
 Authentication is handled entirely by the `gh` and `claude` CLI tools.
 No API keys or tokens need to be set as environment variables.
 
+**Environment variables**
+
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `GITHUB_REPOSITORY` | No | - | Default `owner/repo` when the CLI argument is omitted. |
 | `MAX_CONCURRENCY` | No | `3` | Maximum active work items across open PRs and in-flight implementations. |
 | `LOOP_INTERVAL_MS` | No | `60000` | Delay between loop iterations. |
 | `VIBRATOR_SESSION_STORE_PATH` | No | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
+
+**CLI flags**
+
+| Flag | Purpose |
+| --- | --- |
+| `--once` | Run a single iteration, then exit. |
+| `--dry-run` | Print the plan without executing any Claude or GitHub actions. |
+| `--no-browser` | Start the Dashboard server but do not auto-open a browser window. |
 
 ## Issue language the loop understands
 

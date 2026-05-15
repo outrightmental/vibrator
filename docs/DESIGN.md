@@ -110,6 +110,11 @@ same squash merge with `--admin` rather than failing the loop outright.
   start of every iteration — every Claude action runs synchronously,
   so an active session can only be a crashed-process carcass.
 - `src/session-store.ts` persists session state in a local JSON file.
+- `src/dashboard-server.ts` serves the real-time **Dashboard** at
+  `http://localhost:3000`. The Dashboard includes Panel B (Issue → PR
+  Lifecycle), live orchestrator logs, and a GitHub activity feed.
+- `src/dashboard-utils.ts` provides event-emission helpers used by
+  `index.ts` to push orchestrator state to Dashboard clients.
 
 ## Data model
 
