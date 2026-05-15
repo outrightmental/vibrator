@@ -1066,6 +1066,7 @@ class DashboardUI {
         <div class="pill-label">Issue</div>
         <div class="pill-row">
           <span class="pill-number">#\${pair.issue.number}</span>
+          <span class="pill-badge">\${pair.issue.state.toUpperCase()}</span>
           <span class="pill-title">\${this.esc(pair.issue.title)}</span>
         </div>
       </div>
