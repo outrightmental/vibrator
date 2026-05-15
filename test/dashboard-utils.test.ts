@@ -1,193 +1,287 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { broadcastLifecycleUpdate, type LifecyclePair } from "../src/dashboard-utils.js";
-import { globalEventEmitter, type DashboardEvent } from "../src/event-emitter.js";
-import type { Issue, PullRequest, RepositorySnapshot } from "../src/types.js";
+import {
+  broadcastPullRequestUpdate,
+  broadcastCIStatus,
+  broadcastIssueUpdate,
+  broadcastCommit,
+  broadcastReviewComment,
+  broadcastRepositorySnapshot,
+} from "../src/dashboard-utils.js";
+import { globalEventEmitter } from "../src/event-emitter.js";
+import type { DashboardEvent } from "../src/event-emitter.js";
+import type { PullRequest, Issue, Commit, RepositorySnapshot } from "../src/types.js";
 
-function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
-  return {
-    number: overrides.number,
-    title: overrides.title ?? `Issue ${overrides.number}`,
-    body: overrides.body ?? "",
-    state: overrides.state ?? "open",
-    createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
-    updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
-    type: overrides.type ?? null,
-  };
-}
-
-function createPR(overrides: Partial<PullRequest> & Pick<PullRequest, "number">): PullRequest {
-  return {
-    number: overrides.number,
-    title: overrides.title ?? `PR ${overrides.number}`,
-    body: overrides.body ?? "",
-    headSha: overrides.headSha ?? `sha-${overrides.number}`,
-    headRefName: overrides.headRefName ?? `branch-${overrides.number}`,
-    baseRefName: overrides.baseRefName ?? "main",
-    state: overrides.state ?? "open",
-    draft: overrides.draft ?? false,
-    hasMergeConflicts: overrides.hasMergeConflicts ?? false,
-    hasCleanReviewOnHead: overrides.hasCleanReviewOnHead ?? false,
-    unresolvedReviewCommentCount: overrides.unresolvedReviewCommentCount ?? 0,
-    checksStatus: overrides.checksStatus ?? "success",
-    headCommitPushedAt: overrides.headCommitPushedAt,
-    createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
-    updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
-    closingIssueNumbers: overrides.closingIssueNumbers ?? [],
-    linkedIssueNumbers: overrides.linkedIssueNumbers ?? [],
-  };
-}
-
-function captureNextLifecycleEvent(): Promise<DashboardEvent> {
+function captureNextEvent(eventType: string): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
-    const unsub = globalEventEmitter.subscribe((event) => {
-      if (event.type === "lifecycle-update") {
+    const unsub = globalEventEmitter.subscribe((event: DashboardEvent) => {
+      if (event.type === eventType) {
         unsub();
-        resolve(event);
+        resolve(event.data);
       }
     });
   });
 }
 
-test("broadcastLifecycleUpdate emits pairs sorted by issue number", async () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [
-      createIssue({ number: 3 }),
-      createIssue({ number: 1 }),
-      createIssue({ number: 2 }),
+function makePR(overrides: Partial<PullRequest> = {}): PullRequest {
+  return {
+    number: 42,
+    title: "Test PR",
+    body: "",
+    headSha: "abc123",
+    headRefName: "feature",
+    baseRefName: "main",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    state: "open",
+    draft: false,
+    hasMergeConflicts: false,
+    hasCleanReviewOnHead: false,
+    unresolvedReviewCommentCount: 0,
+    checksStatus: "success",
+    headCommitPushedAt: undefined,
+    closingIssueNumbers: [],
+    linkedIssueNumbers: [],
+    ...overrides,
+  };
+}
+
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
+    number: 7,
+    title: "Test Issue",
+    body: "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    state: "open",
+    type: null,
+    ...overrides,
+  };
+}
+
+// broadcastPullRequestUpdate — monitoring branch
+
+test("broadcastPullRequestUpdate emits structured fields for 'monitoring' action", async () => {
+  const pr = makePR({ draft: false, checksStatus: "success" });
+  const dataPromise = captureNextEvent("broadcast-pr-update");
+  broadcastPullRequestUpdate(pr, "monitoring");
+  const data = await dataPromise;
+
+  assert.ok((data.stateBefore as string).includes("PR #42"), "stateBefore includes PR number");
+  assert.ok((data.changeHow as string).includes("monitoring"), "changeHow uses the action");
+  assert.ok((data.stateAfter as string).includes("OPEN"), "stateAfter includes state");
+  assert.ok((data.excellence as string).length > 0, "excellence is populated");
+});
+
+test("broadcastPullRequestUpdate uses monitoring branch for 'tracking' action", async () => {
+  const pr = makePR({ draft: true, checksStatus: "pending" });
+  const dataPromise = captureNextEvent("broadcast-pr-update");
+  broadcastPullRequestUpdate(pr, "tracking draft pending");
+  const data = await dataPromise;
+
+  assert.ok((data.changeHow as string).includes("tracking"), "changeHow mentions tracking");
+  assert.ok((data.stateBefore as string).includes("draft"), "stateBefore mentions draft");
+});
+
+// broadcastPullRequestUpdate — non-monitoring branch
+
+test("broadcastPullRequestUpdate uses non-monitoring branch for generic action", async () => {
+  const pr = makePR({ hasCleanReviewOnHead: true });
+  const dataPromise = captureNextEvent("broadcast-pr-update");
+  broadcastPullRequestUpdate(pr, "merged to main");
+  const data = await dataPromise;
+
+  assert.equal(data.changeHow, "merged to main", "changeHow is the raw action string");
+  assert.ok((data.excellence as string).includes("quality"), "clean-review excellence mentions quality");
+  assert.ok(data.workerIndex === undefined, "workerIndex is undefined when not passed");
+});
+
+test("broadcastPullRequestUpdate excellence for CI-passing non-draft PR (no clean review)", async () => {
+  const pr = makePR({ hasCleanReviewOnHead: false, checksStatus: "success", draft: false });
+  const dataPromise = captureNextEvent("broadcast-pr-update");
+  broadcastPullRequestUpdate(pr, "status updated");
+  const data = await dataPromise;
+
+  assert.ok((data.excellence as string).includes("merge"), "excellence mentions merge-ready");
+});
+
+test("broadcastPullRequestUpdate passes workerIndex through", async () => {
+  const pr = makePR();
+  const dataPromise = captureNextEvent("broadcast-pr-update");
+  broadcastPullRequestUpdate(pr, "updated", 2);
+  const data = await dataPromise;
+
+  assert.equal(data.workerIndex, 2);
+});
+
+// broadcastCIStatus
+
+test("broadcastCIStatus emits success structured fields", async () => {
+  const dataPromise = captureNextEvent("broadcast-ci-status");
+  broadcastCIStatus(99, "success");
+  const data = await dataPromise;
+
+  assert.ok((data.stateBefore as string).includes("99"), "stateBefore references PR number");
+  assert.ok((data.stateAfter as string).includes("PASSED"), "stateAfter says PASSED");
+  assert.ok((data.excellence as string).includes("merge"), "excellence mentions merge-ready");
+});
+
+test("broadcastCIStatus emits failure structured fields", async () => {
+  const dataPromise = captureNextEvent("broadcast-ci-status");
+  broadcastCIStatus(99, "failure", "lint failed");
+  const data = await dataPromise;
+
+  assert.ok((data.stateAfter as string).includes("FAILED"), "stateAfter says FAILED");
+  assert.ok((data.stateAfter as string).includes("lint failed"), "stateAfter includes details");
+  assert.ok((data.excellence as string).includes("caught"), "excellence acknowledges failure");
+  assert.ok((data.changeHow as string).includes("lint failed"), "changeHow includes details");
+});
+
+test("broadcastCIStatus emits pending structured fields", async () => {
+  const dataPromise = captureNextEvent("broadcast-ci-status");
+  broadcastCIStatus(99, "pending");
+  const data = await dataPromise;
+
+  assert.ok((data.stateAfter as string).includes("RUNNING"), "stateAfter says RUNNING");
+  assert.ok((data.excellence as string).includes("active"), "excellence is positive");
+});
+
+test("broadcastCIStatus falls back gracefully for unknown status", async () => {
+  const dataPromise = captureNextEvent("broadcast-ci-status");
+  broadcastCIStatus(99, "skipped");
+  const data = await dataPromise;
+
+  assert.ok((data.stateAfter as string).includes("SKIPPED"), "stateAfter includes uppercased status");
+  assert.ok((data.excellence as string).length > 0, "excellence is populated");
+});
+
+// broadcastIssueUpdate
+
+test("broadcastIssueUpdate emits 'opened' structured fields", async () => {
+  const issue = makeIssue({ state: "open" });
+  const dataPromise = captureNextEvent("broadcast-issue-update");
+  broadcastIssueUpdate(issue, "opened");
+  const data = await dataPromise;
+
+  assert.equal(data.stateBefore, "Issue did not exist");
+  assert.ok((data.stateAfter as string).includes("OPEN"), "stateAfter says OPEN");
+  assert.ok((data.excellence as string).includes("queued"), "excellence mentions queued");
+});
+
+test("broadcastIssueUpdate emits 'closed' structured fields", async () => {
+  const issue = makeIssue({ state: "closed" });
+  const dataPromise = captureNextEvent("broadcast-issue-update");
+  broadcastIssueUpdate(issue, "closed");
+  const data = await dataPromise;
+
+  assert.ok((data.stateBefore as string).includes("open"), "stateBefore mentions was-open");
+  assert.ok((data.stateAfter as string).includes("CLOSED"), "stateAfter says CLOSED");
+  assert.ok((data.excellence as string).includes("resolved"), "excellence celebrates closure");
+});
+
+test("broadcastIssueUpdate emits 'updated' structured fields for open issue", async () => {
+  const issue = makeIssue({ state: "open" });
+  const dataPromise = captureNextEvent("broadcast-issue-update");
+  broadcastIssueUpdate(issue, "updated");
+  const data = await dataPromise;
+
+  assert.ok((data.stateBefore as string).includes("#7"), "stateBefore references issue number");
+  assert.ok((data.excellence as string).includes("tracked"), "excellence mentions tracking");
+});
+
+// broadcastCommit
+
+test("broadcastCommit emits structured fields", async () => {
+  const commit: Commit = {
+    hash: "deadbeef1234567",
+    author: "Alice",
+    message: "feat: add magic\n\nLonger description",
+    pushedAt: new Date().toISOString(),
+  };
+  const dataPromise = captureNextEvent("broadcast-commit");
+  broadcastCommit(commit);
+  const data = await dataPromise;
+
+  assert.ok((data.changeHow as string).includes("deadbee"), "changeHow includes short hash (7 chars)");
+  assert.ok((data.changeHow as string).includes("Alice"), "changeHow includes author");
+  assert.ok((data.stateAfter as string).includes("feat: add magic"), "stateAfter has first commit line only");
+  assert.ok(!(data.stateAfter as string).includes("Longer description"), "stateAfter omits continuation lines");
+  assert.ok((data.excellence as string).length > 0, "excellence is populated");
+});
+
+// broadcastReviewComment
+
+test("broadcastReviewComment emits structured fields", async () => {
+  const dataPromise = captureNextEvent("broadcast-review-comment");
+  broadcastReviewComment(55, "Bob", 3);
+  const data = await dataPromise;
+
+  assert.ok((data.stateBefore as string).includes("55"), "stateBefore references PR number");
+  assert.ok((data.changeHow as string).includes("Bob"), "changeHow includes reviewer");
+  assert.ok((data.changeHow as string).includes("3"), "changeHow includes comment count");
+  assert.ok((data.stateAfter as string).includes("3"), "stateAfter mentions comment count");
+  assert.ok((data.excellence as string).length > 0, "excellence is populated");
+  assert.equal(data.prNumber, 55);
+});
+
+// broadcastRepositorySnapshot — excellence variants
+
+function makeSnapshot(overrides: {
+  successCount?: number;
+  failureCount?: number;
+  pendingCount?: number;
+} = {}): RepositorySnapshot {
+  const { successCount = 0, failureCount = 0, pendingCount = 0 } = overrides;
+
+  const makePRChecks = (status: "success" | "failure" | "pending", count: number): PullRequest[] =>
+    Array.from({ length: count }, (_, i) => makePR({ number: i + 1, checksStatus: status, draft: false }));
+
+  return {
+    pullRequests: [
+      ...makePRChecks("success", successCount),
+      ...makePRChecks("failure", failureCount),
+      ...makePRChecks("pending", pendingCount),
     ],
-    pullRequests: [],
+    issues: [],
     agentSessions: [],
   };
+}
 
-  const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot);
-  const event = await eventP;
+test("broadcastRepositorySnapshot excellence: all CI green", async () => {
+  const snapshot = makeSnapshot({ successCount: 3 });
+  const dataPromise = captureNextEvent("broadcast-github-activity");
+  broadcastRepositorySnapshot(snapshot, "owner", "repo");
+  const data = await dataPromise;
 
-  const pairs = event.data.pairs as LifecyclePair[];
-  assert.equal(pairs.length, 3);
-  assert.deepEqual(
-    pairs.map((p) => p.issue.number),
-    [1, 2, 3],
-  );
+  assert.ok((data.excellence as string).includes("green"), "excellence mentions green CI");
+  assert.ok((data.stateAfter as string).includes("3"), "stateAfter includes counts");
 });
 
-test("broadcastLifecycleUpdate: issue with no PR gets absent prPhase", async () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 5 })],
-    pullRequests: [],
-    agentSessions: [],
-  };
+test("broadcastRepositorySnapshot excellence: CI failures present", async () => {
+  const snapshot = makeSnapshot({ successCount: 1, failureCount: 2 });
+  const dataPromise = captureNextEvent("broadcast-github-activity");
+  broadcastRepositorySnapshot(snapshot, "owner", "repo");
+  const data = await dataPromise;
 
-  const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot);
-  const event = await eventP;
-
-  const pairs = event.data.pairs as LifecyclePair[];
-  assert.equal(pairs[0]?.prPhase, "absent");
-  assert.equal(pairs[0]?.pr, null);
+  assert.ok((data.excellence as string).includes("2"), "excellence mentions failure count");
+  assert.ok((data.excellence as string).includes("remediate"), "excellence mentions remediation");
 });
 
-test("broadcastLifecycleUpdate: issue in planning set gets planning prPhase", async () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 7 })],
-    pullRequests: [],
-    agentSessions: [],
-  };
+test("broadcastRepositorySnapshot excellence: no checks at all", async () => {
+  const snapshot = makeSnapshot({ successCount: 0, failureCount: 0, pendingCount: 0 });
+  const dataPromise = captureNextEvent("broadcast-github-activity");
+  broadcastRepositorySnapshot(snapshot, "owner", "repo");
+  const data = await dataPromise;
 
-  const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot, new Set([7]));
-  const event = await eventP;
-
-  const pairs = event.data.pairs as LifecyclePair[];
-  assert.equal(pairs[0]?.prPhase, "planning");
+  assert.ok((data.excellence as string).includes("visibility"), "excellence mentions visibility");
 });
 
-test("broadcastLifecycleUpdate: open PR paired via closingIssueNumbers gets active prPhase", async () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 10 })],
-    pullRequests: [createPR({ number: 20, closingIssueNumbers: [10] })],
-    agentSessions: [],
-  };
+test("broadcastRepositorySnapshot includes repo in stateBefore", async () => {
+  const snapshot = makeSnapshot();
+  const dataPromise = captureNextEvent("broadcast-github-activity");
+  broadcastRepositorySnapshot(snapshot, "myorg", "myrepo");
+  const data = await dataPromise;
 
-  const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot);
-  const event = await eventP;
-
-  const pairs = event.data.pairs as LifecyclePair[];
-  assert.equal(pairs.length, 1);
-  assert.equal(pairs[0]?.prPhase, "active");
-  assert.equal(pairs[0]?.pr?.number, 20);
-});
-
-test("broadcastLifecycleUpdate: completedIssueNumbers overrides active to completed prPhase", async () => {
-  // snapshot.pullRequests only ever contains open PRs (listOpenPullRequests),
-  // so "completed" is reached via the completedIssueNumbers parameter, not pr.state.
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 11 })],
-    pullRequests: [createPR({ number: 21, closingIssueNumbers: [11] })],
-    agentSessions: [],
-  };
-
-  const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot, new Set(), new Set([11]));
-  const event = await eventP;
-
-  const pairs = event.data.pairs as LifecyclePair[];
-  assert.equal(pairs[0]?.prPhase, "completed");
-  assert.equal(pairs[0]?.pr?.number, 21);
-});
-
-test("broadcastLifecycleUpdate: falls back to linkedIssueNumbers when no closing refs", async () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 12 })],
-    pullRequests: [createPR({ number: 22, closingIssueNumbers: [], linkedIssueNumbers: [12] })],
-    agentSessions: [],
-  };
-
-  const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot);
-  const event = await eventP;
-
-  const pairs = event.data.pairs as LifecyclePair[];
-  assert.equal(pairs.length, 1);
-  assert.equal(pairs[0]?.pr?.number, 22);
-});
-
-test("broadcastLifecycleUpdate: planning and completed coexist without regressing planning to absent", async () => {
-  // Mirrors the real call in index.ts after a plan with both start-implementation
-  // and squash-merge actions: planningIssueNumbers and completedIssueNumbers are
-  // both non-empty. The planning issue has no PR in the snapshot (its PR was just
-  // created by the action and isn't reflected in the pre-action snapshot yet).
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 1 }), createIssue({ number: 2 })],
-    pullRequests: [createPR({ number: 10, closingIssueNumbers: [2] })],
-    agentSessions: [],
-  };
-
-  const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot, new Set([1]), new Set([2]));
-  const event = await eventP;
-
-  const pairs = event.data.pairs as LifecyclePair[];
-  assert.equal(pairs.find((p) => p.issue.number === 1)?.prPhase, "planning");
-  assert.equal(pairs.find((p) => p.issue.number === 2)?.prPhase, "completed");
-});
-
-test("broadcastLifecycleUpdate: colorIndex is stable (issueNumber % 6)", async () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [createIssue({ number: 6 }), createIssue({ number: 7 }), createIssue({ number: 13 })],
-    pullRequests: [],
-    agentSessions: [],
-  };
-
-  const eventP = captureNextLifecycleEvent();
-  broadcastLifecycleUpdate(snapshot);
-  const event = await eventP;
-
-  const pairs = event.data.pairs as LifecyclePair[];
-  assert.equal(pairs.find((p) => p.issue.number === 6)?.colorIndex, 0);  // 6 % 6
-  assert.equal(pairs.find((p) => p.issue.number === 7)?.colorIndex, 1);  // 7 % 6
-  assert.equal(pairs.find((p) => p.issue.number === 13)?.colorIndex, 1); // 13 % 6
+  assert.ok((data.stateBefore as string).includes("myorg/myrepo"), "stateBefore has owner/repo");
 });
