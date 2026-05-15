@@ -565,7 +565,8 @@ body {
   private generateJS(): string {
     return `
 // Stable neon color identity per cylinder slot (issue specifies N=3: Cyan/Magenta/Gold)
-const CYLINDER_COLORS = ['#00ffff', '#ff00ff', '#ffd700', '#00ff88', '#ff6600', '#cc44ff'];
+const CYLINDER_COLORS     = ['#00ffff', '#ff00ff', '#ffd700', '#00ff88', '#ff6600', '#cc44ff'];
+const CYLINDER_COLORS_RGB = ['0,255,255', '255,0,255', '255,215,0', '0,255,136', '255,102,0', '204,68,255'];
 const CYLINDER_COLOR_NAMES = ['CYAN', 'MAGENTA', 'GOLD', 'GREEN', 'ORANGE', 'VIOLET'];
 
 function escHtml(str) {
@@ -606,6 +607,7 @@ class DashboardUI {
       this.cylinders.push({
         index: i + 1,
         color: CYLINDER_COLORS[i] || '#888888',
+        colorRgb: CYLINDER_COLORS_RGB[i] || '136,136,136',
         colorName: CYLINDER_COLOR_NAMES[i] || \`CYL-\${i + 1}\`,
         status: 'idle',
         actionType: null,
@@ -683,6 +685,7 @@ class DashboardUI {
       const row = document.createElement('div');
       row.className = \`cylinder-row \${cyl.status}\`;
       row.style.setProperty('--cyl-color', cyl.color);
+      row.style.setProperty('--cyl-color-rgb', cyl.colorRgb);
 
       const isActive = cyl.status === 'active';
       const isDone   = cyl.status === 'done';
