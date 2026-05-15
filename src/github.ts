@@ -566,7 +566,28 @@ export class GitHubClient {
   }
 
   /**
+   * Find an open pull request for a given head branch, or undefined if none exists.
+   */
+  private async findOpenPullRequestByHeadBranch(headBranch: string): Promise<
+    { number: number; headSha: string } | undefined
+  > {
+    const pullRequests = await this.request<
+      Array<{ number: number; head: { sha: string } }>
+    >(
+      `/repos/${this.options.owner}/${this.options.repo}/pulls?state=open&head=${encodeURIComponent(`${this.options.owner}:${headBranch}`)}`,
+    );
+    if (pullRequests.length === 0) {
+      return undefined;
+    }
+    return {
+      number: pullRequests[0]!.number,
+      headSha: pullRequests[0]!.head.sha,
+    };
+  }
+
+  /**
    * Create a pull request. Returns the new PR number and head SHA.
+   * If a PR already exists for the head branch, returns the existing PR.
    */
   async createPullRequest(input: {
     title: string;
@@ -575,35 +596,27 @@ export class GitHubClient {
     base: string;
     draft?: boolean;
   }): Promise<{ number: number; headSha: string }> {
-    try {
-      const response = await this.request<{
-        number: number;
-        head: { sha: string };
-      }>(`/repos/${this.options.owner}/${this.options.repo}/pulls`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: input.title,
-          body: input.body,
-          head: input.head,
-          base: input.base,
-          draft: input.draft ?? false,
-        }),
-      });
-      return { number: response.number, headSha: response.head.sha };
-    } catch (error) {
-      if ((error as { statusCode?: number }).statusCode !== 422) {
-        throw error;
-      }
-      // A PR already exists for this branch — look it up and return it.
-      const existing = await this.request<Array<{ number: number; head: { sha: string } }>>(
-        `/repos/${this.options.owner}/${this.options.repo}/pulls?state=open&head=${encodeURIComponent(`${this.options.owner}:${input.head}`)}`,
-      );
-      if (existing.length === 0) {
-        throw error;
-      }
-      return { number: existing[0]!.number, headSha: existing[0]!.head.sha };
+    // Check if a PR already exists for this head branch to avoid 422.
+    const existing = await this.findOpenPullRequestByHeadBranch(input.head);
+    if (existing !== undefined) {
+      return existing;
     }
+
+    const response = await this.request<{
+      number: number;
+      head: { sha: string };
+    }>(`/repos/${this.options.owner}/${this.options.repo}/pulls`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: input.title,
+        body: input.body,
+        head: input.head,
+        base: input.base,
+        draft: input.draft ?? false,
+      }),
+    });
+    return { number: response.number, headSha: response.head.sha };
   }
 
   /**
