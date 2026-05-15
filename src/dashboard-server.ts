@@ -1005,6 +1005,7 @@ class DashboardUI {
     if (sessionEl) sessionEl.textContent = data.sessionCount || 0;
 
     if (Array.isArray(data.issues)) {
+      this.issueCards.clear();
       for (const issue of data.issues) this.issueCards.set(issue.number, issue);
     }
     if (Array.isArray(data.pullRequests)) {
