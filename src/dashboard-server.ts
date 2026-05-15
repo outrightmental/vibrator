@@ -1370,55 +1370,22 @@ class DashboardUI {
     const pairs = message.data.pairs;
     if (!Array.isArray(pairs)) return;
 
-    const content = document.getElementById('lifecycle-content');
-    const subtitle = document.getElementById('lifecycle-subtitle');
-    if (!content) return;
-
-    if (pairs.length === 0) {
-      content.innerHTML = '<div class="lifecycle-empty">⚡ All issues complete — repository is clean</div>';
-      if (subtitle) subtitle.textContent = 'done';
-      return;
-    }
-
-    if (subtitle) {
-      const active = pairs.filter(p => p.prPhase === 'active' || p.prPhase === 'planning').length;
-      const done   = pairs.filter(p => p.prPhase === 'completed').length;
-      subtitle.textContent = \`\${pairs.length} item\${pairs.length !== 1 ? 's' : ''} · \${active} in progress · \${done} completed\`;
-    }
-
-    // Clear any empty-state placeholder (initial "Connecting" div or prior "all done" message)
-    content.querySelector('.lifecycle-empty')?.remove();
-
-    // Re-render all pills (keyed by issue number via data attribute)
-    const existingKeys = new Set(
-      [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber)
-    );
-    const incomingKeys = new Set(pairs.map(p => String(p.issue.number)));
-
-    // Remove pills that no longer exist
-    for (const key of existingKeys) {
-      if (!incomingKeys.has(key)) {
-        content.querySelector(\`[data-issue-number="\${key}"]\`)?.remove();
-      }
-    }
+    // Rebuild issueCards/prCards from the pre-matched pairs so renderPanelB
+    // gets live updates (lifecycle-update fires multiple times per iteration).
+    this.issueCards.clear();
+    this.prCards.clear();
 
     for (const pair of pairs) {
-      const key = String(pair.issue.number);
-      let pill = content.querySelector(\`[data-issue-number="\${key}"]\`);
-
-      if (!pill) {
-        pill = this.createPill(pair);
-        const allExisting = [...content.querySelectorAll('.lifecycle-pill')];
-        const anchor = allExisting.find(el => parseInt(el.dataset.issueNumber, 10) > pair.issue.number);
-        if (anchor) {
-          content.insertBefore(pill, anchor);
-        } else {
-          content.appendChild(pill);
-        }
-      } else {
-        this.updatePill(pill, pair);
+      this.issueCards.set(pair.issue.number, pair.issue);
+      if (pair.pr) {
+        this.prCards.set(pair.pr.number, Object.assign({}, pair.pr, {
+          closingIssueNumbers: [pair.issue.number],
+          linkedIssueNumbers: [],
+        }));
       }
     }
+
+    this.renderPanelB();
   }
 
   createPill(pair) {
