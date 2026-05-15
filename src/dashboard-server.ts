@@ -811,7 +811,7 @@ class DashboardUI {
       html += \`<div class="lifecycle-pill issue-pill">
         <div class="pill-number">Issue #\${issue.number}</div>
         <div class="pill-title">\${escHtml(t)}</div>
-        <div class="pill-state">\${issue.state.toUpperCase()}</div>
+        <div class="pill-state">\${escHtml(issue.state.toUpperCase())}</div>
       </div>\`;
     }
 
