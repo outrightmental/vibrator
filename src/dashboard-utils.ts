@@ -19,6 +19,14 @@ export function broadcastRepositorySnapshot(
 
   const activeSessionCount = overrideSessionCount ?? snapshot.agentSessions.filter((s) => s.status === "in_progress").length;
 
+  const stateAfter = `${snapshot.issues.length} issues open | ${readyPRs.length} ready PRs | ${activeSessionCount} active sessions | CI: ${checkStats.success}✅ ${checkStats.failure}❌ ${checkStats.pending}⏳`;
+
+  const excellence = checkStats.failure === 0 && checkStats.success > 0
+    ? `All ${checkStats.success} CI check(s) green — PRs in great shape`
+    : checkStats.failure > 0
+    ? `${checkStats.failure} failing CI check(s) identified — agent will remediate`
+    : "Full repository visibility maintained across all active work";
+
   globalEventEmitter.emit("broadcast-github-activity", {
     content: `Repository snapshot: ${snapshot.issues.length} open issues, ${openPRs.length} PRs (${draftPRs.length} draft, ${readyPRs.length} ready), ${activeSessionCount} active sessions, checks: ${checkStats.success} success, ${checkStats.failure} failed, ${checkStats.pending} pending`,
     repo: `${owner}/${repo}`,
@@ -28,6 +36,10 @@ export function broadcastRepositorySnapshot(
     readyCount: readyPRs.length,
     sessionCount: activeSessionCount,
     checkStats,
+    stateBefore: `${owner}/${repo} — prior scan`,
+    changeHow: `Automated repository scan completed`,
+    stateAfter,
+    excellence,
   });
 }
 
