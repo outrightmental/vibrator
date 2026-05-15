@@ -796,7 +796,7 @@ class DashboardUI {
     this.broadcastProcessing = false;
     this.BROADCAST_FANFARE_MS = 3000;
     this.BROADCAST_MAX_ITEMS = 15;
-    this.workerColors = ['#00ff88', '#ff00ff', '#0088ff', '#ffff00', '#ff8800'];
+    this.workerColors = ['#00ff88', '#ff00ff', '#0088ff', '#ffff00', '#ff6600', '#aa00ff'];
     this.workerMap = {};
     this.init();
   }
@@ -1132,7 +1132,7 @@ class DashboardUI {
     if (workerIndex !== undefined && workerIndex !== null && workerIndex >= 0) {
       return this.workerColors[workerIndex % this.workerColors.length];
     }
-    const categoryColors = { commit: '#00ff88', pr: '#0088ff', ci: '#ffff00', issue: '#ff8800' };
+    const categoryColors = { commit: '#00ff88', pr: '#0088ff', ci: '#ffff00', issue: '#ff6600' };
     return (category && categoryColors[category]) || '#ff00ff';
   }
 
