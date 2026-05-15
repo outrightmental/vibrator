@@ -737,6 +737,17 @@ const PILL_PALETTE = [
   { hex: '#aa00ff', rgb: '170,0,255' },   // purple
 ];
 
+// Per-cylinder stable neon identity (issue #21: CYL-1=Cyan, CYL-2=Magenta, CYL-3=Gold)
+const CYLINDER_COLORS      = ['#00ffff', '#ff00ff', '#ffd700', '#0088ff', '#ff6600', '#aa00ff'];
+const CYLINDER_COLORS_RGB  = ['0,255,255', '255,0,255', '255,215,0', '0,136,255', '255,102,0', '170,0,255'];
+const CYLINDER_COLOR_NAMES = ['CYAN', 'MAGENTA', 'GOLD', 'BLUE', 'ORANGE', 'PURPLE'];
+
+function escHtml(text) {
+  const d = document.createElement('div');
+  d.appendChild(document.createTextNode(String(text)));
+  return d.innerHTML;
+}
+
 class DashboardUI {
   constructor() {
     this.appContainer = document.getElementById('app');
@@ -802,15 +813,6 @@ class DashboardUI {
         <div class="countdown">
           <div class="countdown-label">Next Cycle In</div>
           <div class="countdown-timer" id="countdown-timer">--:--</div>
-        </div>
-      </div>
-      <div class="lifecycle-section">
-        <div class="lifecycle-header">
-          <div class="lifecycle-title">Panel B — Issue → PR Lifecycle</div>
-          <div class="lifecycle-subtitle" id="lifecycle-subtitle">waiting for snapshot…</div>
-        </div>
-        <div id="lifecycle-content" class="lifecycle-content">
-          <div class="lifecycle-empty">Connecting to vibrator…</div>
         </div>
       </div>
       <div class="main-content">
@@ -1254,6 +1256,9 @@ class DashboardUI {
       const idx = this.cylinderByIssue.get(message.data.issueNumber);
       if (idx !== undefined) cylinderIdx = idx;
     }
+
+    this.addEventToStream(content, cylinderIdx, 'info');
+  }
 
   enqueueBroadcastEvent(eventData) {
     this.broadcastQueue.push(eventData);
