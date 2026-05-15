@@ -252,6 +252,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   globalEventEmitter.emit("iteration-start", {
     iterationNumber,
+    maxConcurrency: config.maxConcurrency,
   });
 
   write(HEAVY_RULE);
@@ -313,6 +314,20 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     draftPrCount: draftPullRequestCount,
     readyPrCount: readyPullRequestCount,
     sessionCount: preReconcileActiveSessions.length,
+    issues: snapshot.issues.map((i) => ({
+      number: i.number,
+      title: i.title,
+      state: i.state,
+    })),
+    pullRequests: openPullRequests.map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      state: pr.state,
+      draft: pr.draft,
+      checksStatus: pr.checksStatus,
+      closingIssueNumbers: pr.closingIssueNumbers,
+      linkedIssueNumbers: pr.linkedIssueNumbers,
+    })),
   });
 
   // Broadcast repository snapshot and PR updates to dashboard
@@ -402,6 +417,9 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
             totalActions: plan.actions.length,
             description: describeAction(action, snapshot, gitHubClient),
             type: action.type,
+            issueNumber: action.issueNumber ?? null,
+            pullRequestNumber:
+              action.type !== "start-implementation" ? action.pullRequestNumber : null,
           });
           return executeAction(
             gitHubClient,

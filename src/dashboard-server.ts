@@ -91,13 +91,13 @@ export class DashboardServer {
 
   private async generateCSS(): Promise<string> {
     return `
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap');
+
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
-
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap');
 
 body {
   font-family: 'IBM Plex Mono', monospace;
@@ -123,21 +123,13 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
-  background:
-    repeating-linear-gradient(
-      0deg,
-      rgba(0, 255, 136, 0.03) 0px,
-      rgba(0, 255, 136, 0.03) 1px,
-      transparent 1px,
-      transparent 2px
-    ),
-    repeating-linear-gradient(
-      90deg,
-      rgba(0, 255, 136, 0.03) 0px,
-      rgba(0, 255, 136, 0.03) 1px,
-      transparent 1px,
-      transparent 2px
-    );
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 255, 136, 0.025) 0px,
+    rgba(0, 255, 136, 0.025) 1px,
+    transparent 1px,
+    transparent 2px
+  );
   pointer-events: none;
   z-index: -1;
   animation: scanlines 8s linear infinite;
@@ -148,21 +140,22 @@ body {
   100% { transform: translateY(10px); }
 }
 
+/* ── Header ── */
 .header {
-  padding: 20px 30px;
+  padding: 14px 24px;
   border-bottom: 2px solid #00ff88;
   box-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
-  background: rgba(10, 14, 39, 0.9);
+  background: rgba(10, 14, 39, 0.95);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
   gap: 20px;
   z-index: 10;
+  flex-shrink: 0;
 }
 
 .header-title {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 3px;
@@ -171,24 +164,24 @@ body {
 }
 
 .header-repo {
-  font-size: 14px;
+  font-size: 11px;
   color: #ff00ff;
   text-shadow: 0 0 5px rgba(255, 0, 255, 0.5);
+  margin-top: 2px;
 }
 
 .iteration-info {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: 3px;
 }
 
 .iteration-label {
-  font-size: 12px;
+  font-size: 10px;
   color: #ff00ff;
   text-transform: uppercase;
   letter-spacing: 2px;
-  text-shadow: 0 0 5px rgba(255, 0, 255, 0.5);
 }
 
 .iteration-number {
@@ -203,173 +196,265 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: 3px;
 }
 
 .countdown-label {
-  font-size: 12px;
+  font-size: 10px;
   color: #0088ff;
   text-transform: uppercase;
   letter-spacing: 2px;
 }
 
 .countdown-timer {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 700;
   color: #00ff88;
   text-shadow: 0 0 15px rgba(0, 255, 136, 1);
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Three-panel layout ── */
 .main-content {
   flex: 1;
   display: flex;
-  gap: 20px;
-  padding: 20px 30px;
+  gap: 14px;
+  padding: 14px 20px;
   overflow: hidden;
+  min-height: 0;
 }
 
-.phase-section {
-  flex: 1;
+.panel {
   display: flex;
   flex-direction: column;
   background: rgba(20, 10, 50, 0.6);
-  border: 2px solid #00ff88;
+  border: 2px solid rgba(0, 255, 136, 0.3);
   border-radius: 4px;
-  padding: 20px;
-  box-shadow: 0 0 20px rgba(0, 255, 136, 0.2), inset 0 0 20px rgba(0, 255, 136, 0.05);
   overflow: hidden;
+  min-height: 0;
 }
 
-.phase-section.active {
-  border-color: #ffff00;
-  box-shadow: 0 0 30px rgba(255, 255, 0, 0.4), inset 0 0 20px rgba(255, 255, 0, 0.1);
-  animation: pulse-glow 1s ease-in-out infinite;
+/* Panel A: N-Cylinder Engine — anchors the left */
+.panel-a {
+  width: 280px;
+  flex-shrink: 0;
+  border-color: rgba(0, 255, 136, 0.5);
+  box-shadow: 0 0 24px rgba(0, 255, 136, 0.08), inset 0 0 16px rgba(0, 255, 136, 0.03);
 }
 
-@keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 30px rgba(255, 255, 0, 0.4), inset 0 0 20px rgba(255, 255, 0, 0.1); }
-  50% { box-shadow: 0 0 50px rgba(255, 255, 0, 0.6), inset 0 0 30px rgba(255, 255, 0, 0.15); }
+/* Panel B: Issue→PR Lifecycle */
+.panel-b {
+  flex: 2;
+  min-width: 0;
 }
 
-.phase-title {
-  font-size: 16px;
+/* Panel C: Event Stream */
+.panel-c {
+  flex: 1;
+  min-width: 180px;
+}
+
+.panel-header {
+  padding: 9px 14px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 2px;
   color: #00ff88;
-  margin-bottom: 15px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(0, 255, 136, 0.3);
+  border-bottom: 1px solid rgba(0, 255, 136, 0.25);
+  text-shadow: 0 0 8px rgba(0, 255, 136, 0.5);
+  flex-shrink: 0;
+  background: rgba(0, 255, 136, 0.03);
 }
 
-.phase-section.active .phase-title {
-  color: #ffff00;
-  text-shadow: 0 0 10px rgba(255, 255, 0, 1);
-}
-
-.phase-content {
+.panel-body {
   flex: 1;
   overflow-y: auto;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.phase-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.phase-content::-webkit-scrollbar-track {
-  background: rgba(0, 255, 136, 0.1);
-}
-
-.phase-content::-webkit-scrollbar-thumb {
-  background: rgba(0, 255, 136, 0.5);
-  border-radius: 4px;
-}
-
-.log-line {
-  padding: 5px 0;
-  animation: fadeIn 0.3s ease-in;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateX(-10px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-.log-line.success {
-  color: #00ff88;
-}
-
-.log-line.warning {
-  color: #ffaa00;
-}
-
-.log-line.error {
-  color: #ff0055;
-}
-
-.log-line.info {
-  color: #0088ff;
-}
-
-.broadcast-ticker {
   padding: 10px;
-  background: rgba(255, 0, 255, 0.1);
-  border-left: 3px solid #ff00ff;
-  margin: 10px 0;
-  border-radius: 2px;
-  animation: slideIn 0.5s ease-out;
+  min-height: 0;
 }
 
-@keyframes slideIn {
-  from { transform: translateX(-20px); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
+.panel-body::-webkit-scrollbar { width: 5px; }
+.panel-body::-webkit-scrollbar-track { background: rgba(0, 255, 136, 0.04); }
+.panel-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 136, 0.25);
+  border-radius: 3px;
 }
 
-.broadcast-ticker.commit {
-  border-left-color: #00ff88;
-  background: rgba(0, 255, 136, 0.1);
-  color: #00ff88;
+/* ── Panel A: Cylinder rows ── */
+.cylinder-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  margin-bottom: 8px;
+  border-left: 3px solid var(--cyl-color, #00ff88);
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 0 4px 4px 0;
+  transition: background 0.3s ease;
 }
 
-.broadcast-ticker.pr {
-  border-left-color: #0088ff;
-  background: rgba(0, 136, 255, 0.1);
-  color: #0088ff;
+.cylinder-row.active {
+  background: rgba(255, 255, 255, 0.04);
 }
 
-.broadcast-ticker.ci {
-  border-left-color: #ffff00;
-  background: rgba(255, 255, 0, 0.1);
-  color: #ffff00;
+.cylinder-row.done { opacity: 0.65; }
+
+.cylinder-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--cyl-color, #00ff88);
+  box-shadow: 0 0 6px var(--cyl-color, #00ff88);
+  flex-shrink: 0;
+  margin-top: 4px;
 }
 
-.broadcast-ticker-label {
-  font-weight: 700;
+.cylinder-dot.pulsing {
+  animation: cylPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes cylPulse {
+  0%, 100% { box-shadow: 0 0 5px var(--cyl-color, #00ff88); }
+  50%       { box-shadow: 0 0 18px var(--cyl-color, #00ff88), 0 0 36px var(--cyl-color, #00ff88); }
+}
+
+.cylinder-info { flex: 1; min-width: 0; }
+
+.cylinder-label {
   font-size: 11px;
+  font-weight: 700;
+  color: var(--cyl-color, #00ff88);
+  text-shadow: 0 0 5px var(--cyl-color, #00ff88);
   text-transform: uppercase;
   letter-spacing: 1px;
   margin-bottom: 3px;
 }
 
-.broadcast-ticker-content {
-  font-size: 12px;
-  word-break: break-word;
+.cylinder-status-text {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* ── Panel B: Lifecycle cards ── */
+.lifecycle-card {
+  display: flex;
+  align-items: stretch;
+  gap: 7px;
+  padding: 7px;
+  margin-bottom: 7px;
+  border: 1px solid var(--card-color, rgba(0, 255, 136, 0.2));
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  animation: fadeIn 0.3s ease-in;
+  transition: border-color 0.3s ease;
+}
+
+.lifecycle-pill {
+  flex: 1;
+  padding: 7px 9px;
+  border: 1px solid var(--card-color, rgba(0, 255, 136, 0.15));
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.35);
+  min-width: 0;
+}
+
+.lifecycle-arrow {
+  display: flex;
+  align-items: center;
+  color: rgba(255, 255, 255, 0.25);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.pill-number {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--card-color, #00ff88);
+  text-shadow: 0 0 4px var(--card-color, rgba(0, 255, 136, 0.4));
+  margin-bottom: 2px;
+}
+
+.pill-title {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.pill-state {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.35);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.lifecycle-empty {
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 11px;
+  padding: 24px 10px;
+  text-align: center;
+  font-style: italic;
+}
+
+/* ── Panel C: Event stream ── */
+.event-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 2px 0;
+  font-size: 10px;
+  line-height: 1.5;
+  animation: fadeIn 0.2s ease-in;
+}
+
+.event-dot {
+  flex-shrink: 0;
+  font-size: 7px;
+  line-height: 16px;
+  color: rgba(255, 255, 255, 0.2);
+  width: 9px;
+  text-align: center;
+}
+
+.event-time {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.22);
+  font-size: 9px;
+  width: 54px;
+}
+
+.event-content {
+  flex: 1;
+  color: rgba(255, 255, 255, 0.55);
+  word-break: break-word;
+  overflow: hidden;
+}
+
+/* ── Shared animations ── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ── Status bar ── */
 .status-bar {
-  padding: 15px 30px;
-  border-top: 2px solid #00ff88;
-  background: rgba(10, 14, 39, 0.9);
+  padding: 10px 24px;
+  border-top: 2px solid rgba(0, 255, 136, 0.4);
+  background: rgba(10, 14, 39, 0.95);
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 20px;
   flex-wrap: wrap;
   z-index: 10;
-  font-size: 12px;
+  font-size: 11px;
+  flex-shrink: 0;
 }
 
 .status-item {
@@ -379,8 +464,8 @@ body {
 }
 
 .status-indicator {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: #00ff88;
   box-shadow: 0 0 5px rgba(0, 255, 136, 0.8);
@@ -392,41 +477,28 @@ body {
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  50%       { opacity: 0.3; }
 }
 
 .connection-status {
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-radius: 2px;
-  background: rgba(0, 255, 136, 0.2);
-  border: 1px solid #00ff88;
+  background: rgba(0, 255, 136, 0.12);
+  border: 1px solid rgba(0, 255, 136, 0.4);
 }
 
 .connection-status.disconnected {
-  background: rgba(255, 0, 0, 0.2);
+  background: rgba(255, 0, 85, 0.12);
   border-color: #ff0055;
   color: #ff0055;
 }
 
-.stats {
-  display: flex;
-  gap: 20px;
-  flex-wrap: wrap;
-}
+.stats { display: flex; gap: 20px; flex-wrap: wrap; }
+.stat  { display: flex; gap: 8px; }
+.stat-value { font-weight: 700; color: #ffff00; }
 
-.stat {
-  display: flex;
-  gap: 8px;
-}
-
-.stat-value {
-  font-weight: 700;
-  color: #ffff00;
-}
-
-.hidden {
-  display: none !important;
-}
+/* ── Cycle start banner ── */
+.hidden { display: none !important; }
 
 .cycle-banner {
   position: fixed;
@@ -434,17 +506,17 @@ body {
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 1000;
-  background: rgba(10, 14, 39, 0.95);
+  background: rgba(10, 14, 39, 0.97);
   border: 3px solid #ff00ff;
-  padding: 40px 60px;
+  padding: 36px 56px;
   text-align: center;
   border-radius: 8px;
-  box-shadow: 0 0 40px rgba(255, 0, 255, 0.6), inset 0 0 40px rgba(255, 0, 255, 0.1);
+  box-shadow: 0 0 40px rgba(255, 0, 255, 0.6), inset 0 0 40px rgba(255, 0, 255, 0.08);
   animation: bannerPop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .cycle-banner-text {
-  font-size: 36px;
+  font-size: 32px;
   font-weight: 700;
   color: #ff00ff;
   text-shadow: 0 0 20px rgba(255, 0, 255, 1);
@@ -454,34 +526,21 @@ body {
 }
 
 .cycle-banner-subtext {
-  font-size: 18px;
+  font-size: 16px;
   color: #00ff88;
-  margin-top: 15px;
+  margin-top: 12px;
   text-shadow: 0 0 10px rgba(0, 255, 136, 0.8);
 }
 
 @keyframes bannerPop {
-  0% {
-    opacity: 0;
-    transform: translate(-50%, -50%) scale(0.5);
-  }
-  70% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1.1);
-  }
-  100% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+  70%  { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 
 @keyframes bannerFadeOut {
-  0% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-  }
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .cycle-banner.fade-out {
@@ -492,25 +551,45 @@ body {
 
   private generateJS(): string {
     return `
+// Stable neon color identity per cylinder slot (issue specifies N=3: Cyan/Magenta/Gold)
+const CYLINDER_COLORS = ['#00ffff', '#ff00ff', '#ffd700', '#00ff88', '#ff6600', '#cc44ff'];
+const CYLINDER_COLOR_NAMES = ['CYAN', 'MAGENTA', 'GOLD', 'GREEN', 'ORANGE', 'VIOLET'];
+
 class DashboardUI {
   constructor() {
     this.appContainer = document.getElementById('app');
     this.events = [];
-    this.phases = ['implementation', 'review'];
-    this.currentPhase = null;
-    this.countdownInterval = null;
-    this.nextCycleTime = null;
+    this.maxConcurrency = 3;
+    this.cylinders = [];          // [{index,color,colorName,status,actionType,issueNumber,prNumber}]
+    this.issueCards = new Map();  // issueNumber -> {number,title,state}
+    this.prCards = new Map();     // prNumber -> {number,title,state,draft,checksStatus,...}
+    this.cylinderByIssue = new Map(); // issueNumber -> cylinderIdx (0-based)
+    this.cylinderByPR = new Map();    // prNumber -> cylinderIdx (0-based)
     this.connected = false;
     this.iterationNumber = 0;
-    this.lastIterationStartTime = null;
+    this.nextCycleTime = null;
     this.bannerTimeout = null;
-    this.init();
-  }
-
-  init() {
+    this.countdownInterval = null;
+    this.initCylinders(3);
     this.render();
     this.connectWebSocket();
     this.startCountdown();
+  }
+
+  initCylinders(n) {
+    this.maxConcurrency = n;
+    this.cylinders = [];
+    for (let i = 0; i < n; i++) {
+      this.cylinders.push({
+        index: i + 1,
+        color: CYLINDER_COLORS[i] || '#888888',
+        colorName: CYLINDER_COLOR_NAMES[i] || \`CYL-\${i + 1}\`,
+        status: 'idle',
+        actionType: null,
+        issueNumber: null,
+        prNumber: null,
+      });
+    }
   }
 
   render() {
@@ -534,17 +613,17 @@ class DashboardUI {
         </div>
       </div>
       <div class="main-content">
-        <div class="phase-section active" id="phase-implementation">
-          <div class="phase-title">⚙ Implementation</div>
-          <div class="phase-content" id="phase-implementation-content"></div>
+        <div class="panel panel-a">
+          <div class="panel-header" id="panel-a-header">⚙ \${this.maxConcurrency}-CYLINDER ENGINE</div>
+          <div class="panel-body" id="cylinder-list"></div>
         </div>
-        <div class="phase-section" id="phase-review">
-          <div class="phase-title">👁 Review</div>
-          <div class="phase-content" id="phase-review-content"></div>
+        <div class="panel panel-b">
+          <div class="panel-header">⚡ ISSUE→PR LIFECYCLE</div>
+          <div class="panel-body" id="lifecycle-list"></div>
         </div>
-        <div class="phase-section" id="phase-broadcast">
-          <div class="phase-title">📡 Broadcast Feed</div>
-          <div class="phase-content" id="phase-broadcast-content"></div>
+        <div class="panel panel-c">
+          <div class="panel-header">📡 EVENT STREAM</div>
+          <div class="panel-body" id="event-stream"></div>
         </div>
       </div>
       <div class="status-bar">
@@ -567,8 +646,213 @@ class DashboardUI {
         </div>
       </div>
     \`;
+    this.renderPanelA();
+    this.renderPanelB();
   }
 
+  // ── Panel A: N-Cylinder Engine ──────────────────────────────────────────
+  renderPanelA() {
+    const list = document.getElementById('cylinder-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    for (const cyl of this.cylinders) {
+      const row = document.createElement('div');
+      row.className = \`cylinder-row \${cyl.status}\`;
+      row.style.setProperty('--cyl-color', cyl.color);
+
+      const isActive = cyl.status === 'active';
+      const isDone   = cyl.status === 'done';
+      const isError  = cyl.status === 'error';
+
+      let statusText = 'idle';
+      if (isActive || isDone || isError) {
+        switch (cyl.actionType) {
+          case 'start-implementation':
+            statusText = \`implementing #\${cyl.issueNumber}\`;
+            break;
+          case 'self-review':
+            statusText = \`reviewing PR #\${cyl.prNumber}\`;
+            break;
+          case 'address-failing-checks':
+            statusText = \`fixing checks PR #\${cyl.prNumber}\`;
+            break;
+          case 'squash-merge':
+            statusText = \`merging PR #\${cyl.prNumber}\`;
+            break;
+          case 'resolve-conflicts':
+            statusText = \`resolving conflicts PR #\${cyl.prNumber}\`;
+            break;
+          default:
+            statusText = cyl.actionType || 'working';
+        }
+        if (isDone)  statusText = \`✓ \${statusText}\`;
+        if (isError) statusText = \`✗ \${statusText}\`;
+      }
+
+      row.innerHTML = \`
+        <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
+        <div class="cylinder-info">
+          <div class="cylinder-label">CYL \${cyl.index} · \${cyl.colorName}</div>
+          <div class="cylinder-status-text">\${statusText}</div>
+        </div>
+      \`;
+      list.appendChild(row);
+    }
+
+    const header = document.getElementById('panel-a-header');
+    if (header) header.textContent = \`⚙ \${this.maxConcurrency}-CYLINDER ENGINE\`;
+  }
+
+  // ── Panel B: Issue→PR Lifecycle ─────────────────────────────────────────
+  renderPanelB() {
+    const list = document.getElementById('lifecycle-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    if (this.issueCards.size === 0 && this.prCards.size === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'lifecycle-empty';
+      empty.textContent = 'Waiting for repository snapshot…';
+      list.appendChild(empty);
+      return;
+    }
+
+    // Build issue → linked-PR pairs
+    const pairs = [];
+    const handledPRs = new Set();
+
+    for (const [issueNum, issue] of this.issueCards) {
+      const linkedPRs = [];
+      for (const [prNum, pr] of this.prCards) {
+        const closes = pr.closingIssueNumbers || [];
+        const linked  = pr.linkedIssueNumbers  || [];
+        if (closes.includes(issueNum) || linked.includes(issueNum)) {
+          linkedPRs.push(pr);
+          handledPRs.add(prNum);
+        }
+      }
+      pairs.push({ issue, prs: linkedPRs });
+    }
+
+    // Orphan PRs (no linked issue)
+    for (const [prNum, pr] of this.prCards) {
+      if (!handledPRs.has(prNum)) pairs.push({ issue: null, prs: [pr] });
+    }
+
+    // Active-cylinder items float to top, then sort by issue number
+    pairs.sort((a, b) => {
+      const aActive = a.issue ? this.cylinderByIssue.has(a.issue.number) : false;
+      const bActive = b.issue ? this.cylinderByIssue.has(b.issue.number) : false;
+      if (aActive !== bActive) return aActive ? -1 : 1;
+      if (a.issue && b.issue) return a.issue.number - b.issue.number;
+      return 0;
+    });
+
+    for (const pair of pairs.slice(0, 20)) {
+      list.appendChild(this.createLifecycleCard(pair));
+    }
+  }
+
+  createLifecycleCard({ issue, prs }) {
+    const card = document.createElement('div');
+
+    // Resolve cylinder color for this card
+    let cylinderIdx = -1;
+    if (issue) {
+      const idx = this.cylinderByIssue.get(issue.number);
+      if (idx !== undefined) cylinderIdx = idx;
+    }
+    if (cylinderIdx === -1) {
+      for (const pr of prs) {
+        const idx = this.cylinderByPR.get(pr.number);
+        if (idx !== undefined) { cylinderIdx = idx; break; }
+      }
+    }
+
+    const color = cylinderIdx >= 0
+      ? (CYLINDER_COLORS[cylinderIdx] || '#00ff88')
+      : 'rgba(0, 255, 136, 0.22)';
+
+    card.className = \`lifecycle-card\${cylinderIdx >= 0 ? ' active' : ''}\`;
+    card.style.setProperty('--card-color', color);
+
+    let html = '';
+
+    if (issue) {
+      const t = issue.title.length > 30 ? issue.title.slice(0, 30) + '…' : issue.title;
+      html += \`<div class="lifecycle-pill issue-pill">
+        <div class="pill-number">Issue #\${issue.number}</div>
+        <div class="pill-title">\${t}</div>
+        <div class="pill-state">\${issue.state.toUpperCase()}</div>
+      </div>\`;
+    }
+
+    if (prs.length > 0) {
+      if (issue) html += \`<div class="lifecycle-arrow">→</div>\`;
+      for (const pr of prs) {
+        const t = pr.title.length > 30 ? pr.title.slice(0, 30) + '…' : pr.title;
+        const checkIcon =
+          pr.checksStatus === 'success' ? '✅' :
+          pr.checksStatus === 'failure' ? '❌' :
+          pr.checksStatus === 'pending' ? '⏳' : '⚪';
+        html += \`<div class="lifecycle-pill pr-pill">
+          <div class="pill-number">PR #\${pr.number}</div>
+          <div class="pill-title">\${t}</div>
+          <div class="pill-state">\${pr.draft ? 'DRAFT' : 'READY'} \${checkIcon}</div>
+        </div>\`;
+      }
+    }
+
+    card.innerHTML = html;
+    return card;
+  }
+
+  // ── Panel C: Event Stream ───────────────────────────────────────────────
+  addEventToStream(text, cylinderIdx, level) {
+    const stream = document.getElementById('event-stream');
+    if (!stream) return;
+
+    const color =
+      cylinderIdx >= 0 && cylinderIdx < CYLINDER_COLORS.length
+        ? CYLINDER_COLORS[cylinderIdx]
+        : null;
+
+    const line = document.createElement('div');
+    line.className = 'event-line';
+
+    const dot = document.createElement('span');
+    dot.className = 'event-dot';
+    dot.textContent = '●';
+    if (color) { dot.style.color = color; dot.style.textShadow = \`0 0 5px \${color}\`; }
+
+    const timeEl = document.createElement('span');
+    timeEl.className = 'event-time';
+    timeEl.textContent = new Date().toLocaleTimeString('en', { hour12: false });
+
+    const content = document.createElement('span');
+    content.className = 'event-content';
+    content.textContent = text;
+    if (color) {
+      content.style.color = color;
+    } else if (level === 'error') {
+      content.style.color = '#ff0055';
+    } else if (level === 'success') {
+      content.style.color = '#00ff88';
+    } else if (level === 'warning') {
+      content.style.color = '#ffaa00';
+    }
+
+    line.appendChild(dot);
+    line.appendChild(timeEl);
+    line.appendChild(content);
+    stream.appendChild(line);
+    stream.scrollTop = stream.scrollHeight;
+
+    while (stream.children.length > 300) stream.removeChild(stream.firstChild);
+  }
+
+  // ── WebSocket ───────────────────────────────────────────────────────────
   connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(\`\${protocol}//\${window.location.host}\`);
@@ -576,7 +860,7 @@ class DashboardUI {
     ws.onopen = () => {
       this.connected = true;
       this.updateConnectionStatus(true);
-      console.log('Connected to vibrator dashboard');
+      this.addEventToStream('Connected to vibrator dashboard', -1, 'success');
     };
 
     ws.onmessage = (event) => {
@@ -588,10 +872,7 @@ class DashboardUI {
       }
     };
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      this.updateConnectionStatus(false);
-    };
+    ws.onerror = () => this.updateConnectionStatus(false);
 
     ws.onclose = () => {
       this.connected = false;
@@ -604,195 +885,172 @@ class DashboardUI {
     if (!message.type) return;
 
     this.events.push(message);
-    if (this.events.length > 1000) {
-      this.events.shift();
-    }
-    document.getElementById('event-count').textContent = this.events.length;
-
-    // Update session count if present in message data
-    if (message.data && typeof message.data.sessionCount === 'number') {
-      document.getElementById('session-count').textContent = message.data.sessionCount;
-    }
+    if (this.events.length > 1000) this.events.shift();
+    const countEl = document.getElementById('event-count');
+    if (countEl) countEl.textContent = this.events.length;
 
     switch (message.type) {
-      case 'iteration-start':
-        this.handleIterationStart(message);
-        break;
-      case 'phase-update':
-        this.handlePhaseUpdate(message);
-        break;
-      case 'action-start':
-        this.handleActionStart(message);
-        break;
-      case 'action-complete':
-        this.handleActionComplete(message);
-        break;
-      case 'action-error':
-        this.handleActionError(message);
-        break;
-      case 'workflow-approval':
-        this.handleWorkflowApproval(message);
-        break;
-      case 'snapshot-update':
-        this.handleSnapshotUpdate(message);
-        break;
-      case 'cycle-countdown':
-        this.handleCycleCountdown(message);
-        break;
+      case 'iteration-start':        this.handleIterationStart(message); break;
+      case 'phase-update':           this.handlePhaseUpdate(message); break;
+      case 'action-start':           this.handleActionStart(message); break;
+      case 'action-complete':        this.handleActionComplete(message); break;
+      case 'action-error':           this.handleActionError(message); break;
+      case 'workflow-approval':      this.handleWorkflowApproval(message); break;
+      case 'snapshot-update':        this.handleSnapshotUpdate(message); break;
+      case 'cycle-countdown':        this.handleCycleCountdown(message); break;
       case 'broadcast-github-activity':
       case 'broadcast-commit':
       case 'broadcast-pr-update':
       case 'broadcast-ci-status':
       case 'broadcast-review-comment':
-      case 'broadcast-issue-update':
-        this.handleBroadcastEvent(message);
-        break;
-      case 'log-message':
-        this.handleLogMessage(message);
-        break;
+      case 'broadcast-issue-update': this.handleBroadcastEvent(message); break;
+      case 'log-message':            this.handleLogMessage(message); break;
       default:
-        this.addLogLine('info', \`[EVENT] \${message.type}: \${JSON.stringify(message.data)}\`);
+        this.addEventToStream(\`[EVENT] \${message.type}\`, -1, 'info');
     }
   }
 
+  // ── Event handlers ──────────────────────────────────────────────────────
   handleIterationStart(message) {
+    const n = message.data.maxConcurrency || this.maxConcurrency;
+    this.initCylinders(n);
+    this.cylinderByIssue.clear();
+    this.cylinderByPR.clear();
+
     this.iterationNumber = message.data.iterationNumber;
-    this.lastIterationStartTime = new Date(message.timestamp);
-    document.getElementById('iteration-number').textContent = this.iterationNumber;
-    document.getElementById('banner-iteration').textContent = \`Iteration \${this.iterationNumber}\`;
+    const numEl = document.getElementById('iteration-number');
+    if (numEl) numEl.textContent = this.iterationNumber;
+    const bannerIt = document.getElementById('banner-iteration');
+    if (bannerIt) bannerIt.textContent = \`Iteration \${this.iterationNumber}\`;
+
     this.showCycleBanner();
-    this.addLogLine('info', \`🔄 Iteration \${message.data.iterationNumber} started\`);
-    this.currentPhase = null;
+    this.renderPanelA();
+    this.renderPanelB();
+    this.addEventToStream(
+      \`🔄 Iteration \${message.data.iterationNumber} started · N=\${n}\`, -1, 'info'
+    );
   }
 
   showCycleBanner() {
     const banner = document.getElementById('cycle-banner');
     if (!banner) return;
-
     if (this.bannerTimeout) clearTimeout(this.bannerTimeout);
-
     banner.classList.remove('hidden', 'fade-out');
     void banner.offsetWidth;
-
     this.bannerTimeout = setTimeout(() => {
       banner.classList.add('fade-out');
-      setTimeout(() => {
-        banner.classList.add('hidden');
-      }, 800);
+      setTimeout(() => banner.classList.add('hidden'), 800);
     }, 3000);
   }
 
   handlePhaseUpdate(message) {
-    const phase = message.data.phase;
-    this.currentPhase = phase;
-    this.updatePhaseUI(phase);
-    this.addLogLine('info', \`📍 Phase: \${phase}\`);
+    this.addEventToStream(\`📍 Phase: \${message.data.phase}\`, -1, 'info');
   }
 
   handleActionStart(message) {
-    const actionDesc = message.data.description || message.data.type;
-    this.addLogLine('info', \`▶ Action: \${actionDesc}\`);
+    const idx = (message.data.actionIndex || 1) - 1; // 0-based cylinder index
+    if (idx >= 0 && idx < this.cylinders.length) {
+      const cyl = this.cylinders[idx];
+      cyl.status      = 'active';
+      cyl.actionType  = message.data.type   || null;
+      cyl.issueNumber = message.data.issueNumber       ?? null;
+      cyl.prNumber    = message.data.pullRequestNumber ?? null;
+
+      // Wire cylinder color to this issue/PR for Panel B coordination
+      if (cyl.issueNumber !== null) this.cylinderByIssue.set(cyl.issueNumber, idx);
+      if (cyl.prNumber    !== null) this.cylinderByPR.set(cyl.prNumber, idx);
+
+      this.renderPanelA();
+      this.renderPanelB();
+    }
+    const desc = message.data.description || message.data.type || '';
+    this.addEventToStream(
+      \`▶ [\${message.data.actionIndex}/\${message.data.totalActions}] \${desc}\`, idx, 'info'
+    );
   }
 
   handleActionComplete(message) {
-    this.addLogLine('success', \`✓ Action complete [\${message.data.actionIndex}/\${message.data.totalActions}]\`);
+    const idx = (message.data.actionIndex || 1) - 1;
+    if (idx >= 0 && idx < this.cylinders.length) {
+      this.cylinders[idx].status = 'done';
+      this.renderPanelA();
+      this.renderPanelB();
+    }
+    this.addEventToStream(
+      \`✓ action [\${message.data.actionIndex}/\${message.data.totalActions}] complete\`, idx, 'success'
+    );
   }
 
   handleActionError(message) {
-    this.addLogLine('error', \`✗ Action failed [\${message.data.actionIndex}/\${message.data.totalActions}]: \${message.data.error}\`);
+    const idx = (message.data.actionIndex || 1) - 1;
+    if (idx >= 0 && idx < this.cylinders.length) {
+      this.cylinders[idx].status = 'error';
+      this.renderPanelA();
+      this.renderPanelB();
+    }
+    this.addEventToStream(
+      \`✗ action [\${message.data.actionIndex}/\${message.data.totalActions}] failed: \${message.data.error || ''}\`,
+      idx, 'error'
+    );
   }
 
   handleWorkflowApproval(message) {
     const runName = message.data.runName || 'unknown';
-    this.addLogLine('success', \`✓ Workflow approved: \${runName}\`);
-    this.addBroadcastTicker('ci', \`Workflow \${runName} approved and queued for execution\`);
-  }
-
-  handleBroadcastEvent(message) {
-    const eventType = message.type.replace('broadcast-', '').toUpperCase();
-    const content = message.data.content || JSON.stringify(message.data);
-    const category = message.type === 'broadcast-ci-status' ? 'ci' :
-                    message.type === 'broadcast-commit' ? 'commit' :
-                    message.type === 'broadcast-pr-update' ? 'pr' : 'info';
-    this.addBroadcastTicker(category, \`[\${eventType}] \${content}\`);
-  }
-
-  handleLogMessage(message) {
-    const level = message.data.level || 'info';
-    this.addLogLine(level, message.data.message || '');
+    this.addEventToStream(\`✓ Workflow approved: \${runName}\`, -1, 'success');
   }
 
   handleSnapshotUpdate(message) {
     const data = message.data;
-    document.getElementById('session-count').textContent = data.sessionCount || 0;
+    const sessionEl = document.getElementById('session-count');
+    if (sessionEl) sessionEl.textContent = data.sessionCount || 0;
+
+    if (Array.isArray(data.issues)) {
+      for (const issue of data.issues) this.issueCards.set(issue.number, issue);
+    }
+    if (Array.isArray(data.pullRequests)) {
+      this.prCards.clear();
+      for (const pr of data.pullRequests) this.prCards.set(pr.number, pr);
+    }
+
+    this.renderPanelB();
+    this.addEventToStream(
+      \`📊 Snapshot: \${data.issueCount || 0} issues, \${data.prCount || 0} PRs, \${data.sessionCount || 0} sessions\`,
+      -1, 'info'
+    );
   }
 
   handleCycleCountdown(message) {
-    if (message.data.nextCycleTime) {
-      this.nextCycleTime = new Date(message.data.nextCycleTime).getTime();
-    } else {
-      this.nextCycleTime = new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
-    }
+    this.nextCycleTime = message.data.nextCycleTime
+      ? new Date(message.data.nextCycleTime).getTime()
+      : new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
   }
 
-  updatePhaseUI(phase) {
-    document.querySelectorAll('.phase-section').forEach(el => {
-      el.classList.remove('active');
-    });
-    const activePhase = document.getElementById(\`phase-\${phase}\`);
-    if (activePhase) {
-      activePhase.classList.add('active');
+  handleBroadcastEvent(message) {
+    const content = message.data.content || JSON.stringify(message.data);
+
+    // Inherit cylinder color if this event is about a tracked issue/PR
+    let cylinderIdx = -1;
+    if (message.data.prNumber !== undefined) {
+      const idx = this.cylinderByPR.get(message.data.prNumber);
+      if (idx !== undefined) cylinderIdx = idx;
     }
+    if (cylinderIdx === -1 && message.data.issueNumber !== undefined) {
+      const idx = this.cylinderByIssue.get(message.data.issueNumber);
+      if (idx !== undefined) cylinderIdx = idx;
+    }
+
+    this.addEventToStream(content, cylinderIdx, 'info');
   }
 
-  addLogLine(level, text) {
-    const content = this.getCurrentPhaseContent();
-    if (!content) return;
-
-    const line = document.createElement('div');
-    line.className = \`log-line \${level}\`;
-    line.textContent = \`[\${new Date().toLocaleTimeString()}] \${text}\`;
-    content.appendChild(line);
-    content.scrollTop = content.scrollHeight;
-
-    if (content.children.length > 100) {
-      content.removeChild(content.firstChild);
-    }
-  }
-
-  addBroadcastTicker(level, text) {
-    const broadcastContent = document.getElementById('phase-broadcast-content');
-    if (!broadcastContent) return;
-
-    const ticker = document.createElement('div');
-    ticker.className = \`broadcast-ticker \${level}\`;
-
-    const label = document.createElement('div');
-    label.className = 'broadcast-ticker-label';
-    label.textContent = '📡 BROADCAST';
-
-    const content = document.createElement('div');
-    content.className = 'broadcast-ticker-content';
-    content.textContent = text;
-
-    ticker.appendChild(label);
-    ticker.appendChild(content);
-    broadcastContent.appendChild(ticker);
-    broadcastContent.scrollTop = broadcastContent.scrollHeight;
-
-    if (broadcastContent.children.length > 50) {
-      broadcastContent.removeChild(broadcastContent.firstChild);
-    }
-  }
-
-  getCurrentPhaseContent() {
-    const phase = this.currentPhase || 'implementation';
-    return document.getElementById(\`phase-\${phase}-content\`);
+  handleLogMessage(message) {
+    const level = message.data.level || 'info';
+    this.addEventToStream(message.data.message || '', -1, level);
   }
 
   updateConnectionStatus(connected) {
     const statusEl = document.getElementById('connection-status');
-    const textEl = document.getElementById('connection-text');
+    const textEl   = document.getElementById('connection-text');
+    if (!statusEl || !textEl) return;
     if (connected) {
       statusEl.classList.remove('disconnected');
       textEl.textContent = '🟢 Connected';
@@ -805,20 +1063,12 @@ class DashboardUI {
   startCountdown() {
     this.countdownInterval = setInterval(() => {
       if (!this.nextCycleTime) return;
-
-      const now = new Date().getTime();
-      const diff = this.nextCycleTime - now;
-
-      if (diff <= 0) {
-        document.getElementById('countdown-timer').textContent = '0:00';
-        return;
-      }
-
-      const seconds = Math.floor(diff / 1000);
-      const minutes = Math.floor(seconds / 60);
-      const secs = seconds % 60;
-      document.getElementById('countdown-timer').textContent =
-        \`\${minutes}:\${String(secs).padStart(2, '0')}\`;
+      const diff = this.nextCycleTime - Date.now();
+      const el = document.getElementById('countdown-timer');
+      if (!el) return;
+      if (diff <= 0) { el.textContent = '0:00'; return; }
+      const s = Math.floor(diff / 1000);
+      el.textContent = \`\${Math.floor(s / 60)}:\${String(s % 60).padStart(2, '0')}\`;
     }, 100);
   }
 }
