@@ -163,7 +163,7 @@ export async function executeAction(
         head: implementation.branch,
         base: baseBranch,
       });
-      // Only create a session and post the "opened" comment if this is a new PR.
+      // Only create a session if this is a new PR.
       if (created.created) {
         await sessionStore.createSession({
           issueNumber: issue.number,
@@ -175,10 +175,6 @@ export async function executeAction(
             pullRequestBody: implementation.pullRequestBody,
           },
         });
-        await gitHubClient.postComment(
-          created.number,
-          `Implemented issue #${issue.number}: opened this PR.`,
-        );
       }
       return {};
     }
