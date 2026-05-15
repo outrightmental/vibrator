@@ -1,4 +1,4 @@
-# vibrator
+# Vibrator
 
 **Turn a GitHub issue queue into a self-driving Claude vibe-coding factory.**
 
@@ -11,6 +11,8 @@ squash-merges when the loop is clean.
 It is for developers who want the fun part of vibe coding — expressing
 intent and reviewing outcomes — without babysitting every agent
 handoff.
+
+<img width="1512" height="945" alt="Vibrator by Outright Mental" src="https://github.com/user-attachments/assets/33076db7-ae9c-4712-97ce-07b87f71ada7" />
 
 ## Why this exists
 
