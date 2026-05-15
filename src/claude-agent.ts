@@ -15,7 +15,7 @@ import { globalEventEmitter } from "./event-emitter.js";
  */
 export function extractThinkingPreview(chunk: string): string {
   const plain = chunk
-    .replace(/\[[0-9;]*[A-Za-z]/g, "") // strip ANSI escape sequences
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "") // strip ANSI escape sequences
     .replace(/\r/g, "");
   const lines = plain
     .split("\n")
@@ -116,19 +116,19 @@ class StatusBoard {
   private redraw(): void {
     const count = this.slots.size;
     if (count === 0) return;
-    process.stderr.write(`[${count}A`); // cursor up N lines
+    process.stderr.write(`\x1b[${count}A`); // cursor up N lines
     for (const slot of this.slots.values()) {
-      process.stderr.write(`\r[2K${this.renderSlot(slot)}\n`);
+      process.stderr.write(`\r\x1b[2K${this.renderSlot(slot)}\n`);
     }
   }
 
   private redrawWithReplacement(targetId: number, replacement: string): void {
     const count = this.slots.size;
     if (count === 0) return;
-    process.stderr.write(`[${count}A`);
+    process.stderr.write(`\x1b[${count}A`);
     for (const [id, slot] of this.slots) {
       const line = id === targetId ? replacement : this.renderSlot(slot);
-      process.stderr.write(`\r[2K${line}\n`);
+      process.stderr.write(`\r\x1b[2K${line}\n`);
     }
   }
 }

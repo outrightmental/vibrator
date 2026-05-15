@@ -95,8 +95,9 @@ test("extractThinkingPreview returns the last non-empty line", () => {
 });
 
 test("extractThinkingPreview strips ANSI escape sequences", () => {
-  const chunk = "[32mGreen text[0m\nNext line";
-  assert.equal(extractThinkingPreview(chunk), "Next line");
+  // ESC codes on the last (only) line -- stripping must fire for the assertion to hold.
+  const chunk = "\x1b[32mGreen text\x1b[0m";
+  assert.equal(extractThinkingPreview(chunk), "Green text");
 });
 
 test("extractThinkingPreview strips carriage returns", () => {
