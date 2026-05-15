@@ -83,18 +83,23 @@ function createHarness(input: {
     headSha: string;
   };
   failingCheckRuns?: Array<{ name: string; logExcerpt: string }>;
-  newPullRequest?: { number: number; headSha: string };
+  newPullRequest?: { number: number; headSha: string; created?: boolean };
 }): Harness {
   const calls: string[] = [];
   const sessions: SessionInput[] = [];
-  const newPullRequest = input.newPullRequest ?? { number: 999, headSha: "sha-new" };
+  const newPullRequest: { number: number; headSha: string; created: boolean } = {
+    ...input.newPullRequest,
+    number: input.newPullRequest?.number ?? 999,
+    headSha: input.newPullRequest?.headSha ?? "sha-new",
+    created: input.newPullRequest?.created ?? true,
+  };
 
   const gitHubClient: ActionGitHubClient = {
     async getDefaultBranch(): Promise<string> {
       calls.push("get-default-branch");
       return "main";
     },
-    async createPullRequest(args): Promise<{ number: number; headSha: string }> {
+    async createPullRequest(args): Promise<{ number: number; headSha: string; created: boolean }> {
       calls.push(
         `create-pr:${args.head}->${args.base}:${args.title}:${args.body.replace(/\n/g, "\\n")}`,
       );
