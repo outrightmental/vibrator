@@ -497,6 +497,12 @@ export function isClaudeUsageLimitMessage(message: string): boolean {
   );
 }
 
+export function isNonFastForwardPushError(message: string): boolean {
+  return /non-fast-forward|failed to push some refs|tip of your current branch is behind/i.test(
+    message,
+  );
+}
+
 export function parseOriginHeadBranch(symbolicRef: string): string | undefined {
   const trimmed = symbolicRef.trim();
   if (!trimmed) {
@@ -605,8 +611,13 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       identifier: `issue-${params.issueNumber}`,
     });
 
-    // Create or reset the feature branch from the up-to-date base.
-    await runCommand("git", ["checkout", "-B", branch, `origin/${params.baseBranch}`], {
+    const branchAlreadyExistsRemotely = await this.remoteBranchExists(repoDir, branch);
+    const branchStartPoint = branchAlreadyExistsRemotely
+      ? `origin/${branch}`
+      : `origin/${params.baseBranch}`;
+
+    // Create or reset the feature branch from an up-to-date starting point.
+    await runCommand("git", ["checkout", "-B", branch, branchStartPoint], {
       cwd: repoDir,
     });
 
@@ -661,9 +672,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     }
 
     // Push the branch and capture the head SHA (never force-push).
-    await runCommand("git", ["push", "origin", branch], {
-      cwd: repoDir,
-    });
+    await this.pushWithRemoteBranchMergeRetry(repoDir, ["push", "origin", branch], branch);
     const headSha = (
       await runCommand("git", ["rev-parse", "HEAD"], { cwd: repoDir, captureStdout: true })
     ).trim();
@@ -885,7 +894,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       throw new Error(`Failed to merge latest from base branch before push: ${error}`);
     }
     const args = ["push", "origin", `HEAD:${branch}`];
-    await runCommand("git", args, { cwd: repoDir });
+    await this.pushWithRemoteBranchMergeRetry(repoDir, args, branch);
     const headSha = (
       await runCommand("git", ["rev-parse", "HEAD"], {
         cwd: repoDir,
@@ -893,6 +902,53 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       })
     ).trim();
     return { headSha };
+  }
+
+  private async remoteBranchExists(repoDir: string, branch: string): Promise<boolean> {
+    try {
+      await runCommand(
+        "git",
+        ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`],
+        { cwd: repoDir },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async pushWithRemoteBranchMergeRetry(
+    repoDir: string,
+    pushArgs: readonly string[],
+    branch: string,
+  ): Promise<void> {
+    try {
+      await runCommand("git", pushArgs, { cwd: repoDir, captureStderr: true });
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isNonFastForwardPushError(message)) {
+        throw error;
+      }
+    }
+
+    console.warn(
+      `[vibrator] Push for ${branch} was rejected as non-fast-forward; merging origin/${branch} and retrying.`,
+    );
+
+    await runCommand("git", ["fetch", "origin", branch], { cwd: repoDir });
+    try {
+      // Prefer local conflict resolutions while still preserving remote commits.
+      await runCommand("git", ["merge", `origin/${branch}`, "-X", "ours", "--no-edit"], {
+        cwd: repoDir,
+      });
+    } catch (error) {
+      throw new Error(
+        `Push rejected as non-fast-forward and failed to merge origin/${branch} before retry: ${error}`,
+      );
+    }
+
+    await runCommand("git", pushArgs, { cwd: repoDir, captureStderr: true });
   }
 
   private async runClaude(prompt: string, cwd: string): Promise<string> {
