@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  createClaudeAgentClient,
   extractFinalDescription,
   extractImplementationPayload,
   FINAL_DESCRIPTION_END_MARKER,
@@ -10,9 +15,30 @@ import {
   IMPLEMENTATION_PAYLOAD_START_MARKER,
   isRebaseInProgress,
   isClaudeUsageLimitMessage,
+  isNonFastForwardPushError,
   parseOriginHeadBranch,
   parseUsageResetTimeMs,
 } from "../src/claude-agent.js";
+
+function runOrThrow(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const result = spawnSync(command, args, {
+    cwd,
+    env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `Command failed: ${command} ${args.join(" ")}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+  }
+  return result.stdout.trim();
+}
 
 test("extractFinalDescription returns the text between the sentinel markers", () => {
   const stdout = [
@@ -69,6 +95,19 @@ test("isClaudeUsageLimitMessage detects out-of-extra-usage text", () => {
 
 test("isClaudeUsageLimitMessage returns false for unrelated errors", () => {
   assert.equal(isClaudeUsageLimitMessage("network timeout"), false);
+});
+
+test("isNonFastForwardPushError detects git non-fast-forward push output", () => {
+  const message = [
+    "error: failed to push some refs to 'github.com:owner/repo.git'",
+    "hint: Updates were rejected because the tip of your current branch is behind",
+    "hint: its remote counterpart.",
+  ].join("\n");
+  assert.equal(isNonFastForwardPushError(message), true);
+});
+
+test("isNonFastForwardPushError returns false for unrelated push failures", () => {
+  assert.equal(isNonFastForwardPushError("fatal: Authentication failed"), false);
 });
 
 test("parseUsageResetTimeMs parses same-day reset times", () => {
@@ -130,4 +169,133 @@ test("isRebaseInProgress returns false when no rebase state exists", async () =>
   const exists = async (): Promise<boolean> => false;
   const result = await isRebaseInProgress("/tmp/repo", exists);
   assert.equal(result, false);
+});
+
+test("implementIssue retries push by merging remote branch on non-fast-forward", async () => {
+  const root = await mkdtemp(join(tmpdir(), "vibrator-nff-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const verifyDir = join(root, "verify");
+  const ghStubPath = join(binDir, "gh-stub.sh");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const issueNumber = 173;
+  const issueTitle = "Gift Certificates";
+  const branch = "vibrator/issue-173-gift-certificates";
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    runOrThrow("git", ["checkout", "-b", branch], seedDir);
+    await writeFile(join(seedDir, "existing.txt"), "existing remote branch state\n", "utf8");
+    runOrThrow("git", ["add", "existing.txt"], seedDir);
+    runOrThrow("git", ["commit", "-m", "existing remote branch commit"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", branch], seedDir);
+
+    await writeFile(
+      ghStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
+        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
+        "  exit 0",
+        "fi",
+        "echo \"unsupported gh args: $*\" >&2",
+        "exit 2",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(ghStubPath, 0o755);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"local change\" >> local.txt",
+        "git add local.txt",
+        "git commit -m \"agent local commit\"",
+        "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/vibrator-race-XXXXXX\")\"",
+        "git clone \"$VIBRATOR_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
+        "cd \"$RACE_DIR/repo\"",
+        "git checkout \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        "git config user.name \"Race Writer\"",
+        "git config user.email \"race@example.com\"",
+        "echo \"remote race change\" >> race.txt",
+        "git add race.txt",
+        "git commit -m \"race remote commit\" >/dev/null 2>&1",
+        "git push origin \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test PR\",\"body\":\"Closes #173\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
+    const previousBranch = process.env.VIBRATOR_TEST_BRANCH;
+    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
+    process.env.VIBRATOR_TEST_BRANCH = branch;
+
+    try {
+      const client = createClaudeAgentClient({
+        checkoutRootDir,
+        ghCommand: ghStubPath,
+        claudeCommand: claudeStubPath,
+        claudeTimeoutMs: 120000,
+      });
+
+      const result = await client.implementIssue({
+        owner: "example",
+        repo: "repo",
+        issueNumber,
+        issueTitle,
+        issueBody: "Add gift certificates support.",
+        baseBranch: "main",
+      });
+
+      assert.equal(result.branch, branch);
+
+      runOrThrow("git", ["clone", remoteDir, verifyDir], root);
+      runOrThrow("git", ["checkout", branch], verifyDir);
+      const history = runOrThrow("git", ["log", "--format=%s", "-n", "20"], verifyDir);
+      const remoteHeadSha = runOrThrow("git", ["rev-parse", "HEAD"], verifyDir);
+
+      assert.match(history, /existing remote branch commit/);
+      assert.match(history, /agent local commit/);
+      assert.match(history, /race remote commit/);
+      assert.equal(result.headSha, remoteHeadSha);
+    } finally {
+      if (previousRemote === undefined) {
+        delete process.env.VIBRATOR_TEST_REMOTE;
+      } else {
+        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
+      }
+      if (previousBranch === undefined) {
+        delete process.env.VIBRATOR_TEST_BRANCH;
+      } else {
+        process.env.VIBRATOR_TEST_BRANCH = previousBranch;
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
