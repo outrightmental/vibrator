@@ -229,6 +229,37 @@ test("executeAction implements an issue, opens a PR, and records the session", a
   ]);
 });
 
+test("executeAction backfills the closing reference when reusing an existing PR", async () => {
+  const harness = createHarness({
+    issues: [createIssue({ number: 7, title: "Add widget", body: "Make it." })],
+    pullRequests: [
+      createPullRequest({
+        number: 100,
+        linkedIssueNumbers: [7],
+        headRefName: "vibrator/issue-7-add-widget",
+        body: "Added widget.",
+      }),
+    ],
+    implementation: {
+      branch: "vibrator/issue-7-add-widget",
+      pullRequestTitle: "Add widget",
+      pullRequestBody: "Added widget.",
+      headSha: "sha-impl-7",
+    },
+    newPullRequest: { number: 100, headSha: "sha-impl-7", created: false },
+  });
+
+  await run(harness, { type: "start-implementation", issueNumber: 7 });
+
+  assert.deepEqual(harness.calls, [
+    "get-default-branch",
+    "implement:7:main",
+    "create-pr:vibrator/issue-7-add-widget->main:Add widget:Added widget.\\n\\nCloses #7",
+    "update-body:100:Added widget.\n\nCloses #7",
+  ]);
+  assert.deepEqual(harness.sessions, []);
+});
+
 test("executeAction runs a self-review and records whether changes were made", async () => {
   const pullRequest = createPullRequest({
     number: 10,
