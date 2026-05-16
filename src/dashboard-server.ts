@@ -320,25 +320,6 @@ body {
   padding: 12px;
 }
 
-.panel-c .panel-body {
-  padding: 0;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.panel-c .panel-header {
-  padding: 0 0 10px 0;
-  margin-bottom: 15px;
-  font-size: 16px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  color: #00ff88;
-  border-bottom: 1px solid rgba(0, 255, 136, 0.3);
-  background: transparent;
-  text-shadow: none;
-}
-
 .panel-body::-webkit-scrollbar {
   width: 8px;
 }
