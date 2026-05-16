@@ -17,7 +17,8 @@ export type DashboardEventType =
   | "broadcast-review-comment"
   | "broadcast-issue-update"
   | "lifecycle-update"
-  | "log-message";
+  | "log-message"
+  | "claude-thinking";
 
 export interface DashboardEvent {
   type: DashboardEventType;

@@ -9,6 +9,7 @@ import {
   createClaudeAgentClient,
   extractFinalDescription,
   extractImplementationPayload,
+  extractThinkingPreview,
   FINAL_DESCRIPTION_END_MARKER,
   FINAL_DESCRIPTION_START_MARKER,
   IMPLEMENTATION_PAYLOAD_END_MARKER,
@@ -86,6 +87,38 @@ test("extractImplementationPayload returns undefined when markers are missing", 
 test("extractImplementationPayload returns undefined for malformed JSON", () => {
   const stdout = `${IMPLEMENTATION_PAYLOAD_START_MARKER}\nnot json\n${IMPLEMENTATION_PAYLOAD_END_MARKER}`;
   assert.equal(extractImplementationPayload(stdout), undefined);
+});
+
+test("extractThinkingPreview returns the last non-empty line", () => {
+  const chunk = "Reading file\nAnalyzing code\nFound the issue";
+  assert.equal(extractThinkingPreview(chunk), "Found the issue");
+});
+
+test("extractThinkingPreview strips ANSI escape sequences", () => {
+  // ESC codes on the last (only) line -- stripping must fire for the assertion to hold.
+  const chunk = "\x1b[32mGreen text\x1b[0m";
+  assert.equal(extractThinkingPreview(chunk), "Green text");
+});
+
+test("extractThinkingPreview strips carriage returns", () => {
+  const chunk = "line one\r\nline two\r\n";
+  assert.equal(extractThinkingPreview(chunk), "line two");
+});
+
+test("extractThinkingPreview returns empty string for empty input", () => {
+  assert.equal(extractThinkingPreview(""), "");
+});
+
+test("extractThinkingPreview returns empty string for whitespace-only input", () => {
+  assert.equal(extractThinkingPreview("   \n   \n"), "");
+});
+
+test("extractThinkingPreview truncates lines longer than 120 characters", () => {
+  const longLine = "x".repeat(200);
+  const result = extractThinkingPreview(longLine);
+  // 117 kept chars + 1 ellipsis char = 118
+  assert.equal(result.length, 118);
+  assert.ok(result.endsWith("…"));
 });
 
 test("isClaudeUsageLimitMessage detects out-of-extra-usage text", () => {

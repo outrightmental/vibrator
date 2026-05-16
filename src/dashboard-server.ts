@@ -268,6 +268,42 @@ body {
 }
 
 .panel-body {
+.lifecycle-subtitle {
+  font-size: 10px;
+  color: rgba(0, 255, 136, 0.35);
+  letter-spacing: 1px;
+}
+
+.lifecycle-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 52px;
+  overflow-x: hidden;
+}
+
+.lifecycle-empty {
+  font-size: 11px;
+  color: rgba(0, 255, 136, 0.4);
+  letter-spacing: 1px;
+  align-self: center;
+  padding: 10px 0;
+}
+
+/* Two-halved pill */
+.lifecycle-pill {
+  display: flex;
+  height: 52px;
+  min-width: 380px;
+  animation: pillAppear 0.4s cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+@keyframes pillAppear {
+  from { opacity: 0; transform: scaleX(0.85); }
+  to   { opacity: 1; transform: scaleX(1); }
+}
+
+.pill-issue-half {
   flex: 1;
   overflow-y: auto;
   font-size: 12px;
@@ -409,6 +445,107 @@ body {
 
 .lifecycle-empty {
   color: rgba(255, 255, 255, 0.2);
+.phase-section.active .phase-title {
+  color: #ffff00;
+  text-shadow: 0 0 10px rgba(255, 255, 0, 1);
+}
+
+.phase-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.phase-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.phase-content::-webkit-scrollbar-track {
+  background: rgba(0, 255, 136, 0.1);
+}
+
+.phase-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 136, 0.5);
+  border-radius: 4px;
+}
+
+.log-line {
+  padding: 5px 0;
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.log-line.success {
+  color: #00ff88;
+}
+
+.log-line.warning {
+  color: #ffaa00;
+}
+
+.log-line.error {
+  color: #ff0055;
+}
+
+.log-line.info {
+  color: #0088ff;
+}
+
+.broadcast-event {
+  padding: 12px 14px;
+  margin: 8px 0;
+  border-left: 3px solid var(--event-color, #ff00ff);
+  border-radius: 2px;
+  animation: broadcastEventEntry 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  position: relative;
+  overflow: hidden;
+  cursor: default;
+}
+
+.broadcast-event-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.broadcast-event-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.broadcast-event-worker-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.broadcast-event-type {
+  font-weight: 700;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.broadcast-event-time {
+  font-size: 10px;
+  color: rgba(0, 255, 136, 0.35);
+  flex-shrink: 0;
+}
+
+.broadcast-event-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   font-size: 11px;
   padding: 24px 10px;
   text-align: center;
@@ -954,6 +1091,9 @@ class DashboardUI {
         break;
       case 'log-message':
         this.handleLogMessage(message);
+        break;
+      case 'claude-thinking':
+        this.addLogLine('info', \`Claude [\${message.data.model}]: \${message.data.excerpt}\`);
         break;
       default:
         this.addEventToStream(\`[EVENT] \${message.type}\`, -1, 'info');
