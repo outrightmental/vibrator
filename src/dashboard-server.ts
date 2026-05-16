@@ -597,6 +597,8 @@ body {
 
 .lifecycle-empty {
   color: rgba(255, 255, 255, 0.2);
+}
+
 .phase-section.active .phase-title {
   color: #ffff00;
   text-shadow: 0 0 10px rgba(255, 255, 0, 1);
