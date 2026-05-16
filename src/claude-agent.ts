@@ -638,9 +638,16 @@ const DEFAULT_CLAUDE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_QUOTA_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
 
 let claudeQuotaBlockedUntilMs: number | undefined;
+let claudeTermsAcceptanceRequired = false;
 
 export function isClaudeUsageLimitMessage(message: string): boolean {
   return /out of extra usage|out of usage|hit your limit|rate limit|quota|usage limit/i.test(
+    message,
+  );
+}
+
+export function isClaudeTermsAcceptanceMessage(message: string): boolean {
+  return /consumer terms and privacy policy|accept them in claude\.ai|updated our consumer terms/i.test(
     message,
   );
 }
@@ -1193,6 +1200,12 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       );
     }
 
+    if (claudeTermsAcceptanceRequired) {
+      throw new Error(
+        "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
+      );
+    }
+
     const slotId = statusBoard.allocate(modelDisplay);
 
     try {
@@ -1239,6 +1252,13 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       if (quotaMessage) {
         claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;
         throw new Error(quotaMessage.text, { cause: error });
+      }
+      if (isClaudeTermsAcceptanceMessage(message)) {
+        claudeTermsAcceptanceRequired = true;
+        throw new Error(
+          "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
+          { cause: error },
+        );
       }
       throw error;
     }

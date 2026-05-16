@@ -16,6 +16,7 @@ import {
   IMPLEMENTATION_PAYLOAD_START_MARKER,
   isRebaseInProgress,
   isClaudeUsageLimitMessage,
+  isClaudeTermsAcceptanceMessage,
   isNonFastForwardPushError,
   parseOriginHeadBranch,
   parseUsageResetTimeMs,
@@ -128,6 +129,16 @@ test("isClaudeUsageLimitMessage detects out-of-extra-usage text", () => {
 
 test("isClaudeUsageLimitMessage returns false for unrelated errors", () => {
   assert.equal(isClaudeUsageLimitMessage("network timeout"), false);
+});
+
+test("isClaudeTermsAcceptanceMessage detects the consumer-terms API error", () => {
+  const message =
+    "API Error: 400 We've updated our Consumer Terms and Privacy Policy. You'll need to accept them in claude.ai with the email in /status to continue.";
+  assert.equal(isClaudeTermsAcceptanceMessage(message), true);
+});
+
+test("isClaudeTermsAcceptanceMessage returns false for unrelated errors", () => {
+  assert.equal(isClaudeTermsAcceptanceMessage("network timeout"), false);
 });
 
 test("isNonFastForwardPushError detects git non-fast-forward push output", () => {
