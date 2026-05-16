@@ -271,6 +271,41 @@ body {
 }
 
 .panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+}
+
+.panel-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.panel-body::-webkit-scrollbar-track {
+  background: rgba(0, 255, 136, 0.1);
+}
+
+.panel-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 136, 0.5);
+  border-radius: 4px;
+}
+
+.lifecycle-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.lifecycle-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: rgba(0, 255, 136, 0.7);
+}
+
 .lifecycle-subtitle {
   font-size: 10px;
   color: rgba(0, 255, 136, 0.35);
@@ -308,10 +343,100 @@ body {
 
 .pill-issue-half {
   flex: 1;
-  overflow-y: auto;
-  font-size: 12px;
-  line-height: 1.6;
-  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 16px;
+  border: 2px solid var(--pill-color);
+  border-right: none;
+  border-radius: 999px 0 0 999px;
+  background: rgba(var(--pill-rgb), 0.1);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pill-pr-half {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 16px;
+  border-radius: 0 999px 999px 0;
+  transition: background 0.5s ease, opacity 0.5s ease;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.pill-pr-half.absent {
+  border: 2px dashed rgba(128, 128, 128, 0.2);
+  opacity: 0.35;
+}
+
+.pill-pr-half.planning {
+  border: 2px dashed var(--pill-color);
+  background: transparent;
+  animation: planningPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes planningPulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}
+
+.pill-pr-half.active {
+  border: 2px solid var(--pill-color);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--pill-rgb), 0.14);
+}
+
+.pill-pr-half.completed {
+  border: 2px solid var(--pill-color);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--pill-rgb), 0.38);
+  box-shadow: inset 0 0 14px rgba(var(--pill-rgb), 0.2);
+}
+
+.pill-label {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--pill-color);
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+.pill-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pill-number {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--pill-color);
+  white-space: nowrap;
+}
+
+.pill-title {
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.pill-badge {
+  font-size: 8px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--pill-color);
+  color: var(--pill-color);
+  opacity: 0.7;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* ── Panel A: Cylinder rows ── */
@@ -550,9 +675,113 @@ body {
   flex-direction: column;
   gap: 3px;
   font-size: 11px;
-  padding: 24px 10px;
-  text-align: center;
+  line-height: 1.5;
+}
+
+.broadcast-event-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.broadcast-event-row.before-row {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.broadcast-event-row.how-row {
+  color: rgba(0, 255, 136, 0.65);
+  padding-left: 4px;
+}
+
+.broadcast-event-row.after-row {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.broadcast-event-tag {
+  display: inline-block;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.broadcast-event-row.before-row .broadcast-event-tag {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.broadcast-event-row.how-row .broadcast-event-tag {
+  background: rgba(0, 255, 136, 0.15);
+  color: rgba(0, 255, 136, 0.8);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+}
+
+.broadcast-event-row.after-row .broadcast-event-tag {
+  color: #000;
+}
+
+.broadcast-event-excellence {
+  margin-top: 7px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 136, 0.15);
+  font-size: 10px;
+  color: rgba(255, 255, 136, 0.75);
   font-style: italic;
+  line-height: 1.4;
+}
+
+@keyframes broadcastEventEntry {
+  0% {
+    transform: translateX(50px) scale(0.88);
+    opacity: 0;
+    filter: brightness(4) blur(4px);
+  }
+  20% {
+    transform: translateX(-6px) scale(1.05);
+    opacity: 1;
+    filter: brightness(2.5) blur(0);
+  }
+  55% {
+    transform: translateX(2px) scale(1.01);
+    filter: brightness(1.4);
+  }
+  100% {
+    transform: translateX(0) scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes broadcastEventExit {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+    max-height: 200px;
+    margin: 8px 0;
+    padding: 12px 14px;
+    border-width: 3px;
+  }
+  40% {
+    opacity: 0.3;
+    transform: translateX(30px) scale(0.93);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(60px) scale(0.87);
+    max-height: 0;
+    margin: 0;
+    padding: 0;
+    border-width: 0;
+  }
+}
+
+.broadcast-event.exiting {
+  animation: broadcastEventExit 0.6s ease-in forwards;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 /* ── Panel C: Event stream ── */
@@ -801,11 +1030,19 @@ class DashboardUI {
         </div>
         <div class="panel panel-b">
           <div class="panel-header">⚡ ISSUE→PR LIFECYCLE</div>
-          <div class="panel-body" id="lifecycle-list"></div>
+          <div class="panel-body">
+            <div class="lifecycle-header">
+              <div class="lifecycle-title">Panel B — Issue → PR Lifecycle</div>
+              <div class="lifecycle-subtitle" id="lifecycle-subtitle">waiting for snapshot…</div>
+            </div>
+            <div id="lifecycle-content" class="lifecycle-content">
+              <div class="lifecycle-empty">Connecting to vibrator…</div>
+            </div>
+          </div>
         </div>
         <div class="panel panel-c">
           <div class="panel-header">📡 EVENT STREAM</div>
-          <div class="panel-body" id="event-stream"></div>
+          <div class="panel-body" id="phase-broadcast-content"></div>
         </div>
       </div>
       <div class="status-bar">
@@ -829,7 +1066,6 @@ class DashboardUI {
       </div>
     \`;
     this.renderPanelA();
-    this.renderPanelB();
   }
 
   // ── Panel A: N-Cylinder Engine ──────────────────────────────────────────
@@ -1118,7 +1354,6 @@ class DashboardUI {
 
     this.showCycleBanner();
     this.renderPanelA();
-    this.renderPanelB();
     this.addEventToStream(
       \`🔄 Iteration \${message.data.iterationNumber} started · N=\${n}\`, -1, 'info'
     );
@@ -1154,7 +1389,6 @@ class DashboardUI {
       if (cyl.prNumber != null)    this.cylinderByPR.set(cyl.prNumber, idx);
 
       this.renderPanelA();
-      this.renderPanelB();
     }
 
     const actionDesc = message.data.description || message.data.type || 'action';
@@ -1169,7 +1403,6 @@ class DashboardUI {
     if (idx >= 0 && idx < this.cylinders.length) {
       this.cylinders[idx].status = 'done';
       this.renderPanelA();
-      this.renderPanelB();
     }
     this.addEventToStream(
       \`✓ action [\${message.data.actionIndex}/\${message.data.totalActions}] complete\`, idx, 'success'
@@ -1181,7 +1414,6 @@ class DashboardUI {
     if (idx >= 0 && idx < this.cylinders.length) {
       this.cylinders[idx].status = 'error';
       this.renderPanelA();
-      this.renderPanelB();
     }
     this.addEventToStream(
       \`✗ action [\${message.data.actionIndex}/\${message.data.totalActions}] failed: \${message.data.error || ''}\`,
@@ -1191,7 +1423,15 @@ class DashboardUI {
 
   handleWorkflowApproval(message) {
     const runName = message.data.runName || 'unknown';
-    this.addEventToStream(\`✅ Workflow approved: \${runName}\`, -1, 'success');
+    this.enqueueBroadcastEvent({
+      category: 'ci',
+      label: 'WORKFLOW',
+      stateBefore: 'Workflow "' + runName + '" was awaiting approval',
+      changeHow: 'Vibrator automatically approved the workflow run',
+      stateAfter: '✅ Workflow "' + runName + '" approved and queued',
+      excellence: 'CI pipeline unblocked — automated approval keeps development flowing',
+      workerIndex: undefined,
+    });
   }
 
   handleLogMessage(message) {
@@ -1212,7 +1452,6 @@ class DashboardUI {
       for (const pr of data.pullRequests) this.prCards.set(pr.number, pr);
     }
 
-    this.renderPanelB();
     this.addEventToStream(
       \`📊 Snapshot: \${data.issueCount || 0} issues, \${data.prCount || 0} PRs, \${data.sessionCount || 0} sessions\`,
       -1, 'info'
@@ -1226,20 +1465,30 @@ class DashboardUI {
   }
 
   handleBroadcastEvent(message) {
-    const content = message.data.content || JSON.stringify(message.data);
+    const category = message.type === 'broadcast-ci-status' ? 'ci' :
+                     message.type === 'broadcast-commit' ? 'commit' :
+                     message.type === 'broadcast-pr-update' ? 'pr' :
+                     message.type === 'broadcast-issue-update' ? 'issue' : 'info';
 
-    // Inherit cylinder color if this event is about a tracked issue/PR
-    let cylinderIdx = -1;
-    if (message.data.prNumber !== undefined) {
-      const idx = this.cylinderByPR.get(message.data.prNumber);
-      if (idx !== undefined) cylinderIdx = idx;
-    }
-    if (cylinderIdx === -1 && message.data.issueNumber !== undefined) {
-      const idx = this.cylinderByIssue.get(message.data.issueNumber);
-      if (idx !== undefined) cylinderIdx = idx;
+    const label = message.type.replace('broadcast-', '').replace(/-/g, ' ').toUpperCase();
+
+    let workerIndex = message.data.workerIndex !== undefined ? message.data.workerIndex : undefined;
+    if (workerIndex === undefined) {
+      const prNum = message.data.prNumber;
+      const issueNum = message.data.issueNumber;
+      if (prNum !== undefined) workerIndex = this.workerMap['pr:' + prNum];
+      if (issueNum !== undefined && workerIndex === undefined) workerIndex = this.workerMap['issue:' + issueNum];
     }
 
-    this.addEventToStream(content, cylinderIdx, 'info');
+    this.enqueueBroadcastEvent({
+      category,
+      label,
+      stateBefore: message.data.stateBefore || message.data.content || '',
+      changeHow: message.data.changeHow || '',
+      stateAfter: message.data.stateAfter || '',
+      excellence: message.data.excellence || '',
+      workerIndex,
+    });
   }
 
   enqueueBroadcastEvent(eventData) {
@@ -1352,22 +1601,55 @@ class DashboardUI {
     const pairs = message.data.pairs;
     if (!Array.isArray(pairs)) return;
 
-    // Rebuild issueCards/prCards from the pre-matched pairs so renderPanelB
-    // gets live updates (lifecycle-update fires multiple times per iteration).
-    this.issueCards.clear();
-    this.prCards.clear();
+    const content = document.getElementById('lifecycle-content');
+    const subtitle = document.getElementById('lifecycle-subtitle');
+    if (!content) return;
 
-    for (const pair of pairs) {
-      this.issueCards.set(pair.issue.number, pair.issue);
-      if (pair.pr) {
-        this.prCards.set(pair.pr.number, Object.assign({}, pair.pr, {
-          closingIssueNumbers: [pair.issue.number],
-          linkedIssueNumbers: [],
-        }));
+    if (pairs.length === 0) {
+      content.innerHTML = '<div class="lifecycle-empty">⚡ All issues complete — repository is clean</div>';
+      if (subtitle) subtitle.textContent = 'done';
+      return;
+    }
+
+    if (subtitle) {
+      const active = pairs.filter(p => p.prPhase === 'active' || p.prPhase === 'planning').length;
+      const done   = pairs.filter(p => p.prPhase === 'completed').length;
+      subtitle.textContent = String(pairs.length)
+        + ' item' + (pairs.length !== 1 ? 's' : '')
+        + ' · ' + String(active) + ' in progress · ' + String(done) + ' completed';
+    }
+
+    content.querySelector('.lifecycle-empty')?.remove();
+
+    const existingKeys = new Set(
+      [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber)
+    );
+    const incomingKeys = new Set(pairs.map(p => String(p.issue.number)));
+
+    for (const key of existingKeys) {
+      if (!incomingKeys.has(key)) {
+        content.querySelector('[data-issue-number="' + key + '"]')?.remove();
       }
     }
 
-    this.renderPanelB();
+    for (const pair of pairs) {
+      const key = String(pair.issue.number);
+      let pill = content.querySelector('[data-issue-number="' + key + '"]');
+
+      if (!pill) {
+        pill = this.createPill(pair);
+        const allExisting = [...content.querySelectorAll('.lifecycle-pill')];
+        const anchor = allExisting.find(el => parseInt(el.dataset.issueNumber, 10) > pair.issue.number);
+        if (anchor) {
+          content.insertBefore(pill, anchor);
+        } else {
+          content.appendChild(pill);
+        }
+      } else {
+        this.updatePill(pill, pair);
+      }
+    }
+
   }
 
   createPill(pair) {
