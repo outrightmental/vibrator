@@ -268,7 +268,6 @@ body {
   background: rgba(20, 10, 50, 0.6);
   border: 2px solid #00ff88;
   border-radius: 4px;
-  padding: 20px;
   box-shadow: 0 0 20px rgba(0, 255, 136, 0.2), inset 0 0 20px rgba(0, 255, 136, 0.05);
 }
 
@@ -285,18 +284,8 @@ body {
   background: rgba(0, 255, 136, 0.03);
 }
 
-/* Ensure 'Broadcast Feed' header matches other panel headers */
-.panel-c .panel-header {
-  padding: 9px 14px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  color: #00ff88;
-  border-bottom: 1px solid rgba(0, 255, 136, 0.25);
-  text-shadow: 0 0 8px rgba(0, 255, 136, 0.5);
-  flex-shrink: 0;
-  background: rgba(0, 255, 136, 0.03);
+.panel-c .panel-body {
+  padding: 10px;
 }
 
 /* Refine 'AI SDLC BROADCAST' in the main header */
@@ -305,11 +294,15 @@ body {
   align-items: center;
 }
 
+/* Make 'AI SDLC BROADCAST' half-size, magenta, lightweight, and vertically centered */
 .header-title span {
   font-size: 0.5em;
   font-weight: 300;
-  color: magenta;
-  margin-left: 8px;
+  color: #ff00ff;
+  margin-left: 10px;
+  align-self: center;
+  letter-spacing: 2px;
+  vertical-align: middle;
 }
 
 /* Adjust the subtitle in the center panel header */
@@ -1022,7 +1015,7 @@ class DashboardUI {
       </div>
       <div class="header">
         <div>
-          <div class="header-title">⚡ VIBRATOR AI SDLC BROADCAST</div>
+          <div class="header-title">⚡ VIBRATOR <span>AI SDLC BROADCAST</span></div>
         </div>
         <div class="iteration-info">
           <div class="iteration-label">Iteration</div>
