@@ -14,8 +14,6 @@ export class DashboardServer {
   private server: http.Server;
   private wss: WebSocketServer;
   private htmlContent: string = "";
-  private recentEvents: DashboardEvent[] = [];
-  private readonly maxRecentEvents = 500;
 
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
@@ -31,7 +29,6 @@ export class DashboardServer {
 
     // Subscribe to global events and broadcast to all connected clients
     globalEventEmitter.subscribe((event) => {
-      this.rememberEvent(event);
       this.broadcastEvent(event);
     });
   }
@@ -53,8 +50,6 @@ export class DashboardServer {
   }
 
   private handleWebSocketConnection(ws: WebSocket): void {
-    this.replayRecentEvents(ws);
-
     ws.on("error", (error: Error) => {
       console.error("[Dashboard] WebSocket error:", error);
     });
@@ -71,22 +66,6 @@ export class DashboardServer {
         // OPEN state
         client.send(message);
       }
-    }
-  }
-
-  private rememberEvent(event: DashboardEvent): void {
-    this.recentEvents.push(event);
-    if (this.recentEvents.length > this.maxRecentEvents) {
-      this.recentEvents.splice(0, this.recentEvents.length - this.maxRecentEvents);
-    }
-  }
-
-  private replayRecentEvents(ws: WebSocket): void {
-    for (const event of this.recentEvents) {
-      if (ws.readyState !== 1) {
-        return;
-      }
-      ws.send(JSON.stringify(event));
     }
   }
 
