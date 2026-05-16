@@ -278,6 +278,13 @@ body {
   padding: 12px;
 }
 
+.panel-c .panel-body {
+  /* Match main branch Broadcast Feed content typography and spacing */
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 0 20px;
+}
+
 .panel-body::-webkit-scrollbar {
   width: 8px;
 }
