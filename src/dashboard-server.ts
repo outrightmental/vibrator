@@ -14,6 +14,7 @@ export class DashboardServer {
   private server: http.Server;
   private wss: WebSocketServer;
   private htmlContent: string = "";
+  private maxConcurrency: number = 3; // Default value for maxConcurrency
 
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
@@ -158,12 +159,21 @@ body {
 }
 
 .header-title {
+  display: flex;
+  align-items: center;
   font-size: 24px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 3px;
   color: #00ff88;
   text-shadow: 0 0 10px rgba(0, 255, 136, 0.8);
+}
+
+.header-title span {
+  font-size: 0.5em;
+  font-weight: 300;
+  color: magenta;
+  margin-left: 8px;
 }
 
 .header-repo {
@@ -273,6 +283,40 @@ body {
   text-shadow: 0 0 8px rgba(0, 255, 136, 0.5);
   flex-shrink: 0;
   background: rgba(0, 255, 136, 0.03);
+}
+
+/* Adjust the style for 'Broadcast Feed' header */
+.panel-c .panel-header {
+  padding: 9px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #00ff88;
+  border-bottom: 1px solid rgba(0, 255, 136, 0.25);
+  text-shadow: 0 0 8px rgba(0, 255, 136, 0.5);
+  flex-shrink: 0;
+  background: rgba(0, 255, 136, 0.03);
+}
+
+/* Refine the style for 'AI SDLC BROADCAST' in the main header */
+.header-title {
+  display: flex;
+  align-items: center;
+}
+
+.header-title span {
+  font-size: 0.5em;
+  font-weight: 300;
+  color: magenta;
+  margin-left: 8px;
+}
+
+/* Adjust the subtitle in the center panel header */
+.panel-b .panel-header span#lifecycle-subtitle {
+  font-size: 10px;
+  color: rgba(0, 255, 136, 0.6);
+  margin-left: 8px;
 }
 
 .panel-body {
@@ -538,65 +582,6 @@ body {
 
 .cylinder-row.active .cylinder-status-text {
   color: rgba(255, 255, 255, 0.8);
-}
-
-/* ── Panel B: Lifecycle cards ── */
-.lifecycle-card {
-  display: flex;
-  align-items: stretch;
-  gap: 7px;
-  padding: 7px;
-  margin-bottom: 7px;
-  border: 1px solid var(--card-color, rgba(0, 255, 136, 0.2));
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.3);
-  animation: fadeIn 0.3s ease-in;
-  transition: border-color 0.3s ease;
-}
-
-.lifecycle-pill {
-  flex: 1;
-  padding: 7px 9px;
-  border: 1px solid var(--card-color, rgba(0, 255, 136, 0.15));
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.35);
-  min-width: 0;
-}
-
-.lifecycle-arrow {
-  display: flex;
-  align-items: center;
-  color: rgba(255, 255, 255, 0.25);
-  font-size: 13px;
-  flex-shrink: 0;
-}
-
-.pill-number {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--card-color, #00ff88);
-  text-shadow: 0 0 4px var(--card-color, rgba(0, 255, 136, 0.4));
-  margin-bottom: 2px;
-}
-
-.pill-title {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.6);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 3px;
-}
-
-.pill-state {
-  font-size: 9px;
-  color: rgba(255, 255, 255, 0.35);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.lifecycle-empty {
-  color: rgba(255, 255, 255, 0.2);
 }
 
 .phase-section.active .phase-title {
@@ -1037,8 +1022,7 @@ class DashboardUI {
       </div>
       <div class="header">
         <div>
-          <div class="header-title">⚡ VIBRATOR</div>
-          <div class="header-repo">AI SDLC Dashboard</div>
+          <div class="header-title">⚡ VIBRATOR AI SDLC BROADCAST</div>
         </div>
         <div class="iteration-info">
           <div class="iteration-label">Iteration</div>
@@ -1051,18 +1035,17 @@ class DashboardUI {
       </div>
       <div class="main-content">
         <div class="panel panel-a">
-          <div class="panel-header" id="panel-a-header">⚙ \${this.maxConcurrency}-CYLINDER ENGINE</div>
+          <div class="panel-header" id="panel-a-header">⚙ ${this.maxConcurrency}-CYLINDER ENGINE</div>
           <div class="panel-body" id="cylinder-list"></div>
         </div>
         <div class="panel panel-b">
-          <div class="panel-header">⚡ ISSUE→PR LIFECYCLE</div>
+          <div class="panel-header">⚡ ISSUE→PR LIFECYCLE <span id="lifecycle-subtitle">_ items · _ in progress · _ completed</span></div>
           <div class="panel-body">
             <div class="lifecycle-header">
-              <div class="lifecycle-title">Panel B — Issue → PR Lifecycle</div>
-              <div class="lifecycle-subtitle" id="lifecycle-subtitle">waiting for snapshot…</div>
-            </div>
-            <div id="lifecycle-content" class="lifecycle-content">
-              <div class="lifecycle-empty">Connecting to vibrator…</div>
+              <!-- Removed the redundant title -->
+              <div id="lifecycle-content" class="lifecycle-content">
+                <div class="lifecycle-empty">Connecting to vibrator…</div>
+              </div>
             </div>
           </div>
         </div>
