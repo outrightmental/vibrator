@@ -215,6 +215,128 @@ test("isRebaseInProgress returns false when no rebase state exists", async () =>
   assert.equal(result, false);
 });
 
+test("selfReview does not report changes when only merging latest base advances HEAD", async () => {
+  const root = await mkdtemp(join(tmpdir(), "vibrator-self-review-base-merge-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const verifyDir = join(root, "verify");
+  const ghStubPath = join(binDir, "gh-stub.sh");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const prBranch = "feature/no-op-review";
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    // PR branch starts equal to main (no branch-specific commits).
+    runOrThrow("git", ["checkout", "-b", prBranch], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", prBranch], seedDir);
+    const prBranchHeadBeforeMainAdvance = runOrThrow("git", ["rev-parse", "HEAD"], seedDir);
+
+    // Advance main to simulate a merge-from-main update that does not come from review edits.
+    runOrThrow("git", ["checkout", "main"], seedDir);
+    await writeFile(join(seedDir, "main-only.txt"), "new content from main\n", "utf8");
+    runOrThrow("git", ["add", "main-only.txt"], seedDir);
+    runOrThrow("git", ["commit", "-m", "advance main"], seedDir);
+    runOrThrow("git", ["push", "origin", "main"], seedDir);
+    const mainHeadAfterAdvance = runOrThrow("git", ["rev-parse", "HEAD"], seedDir);
+
+    await writeFile(
+      ghStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
+        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
+        "  exit 0",
+        "fi",
+        "if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"checkout\" ]; then",
+        "  git fetch origin --prune",
+        "  git checkout -B \"$VIBRATOR_TEST_PR_BRANCH\" \"origin/$VIBRATOR_TEST_PR_BRANCH\"",
+        "  exit 0",
+        "fi",
+        "echo \"unsupported gh args: $*\" >&2",
+        "exit 2",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(ghStubPath, 0o755);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "echo LGTM",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
+    const previousBranch = process.env.VIBRATOR_TEST_PR_BRANCH;
+    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
+    process.env.VIBRATOR_TEST_PR_BRANCH = prBranch;
+
+    try {
+      const client = createClaudeAgentClient({
+        checkoutRootDir,
+        ghCommand: ghStubPath,
+        claudeCommand: claudeStubPath,
+        claudeTimeoutMs: 120000,
+      });
+
+      const result = await client.selfReview({
+        owner: "example",
+        repo: "repo",
+        pullRequestNumber: 77,
+        pullRequestTitle: "No-op self review",
+        pullRequestBody: "Body",
+        headRefName: prBranch,
+        baseRefName: "main",
+      });
+
+      assert.equal(result.madeChanges, false);
+      assert.notEqual(result.headSha, prBranchHeadBeforeMainAdvance);
+      assert.equal(result.headSha, mainHeadAfterAdvance);
+
+      runOrThrow("git", ["clone", remoteDir, verifyDir], root);
+      runOrThrow("git", ["checkout", prBranch], verifyDir);
+      const remotePrHead = runOrThrow("git", ["rev-parse", "HEAD"], verifyDir);
+      assert.equal(remotePrHead, mainHeadAfterAdvance);
+      const status = runOrThrow("git", ["status", "--porcelain"], verifyDir);
+      assert.equal(status, "");
+    } finally {
+      if (previousRemote === undefined) {
+        delete process.env.VIBRATOR_TEST_REMOTE;
+      } else {
+        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
+      }
+      if (previousBranch === undefined) {
+        delete process.env.VIBRATOR_TEST_PR_BRANCH;
+      } else {
+        process.env.VIBRATOR_TEST_PR_BRANCH = previousBranch;
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("implementIssue retries push by merging remote branch on non-fast-forward", async () => {
   const root = await mkdtemp(join(tmpdir(), "vibrator-nff-test-"));
   const remoteDir = join(root, "remote.git");
