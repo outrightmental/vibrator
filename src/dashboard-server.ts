@@ -23,6 +23,9 @@ export class DashboardServer {
     this.wss = new WebSocketServer({ server: this.server });
 
     this.wss.on("connection", (ws) => this.handleWebSocketConnection(ws));
+    this.wss.on("error", (error: Error) => {
+      console.error("[Dashboard] WebSocket server error:", error);
+    });
 
     // Subscribe to global events and broadcast to all connected clients
     globalEventEmitter.subscribe((event) => {
@@ -1472,7 +1475,7 @@ const dashboard = new DashboardUI();
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server.on("error", (error: NodeJS.ErrnoException) => {
+      this.server.once("error", (error: NodeJS.ErrnoException) => {
         reject(error);
       });
       this.server.listen(this.port, this.host, () => {

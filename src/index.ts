@@ -192,6 +192,7 @@ interface Config {
   claudeModel: string | undefined;
   maxConcurrency: number;
   intervalMs: number;
+  dashboardPort: number;
   once: boolean;
   dryRun: boolean;
   noBrowser: boolean;
@@ -223,6 +224,7 @@ function parseArgs(argv: string[]): Config {
   const { owner, repo } = parseRepositorySlug(repository);
   const maxConcurrency = Number.parseInt(process.env.MAX_CONCURRENCY ?? "3", 10);
   const intervalMs = Number.parseInt(process.env.LOOP_INTERVAL_MS ?? "60000", 10);
+  const dashboardPort = Number.parseInt(process.env.DASHBOARD_PORT ?? "3000", 10);
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
   const noBrowser = argv.includes("--no-browser");
@@ -236,6 +238,7 @@ function parseArgs(argv: string[]): Config {
     claudeModel,
     maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
     intervalMs: Number.isNaN(intervalMs) ? 60000 : intervalMs,
+    dashboardPort: Number.isNaN(dashboardPort) ? 3000 : dashboardPort,
     once,
     dryRun,
     noBrowser,
@@ -513,7 +516,7 @@ async function main(): Promise<void> {
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
 
   // Start the Dashboard server
-  const dashboard = new DashboardServer({ port: 3000 });
+  const dashboard = new DashboardServer({ port: config.dashboardPort });
   let dashboardReady = false;
   try {
     await dashboard.initialize();
@@ -534,7 +537,7 @@ async function main(): Promise<void> {
   if (dashboardReady) {
     write(`dashboard: ${dashboard.getUrl()}${config.noBrowser ? " (browser launch suppressed)" : ""}`);
   } else {
-    write(`dashboard: failed to start (check if port 3000 is available)`);
+    write(`dashboard: failed to start (check if port ${config.dashboardPort} is available)`);
   }
   const modeNotes: string[] = [];
   if (config.once) modeNotes.push("--once");
