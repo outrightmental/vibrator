@@ -285,7 +285,7 @@ body {
   background: rgba(0, 255, 136, 0.03);
 }
 
-/* Adjust the style for 'Broadcast Feed' header */
+/* Ensure 'Broadcast Feed' header matches other panel headers */
 .panel-c .panel-header {
   padding: 9px 14px;
   font-size: 11px;
@@ -299,7 +299,7 @@ body {
   background: rgba(0, 255, 136, 0.03);
 }
 
-/* Refine the style for 'AI SDLC BROADCAST' in the main header */
+/* Refine 'AI SDLC BROADCAST' in the main header */
 .header-title {
   display: flex;
   align-items: center;
