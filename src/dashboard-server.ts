@@ -255,6 +255,11 @@ body {
 .panel-c {
   flex: 1;
   min-width: 180px;
+  background: rgba(20, 10, 50, 0.6);
+  border: 2px solid #00ff88;
+  border-radius: 4px;
+  padding: 20px;
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.2), inset 0 0 20px rgba(0, 255, 136, 0.05);
 }
 
 .panel-header {
@@ -279,10 +284,22 @@ body {
 }
 
 .panel-c .panel-body {
-  /* Match main branch Broadcast Feed content typography and spacing */
+  padding: 0;
   font-size: 12px;
   line-height: 1.6;
-  padding: 0 20px;
+}
+
+.panel-c .panel-header {
+  padding: 0 0 10px 0;
+  margin-bottom: 15px;
+  font-size: 16px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #00ff88;
+  border-bottom: 1px solid rgba(0, 255, 136, 0.3);
+  background: transparent;
+  text-shadow: none;
 }
 
 .panel-body::-webkit-scrollbar {
@@ -1048,7 +1065,7 @@ class DashboardUI {
           </div>
         </div>
         <div class="panel panel-c">
-          <div class="panel-header">📡 EVENT STREAM</div>
+          <div class="panel-header">📡 Broadcast Feed</div>
           <div class="panel-body" id="phase-broadcast-content"></div>
         </div>
       </div>
