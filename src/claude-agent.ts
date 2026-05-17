@@ -868,11 +868,17 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const prompt = buildSelfReviewPrompt(params);
     await this.runClaude(prompt, repoDir);
 
+    // Determine whether Claude actually committed review fixes before the
+    // orchestrator merges the latest base branch during push.
+    const headShaAfterReview = (
+      await runCommand("git", ["rev-parse", "HEAD"], { cwd: repoDir, captureStdout: true })
+    ).trim();
+    const madeChanges = headShaAfterReview !== headShaBeforeReview;
+
     // Push whatever Claude may have committed and report the new head SHA.
     const update = await this.pushAndReportHead(repoDir, params.headRefName, {
       baseBranch: params.baseRefName,
     });
-    const madeChanges = update.headSha !== headShaBeforeReview;
     return { madeChanges, headSha: update.headSha };
   }
 
