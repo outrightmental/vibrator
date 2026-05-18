@@ -17,6 +17,11 @@ export interface Issue {
    * case-insensitively by callers. Distinct from labels.
    */
   type: string | null;
+  /**
+   * Issue number of the parent issue when this issue is a sub-issue.
+   * Undefined for top-level issues.
+   */
+  parentNumber?: number;
 }
 
 export interface PullRequest {

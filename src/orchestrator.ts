@@ -100,6 +100,15 @@ export function buildBlockedIssueIndex(issues: Issue[]): Record<number, number[]
       blockers.add(issue.number);
       blockedIssueIndex.set(blockedIssue, blockers);
     }
+
+    // Parent/child relationship: a parent issue is blocked by each of its
+    // open children. If this issue is a sub-issue, its parent cannot start
+    // until this issue is resolved.
+    if (issue.parentNumber !== undefined) {
+      const parentBlockers = blockedIssueIndex.get(issue.parentNumber) ?? new Set<number>();
+      parentBlockers.add(issue.number);
+      blockedIssueIndex.set(issue.parentNumber, parentBlockers);
+    }
   }
 
   return Object.fromEntries(
