@@ -338,16 +338,19 @@ export class GitHubClient {
     ]);
     return issues
       .filter((issue) => !issue.pull_request)
-      .map((issue) => ({
-        number: issue.number,
-        title: issue.title,
-        body: issue.body ?? "",
-        state: issue.state,
-        createdAt: issue.created_at,
-        updatedAt: issue.updated_at,
-        type: issue.type?.name ?? null,
-        parentNumber: parentNumbers.get(issue.number),
-      }));
+      .map((issue) => {
+        const parentNumber = parentNumbers.get(issue.number);
+        return {
+          number: issue.number,
+          title: issue.title,
+          body: issue.body ?? "",
+          state: issue.state,
+          createdAt: issue.created_at,
+          updatedAt: issue.updated_at,
+          type: issue.type?.name ?? null,
+          ...(parentNumber !== undefined ? { parentNumber } : {}),
+        };
+      });
   }
 
   /**
@@ -376,39 +379,39 @@ export class GitHubClient {
     let after: string | null = null;
 
     try {
-    do {
-      const data: QueryResult = await this.graphqlRequest<QueryResult>(
-        `
-          query OpenIssueParentNumbers($owner: String!, $repo: String!, $after: String) {
-            repository(owner: $owner, name: $repo) {
-              issues(states: OPEN, first: 100, after: $after) {
-                nodes {
-                  number
-                  parent {
+      do {
+        const data: QueryResult = await this.graphqlRequest<QueryResult>(
+          `
+            query OpenIssueParentNumbers($owner: String!, $repo: String!, $after: String) {
+              repository(owner: $owner, name: $repo) {
+                issues(states: OPEN, first: 100, after: $after) {
+                  nodes {
                     number
+                    parent {
+                      number
+                    }
                   }
+                  pageInfo { hasNextPage endCursor }
                 }
-                pageInfo { hasNextPage endCursor }
               }
             }
-          }
-        `,
-        { owner: this.options.owner, repo: this.options.repo, after },
-      );
+          `,
+          { owner: this.options.owner, repo: this.options.repo, after },
+        );
 
-      const issuesPage = data.repository?.issues;
-      if (!issuesPage) {
-        return result;
-      }
-
-      for (const node of issuesPage.nodes) {
-        if (node.parent !== null) {
-          result.set(node.number, node.parent.number);
+        const issuesPage = data.repository?.issues;
+        if (!issuesPage) {
+          break;
         }
-      }
 
-      after = issuesPage.pageInfo.hasNextPage ? issuesPage.pageInfo.endCursor : null;
-    } while (after);
+        for (const node of issuesPage.nodes) {
+          if (node.parent !== null) {
+            result.set(node.number, node.parent.number);
+          }
+        }
+
+        after = issuesPage.pageInfo.hasNextPage ? issuesPage.pageInfo.endCursor : null;
+      } while (after);
     } catch (error) {
       console.warn(
         `[vibrator] Could not fetch issue parent numbers — sub-issues may not be available on this repository: ` +
