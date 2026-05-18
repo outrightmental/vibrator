@@ -165,6 +165,7 @@ test("squashMergePullRequest does not retry unrelated gh merge failures", async 
     /non-zero status 1/,
   );
   assert.match(stderr.output(), /network failure/);
+});
 
 test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fails", async (t) => {
   const warnOutput: string[] = [];
@@ -243,5 +244,4 @@ test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fai
     warnOutput.some((line) => line.includes("Could not fetch issue parent numbers")),
     "Expected a warning about parent numbers being unavailable",
   );
-});
 });
