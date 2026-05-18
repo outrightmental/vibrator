@@ -166,3 +166,82 @@ test("squashMergePullRequest does not retry unrelated gh merge failures", async 
   );
   assert.match(stderr.output(), /network failure/);
 });
+
+test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fails", async (t) => {
+  const warnOutput: string[] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    warnOutput.push(args.map(String).join(" "));
+  });
+
+  let fetchCallCount = 0;
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+      fetchCallCount += 1;
+      const url = String(_url);
+
+      // REST issue list: return two issues
+      if (url.includes("/issues?") && !url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 5,
+              title: "Issue five",
+              body: "body",
+              state: "open",
+              created_at: "2024-01-01T00:00:00Z",
+              updated_at: "2024-01-01T00:00:00Z",
+            },
+            {
+              number: 6,
+              title: "Issue six",
+              body: "body",
+              state: "open",
+              created_at: "2024-01-02T00:00:00Z",
+              updated_at: "2024-01-02T00:00:00Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // GraphQL parent-numbers query: simulate schema error (field not available)
+      if (url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify({
+            errors: [{ message: "Field 'parent' doesn't exist on type 'Issue'" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+
+  t.after(() => {
+    fetchMock.mock.restore();
+  });
+
+  const client = new GitHubClient({
+    owner: "outrightmental",
+    repo: "testrepo",
+    token: "token",
+  });
+
+  const issues = await client.listOpenIssues();
+
+  // Issues are returned without parent numbers
+  assert.equal(issues.length, 2);
+  assert.equal(issues[0]?.number, 5);
+  assert.equal(issues[0]?.parentNumber, undefined);
+  assert.equal(issues[1]?.number, 6);
+  assert.equal(issues[1]?.parentNumber, undefined);
+
+  // A warning was emitted explaining the degradation
+  assert.ok(
+    warnOutput.some((line) => line.includes("Could not fetch issue parent numbers")),
+    "Expected a warning about parent numbers being unavailable",
+  );
+});

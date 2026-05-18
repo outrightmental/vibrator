@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildMergedPullRequestBody,
+  buildBlockedIssueIndex,
   buildPlan,
   parseClosingIssueNumbers,
   parseLinkedIssueNumbers,
@@ -18,6 +19,7 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     type: overrides.type ?? null,
+    ...(overrides.parentNumber !== undefined ? { parentNumber: overrides.parentNumber } : {}),
   };
 }
 
@@ -527,4 +529,117 @@ test("buildPlan uses sessions from any linked issue on the same pull request", (
       pullRequestHeadSha: "sha-20",
     },
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Parent / child blocking
+// ---------------------------------------------------------------------------
+
+test("buildBlockedIssueIndex marks parent as blocked by each open child", () => {
+  const issues = [
+    createIssue({ number: 10 }),                        // parent (D)
+    createIssue({ number: 1, parentNumber: 10 }),       // child A
+    createIssue({ number: 2, parentNumber: 10 }),       // child B
+    createIssue({ number: 3, parentNumber: 10 }),       // child C
+  ];
+
+  const index = buildBlockedIssueIndex(issues);
+
+  // Issue 10 (D) is blocked by all three children.
+  assert.deepEqual(index[10], [1, 2, 3]);
+  // Children themselves carry no blockers from this relationship.
+  assert.equal(index[1], undefined);
+  assert.equal(index[2], undefined);
+  assert.equal(index[3], undefined);
+});
+
+test("buildPlan does not start a parent issue that has open children", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 10, createdAt: "2024-01-01T00:00:00.000Z" }), // parent D
+      createIssue({ number: 1, createdAt: "2024-01-02T00:00:00.000Z", parentNumber: 10 }), // child A
+      createIssue({ number: 2, createdAt: "2024-01-03T00:00:00.000Z", parentNumber: 10 }), // child B
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // Children can be started; parent (10) must not be started while children are open.
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+    { type: "start-implementation", issueNumber: 2 },
+  ]);
+  assert.ok(
+    !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 10),
+    "Parent issue 10 must not be started while children are open",
+  );
+});
+
+test("buildPlan can start a parent issue once all its children are closed", () => {
+  // Only the parent is in the open issues list; children have been closed.
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 10 }), // parent D — children are closed, not in list
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 10 },
+  ]);
+});
+
+test("buildPlan blockedIssueNumbers includes parent entries from child relationship", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 10 }),                       // parent
+      createIssue({ number: 1, parentNumber: 10 }),      // child
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.blockedIssueNumbers[10], [1]);
+});
+
+test("buildPlan never starts a blocked issue (text-based blocking regression check)", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z" }),
+      createIssue({
+        number: 2,
+        createdAt: "2024-01-02T00:00:00.000Z",
+        body: "blocked by #1",
+      }),
+      createIssue({
+        number: 3,
+        createdAt: "2024-01-03T00:00:00.000Z",
+        body: "depends on #1",
+      }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // Only issue 1 is eligible; 2 and 3 are blocked by it.
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+  ]);
+  assert.ok(
+    !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 2),
+    "Issue 2 must not start while blocked by #1",
+  );
+  assert.ok(
+    !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 3),
+    "Issue 3 must not start while blocked by #1",
+  );
 });

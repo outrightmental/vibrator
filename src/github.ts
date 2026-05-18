@@ -330,20 +330,96 @@ export class GitHubClient {
   }
 
   async listOpenIssues(): Promise<Issue[]> {
-    const issues = await this.getAllPages<GitHubIssueResponse>(
-      `/repos/${this.options.owner}/${this.options.repo}/issues?state=open`,
-    );
+    const [issues, parentNumbers] = await Promise.all([
+      this.getAllPages<GitHubIssueResponse>(
+        `/repos/${this.options.owner}/${this.options.repo}/issues?state=open`,
+      ),
+      this.fetchOpenIssueParentNumbers(),
+    ]);
     return issues
       .filter((issue) => !issue.pull_request)
-      .map((issue) => ({
-        number: issue.number,
-        title: issue.title,
-        body: issue.body ?? "",
-        state: issue.state,
-        createdAt: issue.created_at,
-        updatedAt: issue.updated_at,
-        type: issue.type?.name ?? null,
-      }));
+      .map((issue) => {
+        const parentNumber = parentNumbers.get(issue.number);
+        return {
+          number: issue.number,
+          title: issue.title,
+          body: issue.body ?? "",
+          state: issue.state,
+          createdAt: issue.created_at,
+          updatedAt: issue.updated_at,
+          type: issue.type?.name ?? null,
+          ...(parentNumber !== undefined ? { parentNumber } : {}),
+        };
+      });
+  }
+
+  /**
+   * Returns a map of open sub-issue number → parent issue number for all
+   * open issues that have a parent (i.e. are sub-issues).
+   *
+   * GitHub's `parent` field on issues is a beta/rolling-out feature. If the
+   * field is not yet available on this instance the GraphQL query will fail;
+   * in that case we log a warning and return an empty map so the rest of the
+   * orchestrator continues to work without parent-based blocking.
+   */
+  private async fetchOpenIssueParentNumbers(): Promise<Map<number, number>> {
+    type QueryResult = {
+      repository: {
+        issues: {
+          nodes: Array<{
+            number: number;
+            parent: { number: number } | null;
+          }>;
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        };
+      } | null;
+    };
+
+    const result = new Map<number, number>();
+    let after: string | null = null;
+
+    try {
+      do {
+        const data: QueryResult = await this.graphqlRequest<QueryResult>(
+          `
+            query OpenIssueParentNumbers($owner: String!, $repo: String!, $after: String) {
+              repository(owner: $owner, name: $repo) {
+                issues(states: OPEN, first: 100, after: $after) {
+                  nodes {
+                    number
+                    parent {
+                      number
+                    }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          `,
+          { owner: this.options.owner, repo: this.options.repo, after },
+        );
+
+        const issuesPage = data.repository?.issues;
+        if (!issuesPage) {
+          break;
+        }
+
+        for (const node of issuesPage.nodes) {
+          if (node.parent !== null) {
+            result.set(node.number, node.parent.number);
+          }
+        }
+
+        after = issuesPage.pageInfo.hasNextPage ? issuesPage.pageInfo.endCursor : null;
+      } while (after);
+    } catch (error) {
+      console.warn(
+        `[vibrator] Could not fetch issue parent numbers — sub-issues may not be available on this repository: ` +
+        `${String(error)}. Parent/child blocking will be skipped.`,
+      );
+    }
+
+    return result;
   }
 
   async listOpenPullRequests(): Promise<PullRequest[]> {
