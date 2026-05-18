@@ -338,24 +338,26 @@ export class GitHubClient {
     ]);
     return issues
       .filter((issue) => !issue.pull_request)
-      .map((issue) => {
-        const parentNumber = parentNumbers.get(issue.number);
-        return {
-          number: issue.number,
-          title: issue.title,
-          body: issue.body ?? "",
-          state: issue.state,
-          createdAt: issue.created_at,
-          updatedAt: issue.updated_at,
-          type: issue.type?.name ?? null,
-          ...(parentNumber !== undefined ? { parentNumber } : {}),
-        };
-      });
+      .map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        body: issue.body ?? "",
+        state: issue.state,
+        createdAt: issue.created_at,
+        updatedAt: issue.updated_at,
+        type: issue.type?.name ?? null,
+        parentNumber: parentNumbers.get(issue.number),
+      }));
   }
 
   /**
    * Returns a map of open sub-issue number → parent issue number for all
    * open issues that have a parent (i.e. are sub-issues).
+   *
+   * GitHub's `parent` field on issues is a beta/rolling-out feature. If the
+   * field is not yet available on this instance the GraphQL query will fail;
+   * in that case we log a warning and return an empty map so the rest of the
+   * orchestrator continues to work without parent-based blocking.
    */
   private async fetchOpenIssueParentNumbers(): Promise<Map<number, number>> {
     type QueryResult = {
@@ -373,6 +375,7 @@ export class GitHubClient {
     const result = new Map<number, number>();
     let after: string | null = null;
 
+    try {
     do {
       const data: QueryResult = await this.graphqlRequest<QueryResult>(
         `
@@ -406,6 +409,12 @@ export class GitHubClient {
 
       after = issuesPage.pageInfo.hasNextPage ? issuesPage.pageInfo.endCursor : null;
     } while (after);
+    } catch (error) {
+      console.warn(
+        `[vibrator] Could not fetch issue parent numbers — sub-issues may not be available on this repository: ` +
+        `${String(error)}. Parent/child blocking will be skipped.`,
+      );
+    }
 
     return result;
   }
