@@ -1273,7 +1273,7 @@ class DashboardUI {
         const thinkingEl = document.getElementById(\`thinking-stream-\${i}\`);
         if (thinkingEl) {
           if (thinkingEl.className !== thinkingClass) thinkingEl.className = thinkingClass;
-          const newContent = thinkingLines.map(escHtml).join('\\n');
+          const newContent = thinkingLines.join('\\n');
           if (thinkingEl.textContent !== newContent) thinkingEl.textContent = newContent;
         }
       }
