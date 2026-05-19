@@ -1292,9 +1292,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           // account so subsequent invocations can rotate to another one.
           await this.accountManager.markRateLimited(activeConfigDir, quotaMessage.blockedUntilMs);
           const remaining = this.accountManager.acquireAccount();
+          const earliestMs = remaining === undefined ? this.accountManager.earliestAvailableMs() : undefined;
           const suffix = remaining !== undefined
             ? ` Rotating to next available account.`
-            : ` No more accounts available; waiting until ${formatLocalTime(quotaMessage.blockedUntilMs)}.`;
+            : ` No more accounts available; waiting until ${formatLocalTime(earliestMs ?? quotaMessage.blockedUntilMs)}.`;
           throw new Error(quotaMessage.text + suffix, { cause: error });
         } else {
           claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;
