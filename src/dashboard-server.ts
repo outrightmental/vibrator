@@ -923,15 +923,11 @@ a.gh-link:hover {
 .header-repo a.gh-link {
   color: #ff00ff;
 }
-.pill-number a.gh-link,
-.cylinder-issue-link,
-.cylinder-pr-link {
+.pill-number a.gh-link {
   color: inherit;
   text-decoration: none;
 }
-.pill-number a.gh-link:hover,
-.cylinder-issue-link:hover,
-.cylinder-pr-link:hover {
+.pill-number a.gh-link:hover {
   text-decoration: underline;
   filter: brightness(1.4);
 }
