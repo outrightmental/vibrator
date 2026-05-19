@@ -10,9 +10,9 @@ import type { ClaudeAccountManager } from "./claude-account-manager.js";
 // ─── Thinking-preview extractor ─────────────────────────────────────────────
 
 /**
- * Extracts a short readable preview from a raw verbose chunk emitted by the
- * Claude CLI stderr stream. Strips ANSI codes, picks the last non-empty line,
- * and truncates to a display-friendly length.
+ * Extracts readable lines from a raw verbose chunk emitted by the Claude CLI
+ * stderr stream. Strips ANSI codes and returns all non-empty lines joined with
+ * newlines, truncating any individual line that exceeds 200 characters.
  */
 export function extractThinkingPreview(chunk: string): string {
   const plain = chunk
@@ -21,9 +21,9 @@ export function extractThinkingPreview(chunk: string): string {
   const lines = plain
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  const last = lines.at(-1) ?? "";
-  return last.length > 120 ? `${last.slice(0, 117)}…` : last;
+    .filter((l) => l.length > 0)
+    .map((l) => (l.length > 200 ? `${l.slice(0, 197)}…` : l));
+  return lines.join("\n");
 }
 
 // ─── Multi-run terminal status board ────────────────────────────────────────
