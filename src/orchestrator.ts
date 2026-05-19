@@ -85,6 +85,22 @@ export function parseClosingIssueNumbers(text: string): number[] {
   return uniqueSorted(closingIssues);
 }
 
+/**
+ * Returns the number of the earliest milestone that still has open issues,
+ * or undefined if no issues have a milestone assigned.
+ */
+export function selectEarliestMilestoneNumber(issues: Issue[]): number | undefined {
+  let earliest: number | undefined;
+  for (const issue of issues) {
+    if (issue.milestone !== undefined) {
+      if (earliest === undefined || issue.milestone.number < earliest) {
+        earliest = issue.milestone.number;
+      }
+    }
+  }
+  return earliest;
+}
+
 export function buildBlockedIssueIndex(issues: Issue[]): Record<number, number[]> {
   const blockedIssueIndex = new Map<number, Set<number>>();
 
@@ -387,13 +403,25 @@ export function buildPlan(
     }
   }
 
+  // Milestone gate: only issues from the earliest milestone that has open
+  // issues are eligible to start. Issues without a milestone are unaffected.
+  const earliestMilestoneNumber = selectEarliestMilestoneNumber(issues);
+
   const eligibleIssues = issues.filter((issue) => {
     if (unavailableIssueNumbers.has(issue.number)) {
       return false;
     }
 
     const blockers = blockedIssueIndex[issue.number] ?? [];
-    return blockers.every((blocker) => !openIssueNumbers.has(blocker));
+    if (!blockers.every((blocker) => !openIssueNumbers.has(blocker))) {
+      return false;
+    }
+
+    if (earliestMilestoneNumber !== undefined && issue.milestone !== undefined) {
+      return issue.milestone.number === earliestMilestoneNumber;
+    }
+
+    return true;
   });
 
   // Prioritize bugs ahead of other types.
