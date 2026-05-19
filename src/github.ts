@@ -102,6 +102,7 @@ interface GitHubIssueResponse {
   updated_at: string;
   pull_request?: object;
   type?: { name?: string | null } | null;
+  milestone?: { number: number; title: string } | null;
 }
 
 interface GitHubPullRequestResponse {
@@ -394,6 +395,9 @@ export class GitHubClient {
           updatedAt: issue.updated_at,
           type: issue.type?.name ?? null,
           ...(parentNumber !== undefined ? { parentNumber } : {}),
+          ...(issue.milestone
+            ? { milestone: { number: issue.milestone.number, title: issue.milestone.title } }
+            : {}),
         };
       });
   }
