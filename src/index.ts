@@ -607,7 +607,7 @@ async function main(): Promise<void> {
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
 
   // Start the Dashboard server
-  const dashboard = new DashboardServer({ port: config.dashboardPort });
+  const dashboard = new DashboardServer({ port: config.dashboardPort, owner: config.owner, repo: config.repo });
   let dashboardReady = false;
   try {
     await dashboard.initialize();
