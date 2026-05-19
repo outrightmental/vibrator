@@ -390,203 +390,65 @@ async function runEngineLoop(
     const cycleStart = Date.now();
     iterationNumber++;
 
-  // --- Workflow approvals ------------------------------------------------
-  section("Workflow approvals");
-  try {
-    const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
-    if (pendingRuns.length === 0) {
-      bullet("0 runs awaiting maintainer approval");
-    } else {
-      bullet(`${pendingRuns.length} run(s) awaiting maintainer approval`);
-      for (const run of pendingRuns) {
-        const label = `run ${run.id} "${run.name || "unnamed"}" [status=${run.status}, event=${run.event}, branch=${run.headBranch || "?"}] (${run.htmlUrl})`;
-        if (config.dryRun) {
-          note(`→ [dry-run] would approve ${label}`, 2);
-          continue;
-        }
-        note(`→ approving ${label}…`, 2);
-        try {
-          const result = await gitHubClient.approveWorkflowRun(run.id);
-          note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
-          globalEventEmitter.emit("workflow-approval", {
-            runId: run.id,
-            runName: run.name,
-            approved: result.approved,
-          });
-        } catch (error) {
-          note(`✗ failed to approve ${label}: ${(error as Error).message}`, 2);
-        }
-      }
-    }
-  } catch (error) {
-    bullet(`failed to list workflow runs awaiting approval: ${(error as Error).message}`);
-  }
-
-  // --- Repository snapshot ----------------------------------------------
-  const snapshot = await loadSnapshot(
-    gitHubClient,
-    sessionStore,
-    config.projectMode ? { projectNumber: config.projectMode.projectNumber } : undefined,
-  );
-  const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
-  const draftPullRequestCount = openPullRequests.filter((pr) => pr.draft).length;
-  const readyPullRequestCount = openPullRequests.filter((pr) => !pr.draft).length;
-  const preReconcileActiveSessions = snapshot.agentSessions.filter(
-    (s) => s.status === "in_progress",
-  );
-
-  globalEventEmitter.emit("snapshot-update", {
-    issueCount: snapshot.issues.length,
-    prCount: openPullRequests.length,
-    draftPrCount: draftPullRequestCount,
-    readyPrCount: readyPullRequestCount,
-    sessionCount: preReconcileActiveSessions.length,
-    issues: snapshot.issues.map((i) => ({
-      number: i.number,
-      title: i.title,
-      state: i.state,
-    })),
-    pullRequests: openPullRequests.map((pr) => ({
-      number: pr.number,
-      title: pr.title,
-      state: pr.state,
-      draft: pr.draft,
-      checksStatus: pr.checksStatus,
-      closingIssueNumbers: pr.closingIssueNumbers,
-      linkedIssueNumbers: pr.linkedIssueNumbers,
-    })),
-  });
-
-  // Broadcast repository snapshot and PR updates to dashboard
-  broadcastRepositorySnapshot(snapshot, config.owner, config.repo, preReconcileActiveSessions.length);
-  for (const pr of openPullRequests) {
-    const draftLabel = pr.draft ? "[DRAFT]" : "";
-    const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
-    broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
-  }
-
-  globalEventEmitter.emit("phase-update", { phase: "implementation" });
-
-  section("Repository snapshot");
-  bullet(`${snapshot.issues.length} open issue(s)`);
-  bullet(
-    `${openPullRequests.length} open pull request(s)` +
-      (openPullRequests.length > 0
-        ? ` (${draftPullRequestCount} draft, ${readyPullRequestCount} ready)`
-        : ""),
-  );
-  bullet(`${preReconcileActiveSessions.length} active agent session(s)`);
-  for (const session of preReconcileActiveSessions) {
-    note(`◦ ${describeSession(session, gitHubClient)}`, 2);
-  }
-
-  // --- Reconciliation ---------------------------------------------------
-  // Every Claude action runs synchronously, so any `in_progress` session
-  // observed here can only be the carcass of a previous vibrator process
-  // that crashed mid-action. Fail those so the planner can re-plan.
-  section("Reconciliation");
-  const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
-  bullet(`${reconcileEvents.length} stale session(s) failed`);
-  for (const event of reconcileEvents) {
-    note(`◦ ${describeSession(event.session, gitHubClient)}`, 2);
-  }
-
-  snapshot.agentSessions = await sessionStore.load();
-
-  // --- Plan -------------------------------------------------------------
-  globalEventEmitter.emit("phase-update", { phase: "review" });
-
-  const plan = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
-  const blockedEntries = Object.entries(plan.blockedIssueNumbers);
-
-  // Emit Panel B lifecycle state — issues tagged as "planning" when their
-  // start-implementation action is in the current plan
-  const planningIssueNumbers = new Set(
-    plan.actions
-      .filter((a) => a.type === "start-implementation")
-      .map((a) => a.issueNumber),
-  );
-  broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
-
-  section("Blocked issues");
-  if (blockedEntries.length === 0) {
-    note("(none)");
-  } else {
-    for (const [blocked, blockers] of blockedEntries) {
-      const blockedNumber = Number.parseInt(blocked, 10);
-      const blockerSummary = blockers
-        .map((n) => `#${n} (${gitHubClient.issueUrl(n)})`)
-        .join(", ");
-      bullet(`#${blockedNumber} (${gitHubClient.issueUrl(blockedNumber)}) blocked by ${blockerSummary}`);
-    }
-  }
-
-  section("Plan");
-  if (plan.actions.length === 0) {
-    bullet("0 actions to execute");
-  } else {
-    bullet(
-      `${plan.actions.length} action(s) to execute` +
-        (plan.actions.length > 1 ? ` — running concurrently` : ""),
-    );
-    if (engineIndex === 0) {
-      write(`repo: ${repo} (${gitHubClient.repositoryUrl()})`);
-      const modeNotes: string[] = [];
-      if (config.dryRun) modeNotes.push("DRY RUN");
-      if (config.once) modeNotes.push("--once");
-      write(
-        `cycle-minimum: ${formatDuration(config.cycleMinimumMs)} · concurrency: ${config.maxConcurrency}` +
-          (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
-      );
-    }
-    write(HEAVY_RULE);
-
     globalEventEmitter.emit("iteration-start", {
       iterationNumber,
       engineIndex,
       maxConcurrency: config.maxConcurrency,
     });
 
-    // ── Global tasks: workflow approvals (engine 0 only) ──────────────────
-    if (engineIndex === 0) {
-      section("Workflow approvals");
-      try {
-        const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
-        if (pendingRuns.length === 0) {
-          bullet("0 runs awaiting maintainer approval");
-        } else {
-          bullet(`${pendingRuns.length} run(s) awaiting maintainer approval`);
-          for (const run of pendingRuns) {
-            const label = `run ${run.id} "${run.name || "unnamed"}" [status=${run.status}, event=${run.event}, branch=${run.headBranch || "?"}] (${run.htmlUrl})`;
-            if (config.dryRun) {
-              note(`→ [dry-run] would approve ${label}`, 2);
-              continue;
-            }
-            note(`→ approving ${label}…`, 2);
-            try {
-              const result = await gitHubClient.approveWorkflowRun(run.id);
-              note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
-              globalEventEmitter.emit("workflow-approval", {
-                runId: run.id,
-                runName: run.name,
-                approved: result.approved,
-              });
-            } catch (error) {
-              note(`✗ failed to approve ${label}: ${(error as Error).message}`, 2);
+    // ── Planning phase (serialised via mutex to prevent double-booking) ────
+    const planned = await planningMutex.withLock(async () => {
+      // Engine 0 only: global tasks that must run exactly once per cycle
+      if (engineIndex === 0) {
+        section("Workflow approvals");
+        try {
+          const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
+          if (pendingRuns.length === 0) {
+            bullet("0 runs awaiting maintainer approval");
+          } else {
+            bullet(`${pendingRuns.length} run(s) awaiting maintainer approval`);
+            for (const run of pendingRuns) {
+              const label = `run ${run.id} "${run.name || "unnamed"}" [status=${run.status}, event=${run.event}, branch=${run.headBranch || "?"}] (${run.htmlUrl})`;
+              if (config.dryRun) {
+                note(`→ [dry-run] would approve ${label}`, 2);
+                continue;
+              }
+              note(`→ approving ${label}…`, 2);
+              try {
+                const result = await gitHubClient.approveWorkflowRun(run.id);
+                note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
+                globalEventEmitter.emit("workflow-approval", {
+                  runId: run.id,
+                  runName: run.name,
+                  approved: result.approved,
+                });
+              } catch (error) {
+                note(`✗ failed to approve ${label}: ${(error as Error).message}`, 2);
+              }
             }
           }
+        } catch (error) {
+          bullet(`failed to list workflow runs awaiting approval: ${(error as Error).message}`);
         }
-      } catch (error) {
-        bullet(`failed to list workflow runs awaiting approval: ${(error as Error).message}`);
       }
-    }
 
-    // ── Planning phase (serialised via mutex) ─────────────────────────────
-    const planned = await planningMutex.withLock(async () => {
-      const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+      const snapshot = await loadSnapshot(
+        gitHubClient,
+        sessionStore,
+        config.projectMode ? { projectNumber: config.projectMode.projectNumber } : undefined,
+      );
+      const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
 
       if (engineIndex === 0) {
-        const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
+        // Reconcile stale sessions before planning so the planner sees clean state
+        section("Reconciliation");
+        const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
+        bullet(`${reconcileEvents.length} stale session(s) failed`);
+        for (const event of reconcileEvents) {
+          note(`◦ ${describeSession(event.session, gitHubClient)}`, 2);
+        }
+        snapshot.agentSessions = await sessionStore.load();
+
         const activeSessions = snapshot.agentSessions.filter((s) => s.status === "in_progress");
 
         globalEventEmitter.emit("snapshot-update", {
@@ -619,16 +481,17 @@ async function runEngineLoop(
         }
       }
 
-      const plan = buildPlan(snapshot, config.maxConcurrency);
+      const plan = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
 
-      // Compute planning issue numbers for lifecycle update
-      const planningIssueNumbers = new Set<number>();
-      for (const a of plan.actions) {
-        if (a.type === "start-implementation" && !claimedActions.has(actionKey(a))) {
-          planningIssueNumbers.add(a.issueNumber);
+      if (engineIndex === 0) {
+        const planningIssueNumbers = new Set<number>();
+        for (const a of plan.actions) {
+          if (a.type === "start-implementation" && !claimedActions.has(actionKey(a))) {
+            planningIssueNumbers.add(a.issueNumber);
+          }
         }
+        broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
       }
-      broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
 
       // Find the first unclaimed action
       for (const a of plan.actions) {
@@ -754,7 +617,6 @@ async function runEngineLoop(
             ));
         }
       }
-    }
     }
   } while (true);
 }
