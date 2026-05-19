@@ -1092,7 +1092,7 @@ class DashboardUI {
           <div class="panel-body" id="cylinder-list"></div>
         </div>
         <div class="panel panel-b">
-          <div class="panel-header">⚡ ISSUE→PR LIFECYCLE <span id="lifecycle-subtitle">_ items · _ in progress · _ completed</span></div>
+          <div class="panel-header">⚡ ISSUE→PR LIFECYCLE <span id="lifecycle-subtitle">_ items · _ in progress</span></div>
           <div class="panel-body">
             <div class="lifecycle-header">
               <!-- Removed the redundant title -->
@@ -1697,10 +1697,9 @@ class DashboardUI {
 
     if (subtitle) {
       const active = pairs.filter(p => p.prPhase === 'active' || p.prPhase === 'planning').length;
-      const done   = pairs.filter(p => p.prPhase === 'completed').length;
       subtitle.textContent = String(pairs.length)
         + ' item' + (pairs.length !== 1 ? 's' : '')
-        + ' · ' + String(active) + ' in progress · ' + String(done) + ' completed';
+        + ' · ' + String(active) + ' in progress';
     }
 
     content.querySelector('.lifecycle-empty')?.remove();
