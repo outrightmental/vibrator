@@ -173,7 +173,7 @@ No API keys or tokens need to be set as environment variables.
 | --- | --- | --- | --- |
 | `GITHUB_REPOSITORY` | No | - | Default `owner/repo` when the CLI argument is omitted. |
 | `MAX_CONCURRENCY` | No | `3` | Maximum active work items across open PRs and in-flight implementations. |
-| `LOOP_INTERVAL_MS` | No | `60000` | Delay between loop iterations. |
+| `CYCLE_MINIMUM_SECONDS` | No | `60` | Minimum seconds between engine cycle starts. Each engine only waits if its cycle completed faster than this threshold. |
 | `VIBRATOR_SESSION_STORE_PATH` | No | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 
 **CLI flags**

@@ -297,6 +297,8 @@ interface ClaudeAgentClientOptions {
    * implicit account (the default ~/.claude credentials).
    */
   accountManager?: ClaudeAccountManager;
+  /** Zero-based index of the engine loop that owns this client instance. Used to route live thinking events to the correct dashboard cylinder. */
+  engineIndex?: number;
 }
 
 function defaultCheckoutRootDir(): string {
@@ -798,6 +800,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly claudeCommitModel: string;
   private readonly claudeTimeoutMs: number;
   private readonly accountManager: ClaudeAccountManager | undefined;
+  private readonly engineIndex: number | undefined;
 
   constructor(options: ClaudeAgentClientOptions = {}) {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
@@ -811,6 +814,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       options.claudeTimeoutMs ??
       (envTimeout !== undefined ? Number.parseInt(envTimeout, 10) : DEFAULT_CLAUDE_TIMEOUT_MS);
     this.accountManager = options.accountManager;
+    this.engineIndex = options.engineIndex;
   }
 
   async implementIssue(params: ImplementIssueParams): Promise<ImplementIssueResult> {
@@ -1307,6 +1311,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
               globalEventEmitter.emit("claude-thinking", {
                 model: modelDisplay,
                 excerpt: preview,
+                ...(this.engineIndex !== undefined ? { engineIndex: this.engineIndex } : {}),
               });
             }
           },
