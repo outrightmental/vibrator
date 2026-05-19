@@ -609,6 +609,131 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
   }
 });
 
+test("generateFinalDescription passes claudeCommitModel to claude CLI", async () => {
+  const root = await mkdtemp(join(tmpdir(), "vibrator-commit-model-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const modelLogPath = join(root, "model-used.txt");
+  const ghStubPath = join(binDir, "gh-stub.sh");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const prBranch = "feature/commit-model-test";
+  const prNumber = 42;
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    runOrThrow("git", ["checkout", "-b", prBranch], seedDir);
+    await writeFile(join(seedDir, "feature.txt"), "feature work\n", "utf8");
+    runOrThrow("git", ["add", "feature.txt"], seedDir);
+    runOrThrow("git", ["commit", "-m", "add feature"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", prBranch], seedDir);
+
+    await writeFile(
+      ghStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
+        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
+        "  exit 0",
+        "fi",
+        "if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"checkout\" ]; then",
+        "  git fetch origin --prune",
+        "  git checkout -B \"$VIBRATOR_TEST_PR_BRANCH\" \"origin/$VIBRATOR_TEST_PR_BRANCH\"",
+        "  exit 0",
+        "fi",
+        "echo \"unsupported gh args: $*\" >&2",
+        "exit 2",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(ghStubPath, 0o755);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        // Capture model arg: parse --model <value> from $@
+        "MODEL_USED=\"(none)\"",
+        "while [ $# -gt 0 ]; do",
+        "  if [ \"$1\" = \"--model\" ] && [ $# -gt 1 ]; then",
+        "    MODEL_USED=\"$2\"",
+        "    shift 2",
+        "  else",
+        "    shift",
+        "  fi",
+        "done",
+        `printf '%s' "$MODEL_USED" > \"${modelLogPath}\"`,
+        `echo \"${FINAL_DESCRIPTION_START_MARKER}\"`,
+        "echo \"## Summary\"",
+        "echo \"Did the thing.\"",
+        `echo \"${FINAL_DESCRIPTION_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
+    const previousBranch = process.env.VIBRATOR_TEST_PR_BRANCH;
+    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
+    process.env.VIBRATOR_TEST_PR_BRANCH = prBranch;
+
+    try {
+      const client = createClaudeAgentClient({
+        checkoutRootDir,
+        ghCommand: ghStubPath,
+        claudeCommand: claudeStubPath,
+        claudeTimeoutMs: 120000,
+        claudeCommitModel: "claude-haiku-test-model",
+      });
+
+      const description = await client.generateFinalDescription({
+        owner: "example",
+        repo: "repo",
+        pullRequestNumber: prNumber,
+        pullRequestTitle: "Test PR",
+        pullRequestBody: "Body",
+        baseRefName: "main",
+        closingIssueNumbers: [],
+      });
+
+      assert.ok(description.includes("Did the thing."), "should return extracted description");
+      const { readFile } = await import("node:fs/promises");
+      const modelUsed = (await readFile(modelLogPath, "utf8")).trim();
+      assert.equal(modelUsed, "claude-haiku-test-model", "should pass claudeCommitModel to claude CLI");
+    } finally {
+      if (previousRemote === undefined) {
+        delete process.env.VIBRATOR_TEST_REMOTE;
+      } else {
+        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
+      }
+      if (previousBranch === undefined) {
+        delete process.env.VIBRATOR_TEST_PR_BRANCH;
+      } else {
+        process.env.VIBRATOR_TEST_PR_BRANCH = previousBranch;
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("formatUserCommentsSection returns empty array when no comments provided", () => {
   assert.deepEqual(formatUserCommentsSection(undefined), []);
   assert.deepEqual(formatUserCommentsSection([]), []);

@@ -284,6 +284,8 @@ interface ClaudeAgentClientOptions {
   ghCommand?: string;
   /** Model to pass to the claude CLI via --model. When omitted, falls back to CLAUDE_MODEL env. */
   claudeModel?: string;
+  /** Model used specifically for commit message generation. Defaults to CLAUDE_COMMIT_MODEL env, then claude-haiku-4-5-20251001. */
+  claudeCommitModel?: string;
   /**
    * Maximum milliseconds the Claude CLI is allowed to run before being killed.
    * Defaults to CLAUDE_TIMEOUT_MS env var, or 30 minutes if unset.
@@ -786,11 +788,14 @@ function buildPushRecoveryBackupBranchName(branch: string): string {
   return `vibrator/recovery-${sanitizedBranch || "branch"}-${Date.now()}`;
 }
 
+const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
+
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
   private readonly claudeCommand: string;
   private readonly ghCommand: string;
   private readonly claudeModel: string | undefined;
+  private readonly claudeCommitModel: string;
   private readonly claudeTimeoutMs: number;
   private readonly accountManager: ClaudeAccountManager | undefined;
 
@@ -799,6 +804,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     this.claudeCommand = options.claudeCommand ?? "claude";
     this.ghCommand = options.ghCommand ?? "gh";
     this.claudeModel = options.claudeModel ?? process.env.CLAUDE_MODEL;
+    this.claudeCommitModel =
+      options.claudeCommitModel ?? process.env.CLAUDE_COMMIT_MODEL ?? DEFAULT_COMMIT_MODEL;
     const envTimeout = process.env.CLAUDE_TIMEOUT_MS;
     this.claudeTimeoutMs =
       options.claudeTimeoutMs ??
@@ -1003,7 +1010,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       pullRequestNumber: params.pullRequestNumber,
     });
     const prompt = buildFinalDescriptionPrompt(params);
-    const stdout = await this.runClaude(prompt, repoDir);
+    const stdout = await this.runClaude(prompt, repoDir, this.claudeCommitModel);
     return extractFinalDescription(stdout);
   }
 
@@ -1193,7 +1200,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     }
   }
 
-  private async runClaude(prompt: string, cwd: string): Promise<string> {
+  private async runClaude(prompt: string, cwd: string, modelOverride?: string): Promise<string> {
     const env: NodeJS.ProcessEnv = { ...process.env };
     // Use the local Claude Code subscription, not the Anthropic Platform API.
     // Removing ANTHROPIC_API_KEY forces the claude CLI to authenticate via
@@ -1204,13 +1211,14 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // own GitHub token (which may have different permissions than the
     // user's `gh auth` setup).
     delete env.GH_TOKEN;
-    const modelArgs = this.claudeModel ? ["--model", this.claudeModel] : [];
+    const effectiveModel = modelOverride ?? this.claudeModel;
+    const modelArgs = effectiveModel ? ["--model", effectiveModel] : [];
 
     const startTime = Date.now();
 
     // Short display name for the model: strip the leading "claude-" prefix so
     // "claude-sonnet-4-5" becomes "sonnet-4-5" and bare names are shown as-is.
-    const modelDisplay = (this.claudeModel ?? "claude").replace(/^claude-/i, "");
+    const modelDisplay = (effectiveModel ?? "claude").replace(/^claude-/i, "");
 
     const formatElapsed = (): string => {
       const secs = Math.floor((Date.now() - startTime) / 1000);
