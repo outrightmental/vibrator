@@ -83,6 +83,52 @@ function shortId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }
 
+/** Serialises planning across N concurrent engines to prevent double-booking. */
+class PlanningMutex {
+  private locked = false;
+  private waiting: Array<() => void> = [];
+
+  async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.locked) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    } else {
+      this.locked = true;
+    }
+    try {
+      return await fn();
+    } finally {
+      const next = this.waiting.shift();
+      if (next) {
+        next();
+      } else {
+        this.locked = false;
+      }
+    }
+  }
+}
+
+/** Stable string key that uniquely identifies an orchestrator action. */
+function actionKey(action: OrchestratorAction): string {
+  switch (action.type) {
+    case "start-implementation":
+      return `start-implementation:${action.issueNumber}`;
+    case "self-review":
+      return `self-review:${action.pullRequestNumber}`;
+    case "address-failing-checks":
+      return `address-failing-checks:${action.pullRequestNumber}`;
+    case "resolve-conflicts":
+      return `resolve-conflicts:${action.pullRequestNumber}`;
+    case "squash-merge":
+      return `squash-merge:${action.pullRequestNumber}`;
+  }
+}
+
+interface PollingState {
+  lastPolledAt: number;
+  lastSnapshot: RepositorySnapshot | null;
+  seenCommitHashes: Set<string>;
+}
+
 async function broadcastBetweenCycleActivity(
   config: Config,
   lastSnapshot: RepositorySnapshot | null,
@@ -218,7 +264,7 @@ interface Config {
   repo: string;
   claudeModel: string | undefined;
   maxConcurrency: number;
-  intervalMs: number;
+  cycleMinimumMs: number;
   dashboardPort: number;
   once: boolean;
   dryRun: boolean;
@@ -250,7 +296,7 @@ function parseArgs(argv: string[]): Config {
 
   const { owner, repo } = parseRepositorySlug(repository);
   const maxConcurrency = Number.parseInt(process.env.MAX_CONCURRENCY ?? "3", 10);
-  const intervalMs = Number.parseInt(process.env.LOOP_INTERVAL_MS ?? "60000", 10);
+  const cycleMinimumSeconds = Number.parseFloat(process.env.CYCLE_MINIMUM_SECONDS ?? "60");
   const dashboardPort = Number.parseInt(process.env.DASHBOARD_PORT ?? "3000", 10);
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
@@ -264,7 +310,7 @@ function parseArgs(argv: string[]): Config {
     repo,
     claudeModel,
     maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
-    intervalMs: Number.isNaN(intervalMs) ? 60000 : intervalMs,
+    cycleMinimumMs: Number.isNaN(cycleMinimumSeconds) ? 60000 : Math.round(cycleMinimumSeconds * 1000),
     dashboardPort: Number.isNaN(dashboardPort) ? 3000 : dashboardPort,
     once,
     dryRun,
@@ -273,7 +319,13 @@ function parseArgs(argv: string[]): Config {
   };
 }
 
-async function runIteration(config: Config, iterationNumber: number): Promise<void> {
+async function runEngineLoop(
+  config: Config,
+  engineIndex: number,
+  planningMutex: PlanningMutex,
+  claimedActions: Set<string>,
+  pollingState: PollingState,
+): Promise<void> {
   const repo = `${config.owner}/${config.repo}`;
   const gitHubClient = new GitHubClient({
     owner: config.owner,
@@ -285,167 +337,147 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
     config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {},
   );
 
-  globalEventEmitter.emit("iteration-start", {
-    iterationNumber,
-    maxConcurrency: config.maxConcurrency,
-  });
+  let iterationNumber = 0;
 
-  write(HEAVY_RULE);
-  write(`vibrator status update · ${timestamp()} · iteration ${iterationNumber}`);
-  write(`repo: ${repo} (${gitHubClient.repositoryUrl()})`);
-  const modeNotes: string[] = [];
-  if (config.dryRun) modeNotes.push("DRY RUN");
-  if (config.once) modeNotes.push("--once");
-  write(
-    `concurrency: ${config.maxConcurrency} · interval: ${formatDuration(config.intervalMs)}` +
-      (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
-  );
-  write(HEAVY_RULE);
+  do {
+    iterationNumber++;
+    const cycleStart = Date.now();
 
-  // --- Workflow approvals ------------------------------------------------
-  section("Workflow approvals");
-  try {
-    const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
-    if (pendingRuns.length === 0) {
-      bullet("0 runs awaiting maintainer approval");
-    } else {
-      bullet(`${pendingRuns.length} run(s) awaiting maintainer approval`);
-      for (const run of pendingRuns) {
-        const label = `run ${run.id} "${run.name || "unnamed"}" [status=${run.status}, event=${run.event}, branch=${run.headBranch || "?"}] (${run.htmlUrl})`;
-        if (config.dryRun) {
-          note(`→ [dry-run] would approve ${label}`, 2);
-          continue;
-        }
-        note(`→ approving ${label}…`, 2);
-        try {
-          const result = await gitHubClient.approveWorkflowRun(run.id);
-          note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
-          globalEventEmitter.emit("workflow-approval", {
-            runId: run.id,
-            runName: run.name,
-            approved: result.approved,
-          });
-        } catch (error) {
-          note(`✗ failed to approve ${label}: ${(error as Error).message}`, 2);
-        }
-      }
-    }
-  } catch (error) {
-    bullet(`failed to list workflow runs awaiting approval: ${(error as Error).message}`);
-  }
-
-  // --- Repository snapshot ----------------------------------------------
-  const snapshot = await loadSnapshot(gitHubClient, sessionStore);
-  const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
-  const draftPullRequestCount = openPullRequests.filter((pr) => pr.draft).length;
-  const readyPullRequestCount = openPullRequests.filter((pr) => !pr.draft).length;
-  const preReconcileActiveSessions = snapshot.agentSessions.filter(
-    (s) => s.status === "in_progress",
-  );
-
-  globalEventEmitter.emit("snapshot-update", {
-    issueCount: snapshot.issues.length,
-    prCount: openPullRequests.length,
-    draftPrCount: draftPullRequestCount,
-    readyPrCount: readyPullRequestCount,
-    sessionCount: preReconcileActiveSessions.length,
-    issues: snapshot.issues.map((i) => ({
-      number: i.number,
-      title: i.title,
-      state: i.state,
-    })),
-    pullRequests: openPullRequests.map((pr) => ({
-      number: pr.number,
-      title: pr.title,
-      state: pr.state,
-      draft: pr.draft,
-      checksStatus: pr.checksStatus,
-      closingIssueNumbers: pr.closingIssueNumbers,
-      linkedIssueNumbers: pr.linkedIssueNumbers,
-    })),
-  });
-
-  // Broadcast repository snapshot and PR updates to dashboard
-  broadcastRepositorySnapshot(snapshot, config.owner, config.repo, preReconcileActiveSessions.length);
-  for (const pr of openPullRequests) {
-    const draftLabel = pr.draft ? "[DRAFT]" : "";
-    const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
-    broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
-  }
-
-  globalEventEmitter.emit("phase-update", { phase: "implementation" });
-
-  section("Repository snapshot");
-  bullet(`${snapshot.issues.length} open issue(s)`);
-  bullet(
-    `${openPullRequests.length} open pull request(s)` +
-      (openPullRequests.length > 0
-        ? ` (${draftPullRequestCount} draft, ${readyPullRequestCount} ready)`
-        : ""),
-  );
-  bullet(`${preReconcileActiveSessions.length} active agent session(s)`);
-  for (const session of preReconcileActiveSessions) {
-    note(`◦ ${describeSession(session, gitHubClient)}`, 2);
-  }
-
-  // --- Reconciliation ---------------------------------------------------
-  // Every Claude action runs synchronously, so any `in_progress` session
-  // observed here can only be the carcass of a previous vibrator process
-  // that crashed mid-action. Fail those so the planner can re-plan.
-  section("Reconciliation");
-  const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
-  bullet(`${reconcileEvents.length} stale session(s) failed`);
-  for (const event of reconcileEvents) {
-    note(`◦ ${describeSession(event.session, gitHubClient)}`, 2);
-  }
-
-  snapshot.agentSessions = await sessionStore.load();
-
-  // --- Plan -------------------------------------------------------------
-  globalEventEmitter.emit("phase-update", { phase: "review" });
-
-  const plan = buildPlan(snapshot, config.maxConcurrency);
-  const blockedEntries = Object.entries(plan.blockedIssueNumbers);
-
-  // Emit Panel B lifecycle state — issues tagged as "planning" when their
-  // start-implementation action is in the current plan
-  const planningIssueNumbers = new Set(
-    plan.actions
-      .filter((a) => a.type === "start-implementation")
-      .map((a) => a.issueNumber),
-  );
-  broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
-
-  section("Blocked issues");
-  if (blockedEntries.length === 0) {
-    note("(none)");
-  } else {
-    for (const [blocked, blockers] of blockedEntries) {
-      const blockedNumber = Number.parseInt(blocked, 10);
-      const blockerSummary = blockers
-        .map((n) => `#${n} (${gitHubClient.issueUrl(n)})`)
-        .join(", ");
-      bullet(`#${blockedNumber} (${gitHubClient.issueUrl(blockedNumber)}) blocked by ${blockerSummary}`);
-    }
-  }
-
-  section("Plan");
-  if (plan.actions.length === 0) {
-    bullet("0 actions to execute");
-  } else {
-    bullet(
-      `${plan.actions.length} action(s) to execute` +
-        (plan.actions.length > 1 ? ` — running concurrently` : ""),
+    // ── Engine cycle header ───────────────────────────────────────────────
+    write(HEAVY_RULE);
+    write(
+      `vibrator engine-${engineIndex + 1} · iteration ${iterationNumber} · ${timestamp()}`,
     );
-    for (let i = 0; i < plan.actions.length; i++) {
-      note(
-        `[${i + 1}/${plan.actions.length}] → ${describeAction(plan.actions[i]!, snapshot, gitHubClient)}`,
-        2,
+    if (engineIndex === 0) {
+      write(`repo: ${repo} (${gitHubClient.repositoryUrl()})`);
+      const modeNotes: string[] = [];
+      if (config.dryRun) modeNotes.push("DRY RUN");
+      if (config.once) modeNotes.push("--once");
+      write(
+        `cycle-minimum: ${formatDuration(config.cycleMinimumMs)} · concurrency: ${config.maxConcurrency}` +
+          (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
       );
     }
+    write(HEAVY_RULE);
 
-    if (!config.dryRun) {
+    globalEventEmitter.emit("iteration-start", {
+      iterationNumber,
+      engineIndex,
+      maxConcurrency: config.maxConcurrency,
+    });
+
+    // ── Global tasks: workflow approvals (engine 0 only) ──────────────────
+    if (engineIndex === 0) {
+      section("Workflow approvals");
+      try {
+        const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
+        if (pendingRuns.length === 0) {
+          bullet("0 runs awaiting maintainer approval");
+        } else {
+          bullet(`${pendingRuns.length} run(s) awaiting maintainer approval`);
+          for (const run of pendingRuns) {
+            const label = `run ${run.id} "${run.name || "unnamed"}" [status=${run.status}, event=${run.event}, branch=${run.headBranch || "?"}] (${run.htmlUrl})`;
+            if (config.dryRun) {
+              note(`→ [dry-run] would approve ${label}`, 2);
+              continue;
+            }
+            note(`→ approving ${label}…`, 2);
+            try {
+              const result = await gitHubClient.approveWorkflowRun(run.id);
+              note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
+              globalEventEmitter.emit("workflow-approval", {
+                runId: run.id,
+                runName: run.name,
+                approved: result.approved,
+              });
+            } catch (error) {
+              note(`✗ failed to approve ${label}: ${(error as Error).message}`, 2);
+            }
+          }
+        }
+      } catch (error) {
+        bullet(`failed to list workflow runs awaiting approval: ${(error as Error).message}`);
+      }
+    }
+
+    // ── Planning phase (serialised via mutex) ─────────────────────────────
+    const planned = await planningMutex.withLock(async () => {
+      const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+
+      if (engineIndex === 0) {
+        const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
+        const activeSessions = snapshot.agentSessions.filter((s) => s.status === "in_progress");
+
+        globalEventEmitter.emit("snapshot-update", {
+          issueCount: snapshot.issues.length,
+          prCount: openPullRequests.length,
+          draftPrCount: openPullRequests.filter((pr) => pr.draft).length,
+          readyPrCount: openPullRequests.filter((pr) => !pr.draft).length,
+          sessionCount: activeSessions.length,
+          issues: snapshot.issues.map((i) => ({
+            number: i.number,
+            title: i.title,
+            state: i.state,
+          })),
+          pullRequests: openPullRequests.map((pr) => ({
+            number: pr.number,
+            title: pr.title,
+            state: pr.state,
+            draft: pr.draft,
+            checksStatus: pr.checksStatus,
+            closingIssueNumbers: pr.closingIssueNumbers,
+            linkedIssueNumbers: pr.linkedIssueNumbers,
+          })),
+        });
+
+        broadcastRepositorySnapshot(snapshot, config.owner, config.repo, activeSessions.length);
+        for (const pr of openPullRequests) {
+          const draftLabel = pr.draft ? "[DRAFT]" : "";
+          const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
+          broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
+        }
+      }
+
+      const plan = buildPlan(snapshot, config.maxConcurrency);
+
+      // Compute planning issue numbers for lifecycle update
+      const planningIssueNumbers = new Set<number>();
+      for (const a of plan.actions) {
+        if (a.type === "start-implementation" && !claimedActions.has(actionKey(a))) {
+          planningIssueNumbers.add(a.issueNumber);
+        }
+      }
+      broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
+
+      // Find the first unclaimed action
+      for (const a of plan.actions) {
+        const key = actionKey(a);
+        if (!claimedActions.has(key)) {
+          claimedActions.add(key);
+          return { action: a, snapshot };
+        }
+      }
+      return { action: null, snapshot };
+    });
+
+    // ── Execution phase ───────────────────────────────────────────────────
+    if (planned.action !== null) {
+      const action = planned.action;
+      const snapshot = planned.snapshot;
+
+      section(`Engine ${engineIndex + 1}: Action`);
+      bullet(describeAction(action, snapshot, gitHubClient));
+
       globalEventEmitter.emit("phase-update", { phase: "implementation" });
+      globalEventEmitter.emit("action-start", {
+        actionIndex: engineIndex + 1,
+        totalActions: config.maxConcurrency,
+        description: describeAction(action, snapshot, gitHubClient),
+        type: action.type,
+        issueNumber: action.issueNumber ?? null,
+        pullRequestNumber:
+          action.type !== "start-implementation" ? action.pullRequestNumber : null,
+      });
 
       const actionContext = {
         owner: config.owner,
@@ -454,63 +486,31 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         pullRequests: snapshot.pullRequests,
       };
 
-      const results = await Promise.allSettled(
-        plan.actions.map((action, index) => {
-          globalEventEmitter.emit("action-start", {
-            actionIndex: index + 1,
-            totalActions: plan.actions.length,
-            description: describeAction(action, snapshot, gitHubClient),
-            type: action.type,
-            issueNumber: action.issueNumber ?? null,
-            pullRequestNumber:
-              action.type !== "start-implementation" ? action.pullRequestNumber : null,
-          });
-          return executeAction(
-            gitHubClient,
-            sessionStore,
-            claudeAgentClient,
-            action,
-            false,
-            actionContext,
-          );
-        }),
-      );
+      try {
+        const result: ExecuteActionResult = await executeAction(
+          gitHubClient,
+          sessionStore,
+          claudeAgentClient,
+          action,
+          config.dryRun,
+          actionContext,
+        );
 
-      blank();
-      for (let i = 0; i < results.length; i++) {
-        const result = results[i]!;
-        const prefix = `[${i + 1}/${plan.actions.length}]`;
-        if (result.status === "fulfilled") {
-          const actionResult: ExecuteActionResult = result.value;
-          globalEventEmitter.emit("action-complete", {
-            actionIndex: i + 1,
-            totalActions: plan.actions.length,
-            noCommitsPushed: actionResult.noCommitsPushed || false,
-          });
-          if (actionResult.noCommitsPushed) {
-            note(`${prefix} ⚠ done — no new commits pushed to branch (Claude ran but made no changes)`, 2);
-          } else {
-            note(`${prefix} ✓ done`, 2);
-          }
+        globalEventEmitter.emit("action-complete", {
+          actionIndex: engineIndex + 1,
+          totalActions: config.maxConcurrency,
+          noCommitsPushed: result.noCommitsPushed || false,
+        });
+
+        if (result.noCommitsPushed) {
+          note(`✓ done — no new commits pushed to branch (Claude ran but made no changes)`, 2);
         } else {
-          globalEventEmitter.emit("action-error", {
-            actionIndex: i + 1,
-            totalActions: plan.actions.length,
-            error: (result.reason as Error).message,
-          });
-          note(
-            `${prefix} ✗ failed: ${(result.reason as Error).message}`,
-            2,
-          );
+          note(`✓ done`, 2);
         }
-      }
 
-      // Emit "completed" lifecycle state for issues whose PRs were just squash-merged
-      const mergedIssueNumbers = new Set<number>();
-      for (let i = 0; i < results.length; i++) {
-        const result = results[i]!;
-        const action = plan.actions[i]!;
-        if (result.status === "fulfilled" && action.type === "squash-merge") {
+        // Emit "completed" lifecycle state for squash-merged issues
+        if (action.type === "squash-merge") {
+          const mergedIssueNumbers = new Set<number>();
           const mergedPR = snapshot.pullRequests.find((p) => p.number === action.pullRequestNumber);
           if (mergedPR) {
             const linked =
@@ -519,23 +519,60 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
                 : mergedPR.linkedIssueNumbers;
             for (const n of linked) mergedIssueNumbers.add(n);
           }
+          if (mergedIssueNumbers.size > 0) {
+            broadcastLifecycleUpdate(snapshot, new Set(), mergedIssueNumbers);
+          }
         }
-      }
-      if (mergedIssueNumbers.size > 0) {
-        broadcastLifecycleUpdate(snapshot, planningIssueNumbers, mergedIssueNumbers);
+      } catch (error) {
+        globalEventEmitter.emit("action-error", {
+          actionIndex: engineIndex + 1,
+          totalActions: config.maxConcurrency,
+          error: (error as Error).message,
+        });
+        note(`✗ failed: ${(error as Error).message}`, 2);
+      } finally {
+        claimedActions.delete(actionKey(action));
       }
     } else {
+      section(`Engine ${engineIndex + 1}: Idle`);
+      bullet("nothing to do this cycle");
+    }
+
+    if (config.once) return;
+
+    // ── Wait phase: pause only if cycle time has not yet elapsed ──────────
+    const elapsed = Date.now() - cycleStart;
+    const remainingMs = Math.max(0, config.cycleMinimumMs - elapsed);
+
+    if (remainingMs > 0) {
       blank();
-      for (let i = 0; i < plan.actions.length; i++) {
-        globalEventEmitter.emit("action-complete", {
-          actionIndex: i + 1,
-          totalActions: plan.actions.length,
-          dryRun: true,
-        });
-        note(`[${i + 1}/${plan.actions.length}] ✓ done (dry-run)`, 2);
+      write(`Engine ${engineIndex + 1}: next cycle in ${formatDuration(remainingMs)}.`);
+
+      const pollIntervalMs = 10000;
+      const waitStart = Date.now();
+      while (Date.now() - waitStart < remainingMs) {
+        const timeLeft = remainingMs - (Date.now() - waitStart);
+        if (timeLeft <= 0) break;
+
+        await delay(Math.min(pollIntervalMs, timeLeft));
+
+        // Only poll if enough time has passed globally (shared across all engines)
+        const now = Date.now();
+        if (
+          now - pollingState.lastPolledAt >= pollIntervalMs &&
+          Date.now() - waitStart < remainingMs - 1000
+        ) {
+          pollingState.lastPolledAt = now;
+          ({ snapshot: pollingState.lastSnapshot, seenCommitHashes: pollingState.seenCommitHashes } =
+            await broadcastBetweenCycleActivity(
+              config,
+              pollingState.lastSnapshot,
+              pollingState.seenCommitHashes,
+            ));
+        }
       }
     }
-  }
+  } while (true);
 }
 
 async function main(): Promise<void> {
@@ -571,59 +608,52 @@ async function main(): Promise<void> {
   if (config.dryRun) modeNotes.push("--dry-run");
   if (config.noBrowser) modeNotes.push("--no-browser");
   write(
-    `interval: ${formatDuration(config.intervalMs)} · concurrency: ${config.maxConcurrency}` +
+    `cycle-minimum: ${formatDuration(config.cycleMinimumMs)} · concurrency: ${config.maxConcurrency}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
   );
   write(HEAVY_RULE);
 
-  let iterationNumber = 0;
-  let lastSnapshot: RepositorySnapshot | null = null;
-  let seenCommitHashes = new Set<string>();
+  // ── Startup reconciliation ────────────────────────────────────────────────
+  // Any in_progress session observed at startup is the carcass of a process
+  // that crashed mid-action. Fail those so the planner can re-plan.
+  {
+    const token = await getGhToken();
+    const gitHubClient = new GitHubClient({ owner: config.owner, repo: config.repo, token });
+    const sessionStore = new FileSessionStore(config.sessionStorePath);
+    const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+    const preReconcileActiveSessions = snapshot.agentSessions.filter(
+      (s) => s.status === "in_progress",
+    );
 
-  do {
-    iterationNumber++;
-
-    const iterationStartTime = Date.now();
-    await runIteration(config, iterationNumber);
-
-    if (config.once) {
-      blank();
-      write(`Done (--once mode). Exiting.`);
-      if (dashboardReady) {
-        dashboard.close();
-      }
-      return;
+    section("Reconciliation");
+    const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
+    bullet(`${reconcileEvents.length} stale session(s) failed`);
+    for (const event of reconcileEvents) {
+      note(`◦ ${describeSession(event.session, gitHubClient)}`, 2);
     }
+    void preReconcileActiveSessions; // referenced above for count context
+  }
 
-    // Calculate time until next cycle, accounting for iteration duration
-    const elapsedMs = Date.now() - iterationStartTime;
-    const remainingMs = Math.max(0, config.intervalMs - elapsedMs);
+  // ── Launch N independent engine loops ─────────────────────────────────────
+  const planningMutex = new PlanningMutex();
+  const claimedActions = new Set<string>();
+  const pollingState: PollingState = {
+    lastPolledAt: 0,
+    lastSnapshot: null,
+    seenCommitHashes: new Set<string>(),
+  };
 
-    blank();
-    write(`Next iteration in ${formatDuration(remainingMs)}.`);
+  const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
+    runEngineLoop(config, i, planningMutex, claimedActions, pollingState),
+  );
 
-    // Emit countdown with remaining time
-    globalEventEmitter.emit("cycle-countdown", {
-      msUntilCycle: remainingMs,
-      nextCycleTime: new Date(Date.now() + remainingMs).toISOString(),
-    });
+  await Promise.all(engines);
 
-    // Broadcast GitHub activity during idle period to keep dashboard vibrant
-    const pollIntervalMs = 10000; // Poll every 10 seconds
-    const startWaitTime = Date.now();
-    while (Date.now() - startWaitTime < remainingMs) {
-      const timeLeftMs = remainingMs - (Date.now() - startWaitTime);
-      if (timeLeftMs <= 0) break;
-
-      const waitMs = Math.min(pollIntervalMs, timeLeftMs);
-      await delay(waitMs);
-
-      // Broadcast activity if time permits
-      if (Date.now() - startWaitTime < remainingMs - 1000) {
-        ({ snapshot: lastSnapshot, seenCommitHashes } = await broadcastBetweenCycleActivity(config, lastSnapshot, seenCommitHashes));
-      }
-    }
-  } while (true);
+  blank();
+  write(`Done (--once mode). Exiting.`);
+  if (dashboardReady) {
+    dashboard.close();
+  }
 }
 
 main().catch((error: unknown) => {

@@ -183,50 +183,6 @@ body {
   margin-top: 2px;
 }
 
-.iteration-info {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-}
-
-.iteration-label {
-  font-size: 10px;
-  color: #ff00ff;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-}
-
-.iteration-number {
-  font-size: 20px;
-  font-weight: 700;
-  color: #ff00ff;
-  text-shadow: 0 0 10px rgba(255, 0, 255, 0.8);
-  font-variant-numeric: tabular-nums;
-}
-
-.countdown {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-}
-
-.countdown-label {
-  font-size: 10px;
-  color: #0088ff;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-}
-
-.countdown-timer {
-  font-size: 22px;
-  font-weight: 700;
-  color: #00ff88;
-  text-shadow: 0 0 15px rgba(0, 255, 136, 1);
-  font-variant-numeric: tabular-nums;
-}
-
 
 .main-content {
   flex: 1;
@@ -953,8 +909,6 @@ class DashboardUI {
     this.cylinderByIssue = new Map(); // issueNumber -> cylinderIdx (0-based)
     this.cylinderByPR = new Map();    // prNumber -> cylinderIdx (0-based)
     this.connected = false;
-    this.iterationNumber = 0;
-    this.nextCycleTime = null;
     this.bannerTimeout = null;
     this.broadcastQueue = [];
     this.broadcastProcessing = false;
@@ -968,7 +922,6 @@ class DashboardUI {
   init() {
     this.render();
     this.connectWebSocket();
-    this.startCountdown();
   }
 
   initCylinders(n) {
@@ -984,6 +937,7 @@ class DashboardUI {
         actionType: null,
         issueNumber: null,
         prNumber: null,
+        iterationNumber: 0,
       });
     }
   }
@@ -997,14 +951,6 @@ class DashboardUI {
       <div class="header">
         <div>
           <div class="header-title">⚡ VIBRATOR <span>AI SDLC BROADCAST</span></div>
-        </div>
-        <div class="iteration-info">
-          <div class="iteration-label">Iteration</div>
-          <div class="iteration-number" id="iteration-number">--</div>
-        </div>
-        <div class="countdown">
-          <div class="countdown-label">Next Cycle In</div>
-          <div class="countdown-timer" id="countdown-timer">--:--</div>
         </div>
       </div>
       <div class="main-content">
@@ -1095,7 +1041,7 @@ class DashboardUI {
       row.innerHTML = \`
         <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
         <div class="cylinder-info">
-          <div class="cylinder-label">CYL \${cyl.index} · \${cyl.colorName}</div>
+          <div class="cylinder-label">CYL \${cyl.index} · \${cyl.colorName} · #\${cyl.iterationNumber}</div>
           <div class="cylinder-status-text">\${escHtml(statusText)}</div>
         </div>
       \`;
@@ -1325,20 +1271,41 @@ class DashboardUI {
   // ── Event handlers ──────────────────────────────────────────────────────
   handleIterationStart(message) {
     const n = message.data.maxConcurrency || this.maxConcurrency;
-    this.initCylinders(n);
-    this.cylinderByIssue.clear();
-    this.cylinderByPR.clear();
+    const engineIndex = message.data.engineIndex !== undefined ? message.data.engineIndex : 0;
+    const iterationNumber = message.data.iterationNumber || 1;
 
-    this.iterationNumber = message.data.iterationNumber;
-    const numEl = document.getElementById('iteration-number');
-    if (numEl) numEl.textContent = this.iterationNumber;
-    const bannerIt = document.getElementById('banner-iteration');
-    if (bannerIt) bannerIt.textContent = \`Iteration \${this.iterationNumber}\`;
+    // Re-initialise cylinder array only when concurrency changes
+    if (n !== this.maxConcurrency) {
+      this.initCylinders(n);
+    }
 
-    this.showCycleBanner();
+    // Update the specific engine's cylinder state
+    if (engineIndex < this.cylinders.length) {
+      const cyl = this.cylinders[engineIndex];
+      cyl.iterationNumber = iterationNumber;
+      cyl.status = 'idle';
+      cyl.actionType = null;
+      cyl.issueNumber = null;
+      cyl.prNumber = null;
+      // Clear this engine's issue/PR assignments from the lookup maps
+      for (const [issueNum, idx] of this.cylinderByIssue.entries()) {
+        if (idx === engineIndex) this.cylinderByIssue.delete(issueNum);
+      }
+      for (const [prNum, idx] of this.cylinderByPR.entries()) {
+        if (idx === engineIndex) this.cylinderByPR.delete(prNum);
+      }
+    }
+
+    // Show banner only when engine 0 starts its first cycle
+    if (engineIndex === 0 && iterationNumber === 1) {
+      const bannerIt = document.getElementById('banner-iteration');
+      if (bannerIt) bannerIt.textContent = \`Engine 1 · Cycle 1\`;
+      this.showCycleBanner();
+    }
+
     this.renderPanelA();
     this.addEventToStream(
-      \`🔄 Iteration \${message.data.iterationNumber} started · N=\${n}\`, -1, 'info'
+      \`🔄 Engine \${engineIndex + 1} · cycle \${iterationNumber}\`, engineIndex, 'info'
     );
   }
 
@@ -1439,12 +1406,6 @@ class DashboardUI {
       \`📊 Snapshot: \${data.issueCount || 0} issues, \${data.prCount || 0} PRs, \${data.sessionCount || 0} sessions\`,
       -1, 'info'
     );
-  }
-
-  handleCycleCountdown(message) {
-    this.nextCycleTime = message.data.nextCycleTime
-      ? new Date(message.data.nextCycleTime).getTime()
-      : new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
   }
 
   handleBroadcastEvent(message) {
@@ -1721,17 +1682,6 @@ class DashboardUI {
     }
   }
 
-  startCountdown() {
-    this.countdownInterval = setInterval(() => {
-      if (!this.nextCycleTime) return;
-      const diff = this.nextCycleTime - Date.now();
-      const el = document.getElementById('countdown-timer');
-      if (!el) return;
-      if (diff <= 0) { el.textContent = '0:00'; return; }
-      const s = Math.floor(diff / 1000);
-      el.textContent = \`\${Math.floor(s / 60)}:\${String(s % 60).padStart(2, '0')}\`;
-    }, 100);
-  }
 }
 
 const dashboard = new DashboardUI();
