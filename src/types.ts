@@ -5,6 +5,12 @@ export interface Commit {
   pushedAt: string;
 }
 
+export interface Milestone {
+  /** GitHub milestone number, used to determine ordering across milestones. */
+  number: number;
+  title: string;
+}
+
 export interface Issue {
   number: number;
   title: string;
@@ -22,6 +28,12 @@ export interface Issue {
    * Undefined for top-level issues.
    */
   parentNumber?: number;
+  /**
+   * The milestone this issue belongs to, if any. When milestones are present,
+   * the orchestrator only selects issues from the earliest-numbered milestone
+   * that still has open issues.
+   */
+  milestone?: Milestone;
 }
 
 export interface PullRequest {

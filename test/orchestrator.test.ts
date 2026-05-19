@@ -7,6 +7,7 @@ import {
   buildPlan,
   parseClosingIssueNumbers,
   parseLinkedIssueNumbers,
+  selectEarliestMilestoneNumber,
 } from "../src/orchestrator.js";
 import type { AgentSession, Issue, PullRequest, RepositorySnapshot } from "../src/types.js";
 
@@ -20,6 +21,7 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
     type: overrides.type ?? null,
     ...(overrides.parentNumber !== undefined ? { parentNumber: overrides.parentNumber } : {}),
+    ...(overrides.milestone !== undefined ? { milestone: overrides.milestone } : {}),
   };
 }
 
@@ -748,5 +750,104 @@ test("buildPlan never starts a blocked issue (text-based blocking regression che
   assert.ok(
     !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 3),
     "Issue 3 must not start while blocked by #1",
+  );
+});
+
+test("selectEarliestMilestoneNumber returns undefined when no issues have milestones", () => {
+  const issues = [
+    createIssue({ number: 1 }),
+    createIssue({ number: 2 }),
+  ];
+  assert.equal(selectEarliestMilestoneNumber(issues), undefined);
+});
+
+test("selectEarliestMilestoneNumber returns the smallest milestone number", () => {
+  const issues = [
+    createIssue({ number: 1, milestone: { number: 3, title: "v3.0" } }),
+    createIssue({ number: 2, milestone: { number: 1, title: "v1.0" } }),
+    createIssue({ number: 3, milestone: { number: 2, title: "v2.0" } }),
+  ];
+  assert.equal(selectEarliestMilestoneNumber(issues), 1);
+});
+
+test("buildPlan only starts issues from the earliest milestone", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z", milestone: { number: 1, title: "v1.0" } }),
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z", milestone: { number: 2, title: "v2.0" } }),
+      createIssue({ number: 3, createdAt: "2024-01-03T00:00:00.000Z", milestone: { number: 2, title: "v2.0" } }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // Only issue 1 (milestone 1) should start; issues 2 and 3 (milestone 2) must wait.
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+  ]);
+});
+
+test("buildPlan advances to the next milestone once the first is exhausted", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      // milestone 1 is fully closed — not present in open issues
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z", milestone: { number: 2, title: "v2.0" } }),
+      createIssue({ number: 3, createdAt: "2024-01-03T00:00:00.000Z", milestone: { number: 3, title: "v3.0" } }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // Milestone 2 is now the earliest; only issue 2 should start.
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 2 },
+  ]);
+});
+
+test("buildPlan allows issues without a milestone to start alongside the earliest milestone", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z", milestone: { number: 1, title: "v1.0" } }),
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z" }), // no milestone
+      createIssue({ number: 3, createdAt: "2024-01-03T00:00:00.000Z", milestone: { number: 2, title: "v2.0" } }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // Issues 1 (milestone 1) and 2 (no milestone) are eligible; issue 3 (milestone 2) must wait.
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+    { type: "start-implementation", issueNumber: 2 },
+  ]);
+});
+
+test("buildPlan does not start later-milestone issues even when earlier-milestone issues are blocked", () => {
+  // milestone 1 issue is blocked; milestone 2 issue is unblocked — milestone 2 must still wait
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z", milestone: { number: 1, title: "v1.0" } }),
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z", milestone: { number: 1, title: "v1.0" }, body: "blocked by #1" }),
+      createIssue({ number: 3, createdAt: "2024-01-03T00:00:00.000Z", milestone: { number: 2, title: "v2.0" } }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // Only issue 1 starts; issue 2 is blocked by #1; issue 3 is in milestone 2.
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+  ]);
+  assert.ok(
+    !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 3),
+    "Issue 3 in milestone 2 must not start while milestone 1 has open issues",
   );
 });
