@@ -73,6 +73,21 @@ function createSession(
   return session;
 }
 
+test("buildPlan skips issues with the 'manual' label", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, labels: ["manual"] }),
+      createIssue({ number: 2 }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 2 }]);
+});
+
 test("buildPlan chooses the oldest unblocked issues up to available capacity", () => {
   const snapshot: RepositorySnapshot = {
     issues: [

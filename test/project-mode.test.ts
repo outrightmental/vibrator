@@ -115,23 +115,6 @@ test("buildPlan (project mode) ignores issues with the 'manual' label", () => {
   ]);
 });
 
-test("buildPlan always ignores 'manual' label even outside project mode", () => {
-  const snapshot: RepositorySnapshot = {
-    issues: [
-      createIssue({ number: 1, labels: ["manual"] }),
-      createIssue({ number: 2 }),
-    ],
-    pullRequests: [],
-    agentSessions: [],
-  };
-
-  const plan = buildPlan(snapshot, 3);
-
-  assert.deepEqual(plan.actions, [
-    { type: "start-implementation", issueNumber: 2 },
-  ]);
-});
-
 // ─── no auto-merge: request-review replaces squash-merge ────────────────────
 
 test("buildPlan (project mode) emits request-review after first clean self-review", () => {
