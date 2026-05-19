@@ -125,6 +125,8 @@ function actionKey(action: OrchestratorAction): string {
       return `resolve-conflicts:${action.pullRequestNumber}`;
     case "squash-merge":
       return `squash-merge:${action.pullRequestNumber}`;
+    case "request-review":
+      return `request-review:${action.pullRequestNumber}`;
   }
 }
 
@@ -753,6 +755,7 @@ async function runEngineLoop(
         }
       }
     }
+    }
   } while (true);
 }
 
@@ -820,18 +823,6 @@ async function main(): Promise<void> {
     console.warn(
       `[vibrator] Could not ensure "manual" label exists: ${(error as Error).message}`,
     );
-  }
-
-  let iterationNumber = 0;
-  let lastSnapshot: RepositorySnapshot | null = null;
-  let seenCommitHashes = new Set<string>();
-
-    section("Reconciliation");
-    const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
-    bullet(`${reconcileEvents.length} stale session(s) failed`);
-    for (const event of reconcileEvents) {
-      note(`◦ ${describeSession(event.session, gitHubClient)}`, 2);
-    }
   }
 
   // ── Launch N independent engine loops ─────────────────────────────────────
