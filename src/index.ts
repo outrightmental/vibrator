@@ -538,28 +538,15 @@ async function runEngineLoop(
         pullRequests: snapshot.pullRequests,
       };
 
-      const results = await Promise.allSettled(
-        plan.actions.map((action, index) => {
-          globalEventEmitter.emit("action-start", {
-            actionIndex: index + 1,
-            totalActions: plan.actions.length,
-            description: describeAction(action, snapshot, gitHubClient),
-            type: action.type,
-            issueNumber: action.issueNumber ?? null,
-            pullRequestNumber:
-              action.type !== "start-implementation" ? action.pullRequestNumber : null,
-            model: config.claudeModel ?? null,
-          });
-          return executeAction(
-            gitHubClient,
-            sessionStore,
-            claudeAgentClient,
-            action,
-            false,
-            actionContext,
-          );
-        }),
-      );
+      try {
+        const result: ExecuteActionResult = await executeAction(
+          gitHubClient,
+          sessionStore,
+          claudeAgentClient,
+          action,
+          config.dryRun,
+          actionContext,
+        );
 
         globalEventEmitter.emit("action-complete", {
           actionIndex: engineIndex + 1,
