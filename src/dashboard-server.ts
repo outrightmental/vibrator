@@ -1573,6 +1573,7 @@ class DashboardUI {
 
   handleWorkflowApproval(message) {
     const runName = message.data.runName || 'unknown';
+    const runId = message.data.runId;
     this.enqueueBroadcastEvent({
       category: 'ci',
       label: 'WORKFLOW',
@@ -1581,6 +1582,7 @@ class DashboardUI {
       stateAfter: '✅ Workflow "' + runName + '" approved and queued',
       excellence: 'CI pipeline unblocked — automated approval keeps development flowing',
       workerIndex: undefined,
+      runId,
     });
   }
 
@@ -1632,6 +1634,9 @@ class DashboardUI {
       stateAfter: message.data.stateAfter || '',
       excellence: message.data.excellence || '',
       workerIndex,
+      prNumber: message.data.prNumber,
+      issueNumber: message.data.issueNumber,
+      commitHash: message.data.hash,
     });
   }
 
@@ -1667,6 +1672,34 @@ class DashboardUI {
     return div.innerHTML;
   }
 
+  linkifyText(text, context) {
+    let out = this.escapeHtml(text);
+    // Linkify "PR #N"
+    out = out.replace(/\\bPR #(\\d+)\\b/g, function(_, n) {
+      return 'PR <a class="gh-link" href="' + GITHUB_BASE_URL + '/pull/' + n + '" target="_blank" rel="noopener noreferrer">#' + n + '</a>';
+    });
+    // Linkify "Issue #N"
+    out = out.replace(/\\bIssue #(\\d+)\\b/g, function(_, n) {
+      return 'Issue <a class="gh-link" href="' + GITHUB_BASE_URL + '/issues/' + n + '" target="_blank" rel="noopener noreferrer">#' + n + '</a>';
+    });
+    // Linkify commit short hash
+    if (context && context.commitHash) {
+      const shortHash = context.commitHash.slice(0, 7);
+      const idx = out.indexOf(shortHash);
+      if (idx !== -1) {
+        out = out.slice(0, idx) + '<a class="gh-link" href="' + GITHUB_BASE_URL + '/commit/' + context.commitHash + '" target="_blank" rel="noopener noreferrer">' + shortHash + '</a>' + out.slice(idx + 7);
+      }
+    }
+    // Linkify workflow run names when a runId is available
+    if (context && context.runId) {
+      const runId = context.runId;
+      out = out.replace(/Workflow &quot;([^&]+)&quot;/g, function(_, name) {
+        return 'Workflow &quot;<a class="gh-link" href="' + GITHUB_BASE_URL + '/actions/runs/' + runId + '" target="_blank" rel="noopener noreferrer">' + name + '</a>&quot;';
+      });
+    }
+    return out;
+  }
+
   displayBroadcastEvent(eventData) {
     const broadcastContent = document.getElementById('phase-broadcast-content');
     if (!broadcastContent) return;
@@ -1678,6 +1711,13 @@ class DashboardUI {
     const b = parseInt(color.slice(5, 7), 16);
     const time = new Date().toLocaleTimeString();
 
+    const ctx = {
+      prNumber: eventData.prNumber,
+      issueNumber: eventData.issueNumber,
+      commitHash: eventData.commitHash,
+      runId: eventData.runId,
+    };
+
     const card = document.createElement('div');
     card.className = 'broadcast-event';
     card.style.cssText = 'border-left-color:' + color + ';background:rgba(' + r + ',' + g + ',' + b + ',0.07);';
@@ -1687,7 +1727,7 @@ class DashboardUI {
     const typeStyle = 'color:' + color + ';';
 
     const excellenceHtml = excellence
-      ? '<div class="broadcast-event-excellence">✨ ' + this.escapeHtml(excellence) + '</div>'
+      ? '<div class="broadcast-event-excellence">✨ ' + this.linkifyText(excellence, ctx) + '</div>'
       : '';
 
     card.innerHTML =
@@ -1701,15 +1741,15 @@ class DashboardUI {
       + '<div class="broadcast-event-flow">'
       + '<div class="broadcast-event-row before-row">'
       + '<span class="broadcast-event-tag">WAS</span>'
-      + '<span>' + this.escapeHtml(stateBefore || '') + '</span>'
+      + '<span>' + this.linkifyText(stateBefore || '', ctx) + '</span>'
       + '</div>'
       + '<div class="broadcast-event-row how-row">'
       + '<span class="broadcast-event-tag">HOW</span>'
-      + '<span>' + this.escapeHtml(changeHow || '') + '</span>'
+      + '<span>' + this.linkifyText(changeHow || '', ctx) + '</span>'
       + '</div>'
       + '<div class="broadcast-event-row after-row">'
       + '<span class="broadcast-event-tag" style="' + nowTagStyle + '">NOW</span>'
-      + '<span>' + this.escapeHtml(stateAfter || '') + '</span>'
+      + '<span>' + this.linkifyText(stateAfter || '', ctx) + '</span>'
       + '</div>'
       + '</div>'
       + excellenceHtml;
@@ -1845,7 +1885,7 @@ class DashboardUI {
       }
       if (pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0) {
         const blockerBadges = pair.blockedByIssueNumbers
-          .map(n => \`<span class="pill-badge pill-badge-blocked">#\${n}</span>\`)
+          .map(n => \`<span class="pill-badge pill-badge-blocked"><a class="gh-link" href="\${GITHUB_BASE_URL}/issues/\${n}" target="_blank" rel="noopener noreferrer">#\${n}</a></span>\`)
           .join('');
         return \`<div class="pill-label">Blocked by</div><div class="pill-row">\${blockerBadges}</div>\`;
       }
