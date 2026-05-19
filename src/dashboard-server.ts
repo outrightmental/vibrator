@@ -1335,6 +1335,11 @@ class DashboardUI {
   handleIterationStart(message) {
     const engineIndex = message.data.engineIndex !== undefined ? message.data.engineIndex : 0;
     const iterationNumber = message.data.iterationNumber || 1;
+    const n = message.data.maxConcurrency || this.maxConcurrency;
+
+    if (n !== this.maxConcurrency) {
+      this.initCylinders(n);
+    }
 
     if (this.cylinders[engineIndex]) {
       this.cylinders[engineIndex].iterationNumber = iterationNumber;
