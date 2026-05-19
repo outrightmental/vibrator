@@ -162,6 +162,59 @@ test("DashboardServer replaces cylinder cache on engine-idle", async (t) => {
   assert.equal(cylinderMessages[0]?.type, "engine-idle", "engine-idle should replace action-start in cache");
 });
 
+test("DashboardServer caches engine-idle with nextCycleInMs", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 5,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  globalEventEmitter.emit("engine-idle", {
+    engineIndex: 1,
+    nextCycleInMs: 45000,
+  });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 5}`);
+  const messages = await collectMessages(ws, 150);
+  ws.close();
+
+  const idleMsg = messages.find((m) => m.type === "engine-idle");
+  assert.ok(idleMsg !== undefined, "should replay engine-idle");
+  assert.equal(idleMsg?.data.engineIndex, 1);
+  assert.equal(idleMsg?.data.nextCycleInMs, 45000);
+});
+
+test("DashboardServer caches engine-idle with rateLimitedUntilMs", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 6,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const rateLimitedUntilMs = Date.now() + 900_000;
+  globalEventEmitter.emit("engine-idle", {
+    engineIndex: 0,
+    nextCycleInMs: 30000,
+    rateLimitedUntilMs,
+  });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 6}`);
+  const messages = await collectMessages(ws, 150);
+  ws.close();
+
+  const idleMsg = messages.find((m) => m.type === "engine-idle");
+  assert.ok(idleMsg !== undefined, "should replay engine-idle");
+  assert.equal(idleMsg?.data.rateLimitedUntilMs, rateLimitedUntilMs, "rateLimitedUntilMs should be preserved in cache");
+});
+
 test("DashboardServer caches and replays shutdown-requested and app-shutdown", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 3,

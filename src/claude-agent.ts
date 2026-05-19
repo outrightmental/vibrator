@@ -681,6 +681,10 @@ const DEFAULT_QUOTA_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
 let claudeQuotaBlockedUntilMs: number | undefined;
 let claudeTermsAcceptanceRequired = false;
 
+export function getClaudeQuotaBlockedUntilMs(): number | undefined {
+  return claudeQuotaBlockedUntilMs;
+}
+
 export function isClaudeUsageLimitMessage(message: string): boolean {
   return /out of extra usage|out of usage|hit your limit|rate limit|quota|usage limit/i.test(
     message,

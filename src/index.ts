@@ -3,7 +3,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import "dotenv/config";
 
 import { executeAction, type ExecuteActionResult } from "./actions.js";
-import { createClaudeAgentClient, DEFAULT_COMMIT_MODEL } from "./claude-agent.js";
+import {
+  createClaudeAgentClient,
+  DEFAULT_COMMIT_MODEL,
+  isClaudeUsageLimitMessage,
+  getClaudeQuotaBlockedUntilMs,
+} from "./claude-agent.js";
 import {
   ClaudeAccountManager,
   defaultAccountStorePath,
@@ -519,6 +524,7 @@ async function runEngineLoop(
     });
 
     // ── Execution phase ───────────────────────────────────────────────────
+    let cycleRateLimitedUntilMs: number | undefined;
     const hasAction = planned.action !== null;
     if (hasAction) {
       const action = planned.action;
@@ -587,12 +593,17 @@ async function runEngineLoop(
           }
         }
       } catch (error) {
+        const errorMessage = (error as Error).message;
+        if (isClaudeUsageLimitMessage(errorMessage)) {
+          cycleRateLimitedUntilMs =
+            getClaudeQuotaBlockedUntilMs() ?? accountManager?.earliestAvailableMs();
+        }
         globalEventEmitter.emit("action-error", {
           actionIndex: engineIndex + 1,
           totalActions: config.maxConcurrency,
-          error: (error as Error).message,
+          error: errorMessage,
         });
-        note(`✗ failed: ${(error as Error).message}`, 2);
+        note(`✗ failed: ${errorMessage}`, 2);
       } finally {
         claimedActions.delete(actionKey(action));
       }
@@ -618,12 +629,13 @@ async function runEngineLoop(
     const remainingMs = Math.max(0, config.cycleMinimumMs - elapsed);
 
     if (remainingMs > 0) {
-      if (hasAction) {
-        globalEventEmitter.emit("engine-idle", {
-          engineIndex,
-          nextCycleInMs: remainingMs,
-        });
-      }
+      globalEventEmitter.emit("engine-idle", {
+        engineIndex,
+        nextCycleInMs: remainingMs,
+        ...(cycleRateLimitedUntilMs !== undefined
+          ? { rateLimitedUntilMs: cycleRateLimitedUntilMs }
+          : {}),
+      });
       blank();
       write(`Engine ${engineIndex + 1}: next cycle in ${formatDuration(remainingMs)}.`);
 
