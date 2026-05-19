@@ -21,9 +21,9 @@ export function extractThinkingPreview(chunk: string): string {
   const lines = plain
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  const last = lines.at(-1) ?? "";
-  return last.length > 120 ? `${last.slice(0, 117)}…` : last;
+    .filter((l) => l.length > 0)
+    .map((l) => (l.length > 200 ? `${l.slice(0, 197)}…` : l));
+  return lines.join("\n");
 }
 
 // ─── Multi-run terminal status board ────────────────────────────────────────
