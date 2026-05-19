@@ -904,55 +904,6 @@ body {
 .stat  { display: flex; gap: 8px; }
 .stat-value { font-weight: 700; color: #ffff00; }
 
-/* ── Cycle start banner ── */
-.hidden { display: none !important; }
-
-.cycle-banner {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 1000;
-  background: rgba(10, 14, 39, 0.97);
-  border: 3px solid #ff00ff;
-  padding: 36px 56px;
-  text-align: center;
-  border-radius: 8px;
-  box-shadow: 0 0 40px rgba(255, 0, 255, 0.6), inset 0 0 40px rgba(255, 0, 255, 0.08);
-  animation: bannerPop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.cycle-banner-text {
-  font-size: 32px;
-  font-weight: 700;
-  color: #ff00ff;
-  text-shadow: 0 0 20px rgba(255, 0, 255, 1);
-  margin: 0;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-}
-
-.cycle-banner-subtext {
-  font-size: 16px;
-  color: #00ff88;
-  margin-top: 12px;
-  text-shadow: 0 0 10px rgba(0, 255, 136, 0.8);
-}
-
-@keyframes bannerPop {
-  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
-  70%  { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
-  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-}
-
-@keyframes bannerFadeOut {
-  0%   { opacity: 1; }
-  100% { opacity: 0; }
-}
-
-.cycle-banner.fade-out {
-  animation: bannerFadeOut 0.8s ease-out forwards;
-}
 `;
   }
 
@@ -1008,7 +959,6 @@ class DashboardUI {
     this.cylinderByIssue = new Map(); // issueNumber -> cylinderIdx (0-based)
     this.cylinderByPR = new Map();    // prNumber -> cylinderIdx (0-based)
     this.connected = false;
-    this.bannerTimeout = null;
     this.broadcastQueue = [];
     this.broadcastProcessing = false;
     this.BROADCAST_FANFARE_MS = 3000;
@@ -1044,10 +994,6 @@ class DashboardUI {
 
   render() {
     this.appContainer.innerHTML = \`
-      <div class="cycle-banner hidden" id="cycle-banner">
-        <div class="cycle-banner-text">⚡ CYCLE START</div>
-        <div class="cycle-banner-subtext" id="banner-iteration">Iteration --</div>
-      </div>
       <div class="header">
         <div>
           <div class="header-title">⚡ VIBRATOR <span>AI SDLC BROADCAST</span></div>
@@ -1388,18 +1334,6 @@ class DashboardUI {
     this.addEventToStream(
       \`🔄 Engine \${engineIndex + 1} · cycle \${iterationNumber}\`, engineIndex, 'info'
     );
-  }
-
-  showCycleBanner() {
-    const banner = document.getElementById('cycle-banner');
-    if (!banner) return;
-    if (this.bannerTimeout) clearTimeout(this.bannerTimeout);
-    banner.classList.remove('hidden', 'fade-out');
-    void banner.offsetWidth;
-    this.bannerTimeout = setTimeout(() => {
-      banner.classList.add('fade-out');
-      setTimeout(() => banner.classList.add('hidden'), 800);
-    }, 3000);
   }
 
   handlePhaseUpdate(message) {
