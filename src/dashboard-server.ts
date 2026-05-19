@@ -1327,7 +1327,9 @@ class DashboardUI {
     }
 
     if (this.cylinders[engineIndex]) {
-      this.cylinders[engineIndex].iterationNumber = iterationNumber;
+      const cyl = this.cylinders[engineIndex];
+      cyl.iterationNumber = iterationNumber;
+      cyl.status = 'idle';
     }
 
     this.renderPanelA();
@@ -1345,6 +1347,15 @@ class DashboardUI {
 
     if (idx >= 0 && idx < this.cylinders.length) {
       const cyl = this.cylinders[idx];
+
+      // Clear stale mappings from this cylinder's previous action
+      if (cyl.issueNumber != null && this.cylinderByIssue.get(cyl.issueNumber) === idx) {
+        this.cylinderByIssue.delete(cyl.issueNumber);
+      }
+      if (cyl.prNumber != null && this.cylinderByPR.get(cyl.prNumber) === idx) {
+        this.cylinderByPR.delete(cyl.prNumber);
+      }
+
       cyl.status = 'active';
       cyl.actionType = message.data.type || null;
       cyl.issueNumber = message.data.issueNumber ?? null;
