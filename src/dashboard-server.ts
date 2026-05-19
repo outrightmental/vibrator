@@ -182,13 +182,6 @@ body {
   margin-left: 8px;
 }
 
-.header-repo {
-  font-size: 11px;
-  color: #ff00ff;
-  text-shadow: 0 0 5px rgba(255, 0, 255, 0.5);
-  margin-top: 2px;
-}
-
 .iteration-info {
   display: flex;
   flex-direction: column;
@@ -920,9 +913,6 @@ a.gh-link:hover {
   text-decoration: underline;
   filter: brightness(1.4);
 }
-.header-repo a.gh-link {
-  color: #ff00ff;
-}
 .pill-number a.gh-link {
   color: inherit;
   text-decoration: none;
@@ -1083,7 +1073,6 @@ class DashboardUI {
       <div class="header">
         <div>
           <div class="header-title"><a class="gh-link" href="\${GITHUB_BASE_URL}" target="_blank" rel="noopener noreferrer">⚡ VIBRATOR</a> <span>AI SDLC BROADCAST</span></div>
-          <div class="header-repo"><a class="gh-link" href="\${GITHUB_BASE_URL}" target="_blank" rel="noopener noreferrer">\${GITHUB_BASE_URL.replace('https://github.com/', '')}</a></div>
         </div>
         <div class="iteration-info">
           <div class="iteration-label">Iteration</div>
