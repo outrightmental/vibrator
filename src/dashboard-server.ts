@@ -395,6 +395,7 @@ body {
 .lifecycle-pill {
   display: flex;
   height: 52px;
+  width: 100%;
   min-width: 380px;
   animation: pillAppear 0.4s cubic-bezier(0.34, 1.3, 0.64, 1);
 }
