@@ -1,3 +1,5 @@
+[![Test](https://github.com/outrightmental/vibrator/actions/workflows/test.yml/badge.svg)](https://github.com/outrightmental/vibrator/actions/workflows/test.yml)
+
 # Vibrator
 
 **Turn a GitHub issue queue into a self-driving Claude vibe-coding factory.**

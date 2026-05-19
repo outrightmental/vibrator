@@ -359,7 +359,7 @@ test("broadcastLifecycleUpdate: pairs are sorted in ascending issue-number order
   assert.deepEqual(pairs.map((p) => p.issue.number), [5, 17, 30]);
 });
 
-test("broadcastLifecycleUpdate: pairs are sorted active→planning→unblocked→blocked→completed", async () => {
+test("broadcastLifecycleUpdate: pairs are sorted active→completed→planning→unblocked→blocked", async () => {
   const issues = [
     makeIssue({ number: 1 }), // blocked absent
     makeIssue({ number: 2 }), // unblocked absent
@@ -381,8 +381,8 @@ test("broadcastLifecycleUpdate: pairs are sorted active→planning→unblocked�
   const pairs = data.pairs as Array<{ issue: { number: number }; prPhase: string }>;
   assert.deepEqual(
     pairs.map((p) => p.issue.number),
-    [3, 4, 2, 1, 5],
-    "order: active, planning, unblocked absent, blocked, completed",
+    [3, 5, 4, 2, 1],
+    "order: active, completed, planning, unblocked absent, blocked absent",
   );
 });
 

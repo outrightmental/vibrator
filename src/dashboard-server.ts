@@ -1093,6 +1093,7 @@ class DashboardUI {
     this.prCards = new Map();     // prNumber -> {number,title,state,draft,checksStatus,...}
     this.cylinderByIssue = new Map(); // issueNumber -> cylinderIdx (0-based)
     this.cylinderByPR = new Map();    // prNumber -> cylinderIdx (0-based)
+    this.lastLifecyclePairs = [];     // most recent pairs from server, for client-side resort
     this.connected = false;
     this.broadcastQueue = [];
     this.broadcastProcessing = false;
@@ -1508,6 +1509,7 @@ class DashboardUI {
 
     this.renderPanelA();
     this.recolorAllPills();
+    this.resortLifecyclePills();
     this.addEventToStream(
       \`🔄 Engine \${engineIndex + 1} · cycle \${iterationNumber}\`, engineIndex, 'info'
     );
@@ -1543,6 +1545,7 @@ class DashboardUI {
 
       this.renderPanelA();
       this.recolorAllPills();
+      this.resortLifecyclePills();
     }
 
     const actionDesc = message.data.description || message.data.type || 'action';
@@ -1846,6 +1849,8 @@ class DashboardUI {
     const pairs = message.data.pairs;
     if (!Array.isArray(pairs)) return;
 
+    this.lastLifecyclePairs = pairs;
+
     const content = document.getElementById('lifecycle-content');
     const subtitle = document.getElementById('lifecycle-subtitle');
     if (!content) return;
@@ -1865,10 +1870,12 @@ class DashboardUI {
 
     content.querySelector('.lifecycle-empty')?.remove();
 
+    const sorted = [...pairs].sort((a, b) => this.compareLifecyclePairs(a, b));
+
     const existingKeys = new Set(
       [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber)
     );
-    const incomingKeys = new Set(pairs.map(p => String(p.issue.number)));
+    const incomingKeys = new Set(sorted.map(p => String(p.issue.number)));
 
     for (const key of existingKeys) {
       if (!incomingKeys.has(key)) {
@@ -1876,24 +1883,61 @@ class DashboardUI {
       }
     }
 
-    for (const pair of pairs) {
+    for (const pair of sorted) {
       const key = String(pair.issue.number);
       let pill = content.querySelector('[data-issue-number="' + key + '"]');
-
       if (!pill) {
         pill = this.createPill(pair);
-        const allExisting = [...content.querySelectorAll('.lifecycle-pill')];
-        const anchor = allExisting.find(el => parseInt(el.dataset.issueNumber, 10) > pair.issue.number);
-        if (anchor) {
-          content.insertBefore(pill, anchor);
-        } else {
-          content.appendChild(pill);
-        }
       } else {
         this.updatePill(pill, pair);
       }
+      // Append in sorted order; if pill is already a child, appendChild moves it.
+      content.appendChild(pill);
     }
+  }
 
+  /**
+   * Pair sort order — matches phaseSortPriority on the server:
+   *   tier 0: active   (has PR, in progress)
+   *   tier 1: completed (has PR, merged)
+   *   tier 2: planning (being implemented, no PR yet)
+   *   tier 3: absent unblocked
+   *   tier 4: absent blocked
+   * Within a tier, rows currently on an engine cylinder sort by cylinder index
+   * (matching the engine panel order); the rest fall back to issue number.
+   */
+  compareLifecyclePairs(a, b) {
+    const ap = this.lifecycleTier(a);
+    const bp = this.lifecycleTier(b);
+    if (ap !== bp) return ap - bp;
+
+    const aCyl = this.cylinderByIssue.get(a.issue.number);
+    const bCyl = this.cylinderByIssue.get(b.issue.number);
+    const aOnCyl = aCyl !== undefined;
+    const bOnCyl = bCyl !== undefined;
+    if (aOnCyl && bOnCyl) return aCyl - bCyl;
+    if (aOnCyl !== bOnCyl) return aOnCyl ? -1 : 1;
+
+    return a.issue.number - b.issue.number;
+  }
+
+  lifecycleTier(pair) {
+    if (pair.prPhase === 'active') return 0;
+    if (pair.prPhase === 'completed') return 1;
+    if (pair.prPhase === 'planning') return 2;
+    const blocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
+    return blocked ? 4 : 3;
+  }
+
+  resortLifecyclePills() {
+    if (!this.lastLifecyclePairs || this.lastLifecyclePairs.length === 0) return;
+    const content = document.getElementById('lifecycle-content');
+    if (!content) return;
+    const sorted = [...this.lastLifecyclePairs].sort((a, b) => this.compareLifecyclePairs(a, b));
+    for (const pair of sorted) {
+      const pill = content.querySelector('[data-issue-number="' + pair.issue.number + '"]');
+      if (pill) content.appendChild(pill);
+    }
   }
 
   createPill(pair) {

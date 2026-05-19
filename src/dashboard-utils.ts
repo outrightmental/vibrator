@@ -13,11 +13,13 @@ export interface LifecyclePair {
 }
 
 function phaseSortPriority(phase: string, isBlocked: boolean): number {
+  // PR-bearing rows on top (active, then completed), then planning,
+  // then unblocked-absent, then blocked-absent.
   if (phase === "active") return 0;
-  if (phase === "planning") return 1;
-  if (phase === "absent" && !isBlocked) return 2;
-  if (phase === "absent" && isBlocked) return 3;
-  return 4; // completed
+  if (phase === "completed") return 1;
+  if (phase === "planning") return 2;
+  if (phase === "absent" && !isBlocked) return 3;
+  return 4; // absent && blocked
 }
 
 export function broadcastLifecycleUpdate(
@@ -70,8 +72,9 @@ export function broadcastLifecycleUpdate(
     });
   }
 
-  // Display order: active → planning → unblocked absent → blocked → completed
-  // Within each group, ascending issue number
+  // Display order: active → completed → planning → unblocked absent → blocked absent.
+  // PR-bearing rows always above non-PR rows; planning above fully-unimplemented.
+  // Within each group, ascending issue number (client may override with cylinder order).
   pairs.sort((a, b) => {
     const aBlocked = (a.blockedByIssueNumbers?.length ?? 0) > 0;
     const bBlocked = (b.blockedByIssueNumbers?.length ?? 0) > 0;

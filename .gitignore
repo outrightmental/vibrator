@@ -4,3 +4,6 @@ node_modules/
 
 # Local runtime files
 .vibrator/
+
+# MacOS specific files
+.DS_Store
