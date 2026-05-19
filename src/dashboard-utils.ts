@@ -275,3 +275,19 @@ export function emitLogMessage(level: "info" | "success" | "warning" | "error", 
     message,
   });
 }
+
+/** Returns true if the PR's observable state has changed relative to a prior snapshot version. */
+export function hasPrStateChanged(current: PullRequest, last: PullRequest): boolean {
+  return (
+    current.state !== last.state ||
+    current.draft !== last.draft ||
+    current.checksStatus !== last.checksStatus ||
+    current.hasMergeConflicts !== last.hasMergeConflicts ||
+    current.unresolvedReviewCommentCount !== last.unresolvedReviewCommentCount
+  );
+}
+
+/** Returns only the commits whose hash has not yet been recorded in seenHashes. */
+export function filterNewCommits(commits: Commit[], seenHashes: ReadonlySet<string>): Commit[] {
+  return commits.filter((c) => !seenHashes.has(c.hash));
+}

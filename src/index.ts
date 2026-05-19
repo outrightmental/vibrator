@@ -23,6 +23,8 @@ import {
   broadcastReviewComment,
   broadcastLifecycleUpdate,
   emitLogMessage,
+  hasPrStateChanged,
+  filterNewCommits,
 } from "./dashboard-utils.js";
 import type {
   AgentSession,
@@ -84,7 +86,8 @@ function shortId(id: string): string {
 async function broadcastBetweenCycleActivity(
   config: Config,
   lastSnapshot: RepositorySnapshot | null,
-): Promise<RepositorySnapshot> {
+  seenCommitHashes: Set<string>,
+): Promise<{ snapshot: RepositorySnapshot; seenCommitHashes: Set<string> }> {
   try {
     const gitHubClient = new GitHubClient({
       owner: config.owner,
@@ -95,22 +98,41 @@ async function broadcastBetweenCycleActivity(
 
     const snapshot = await loadSnapshot(gitHubClient, sessionStore);
 
-    // Broadcast current repository state
-    broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+    // Broadcast current repository state only when something changed
+    const lastPrMap = lastSnapshot
+      ? new Map(lastSnapshot.pullRequests.map((p) => [p.number, p]))
+      : null;
+    const snapshotChanged = !lastSnapshot ||
+      lastSnapshot.issues.length !== snapshot.issues.length ||
+      lastSnapshot.pullRequests.length !== snapshot.pullRequests.length ||
+      lastSnapshot.agentSessions.filter((s) => s.status === "in_progress").length !==
+        snapshot.agentSessions.filter((s) => s.status === "in_progress").length;
+    if (snapshotChanged) {
+      broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+    }
     broadcastLifecycleUpdate(snapshot);
 
-    // Broadcast any open PRs and their review comments
+    // Broadcast open PRs only when their state has changed since the last poll
     for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
-      broadcastPullRequestUpdate(pr, "monitoring");
+      const lastPr = lastPrMap?.get(pr.number);
+      const prChanged = !lastPr || hasPrStateChanged(pr, lastPr);
 
-      // Broadcast unresolved review comments for this PR
-      try {
-        const reviewComments = await gitHubClient.listUnresolvedReviewComments(pr.number);
-        if (reviewComments.length > 0) {
-          broadcastReviewComment(pr.number, "Review", reviewComments.length);
+      if (prChanged) {
+        broadcastPullRequestUpdate(pr, "monitoring");
+      }
+
+      // Broadcast review comments only when the unresolved count changed
+      const reviewCountChanged = !lastPr ||
+        lastPr.unresolvedReviewCommentCount !== pr.unresolvedReviewCommentCount;
+      if (reviewCountChanged) {
+        try {
+          const reviewComments = await gitHubClient.listUnresolvedReviewComments(pr.number);
+          if (reviewComments.length > 0) {
+            broadcastReviewComment(pr.number, "Review", reviewComments.length);
+          }
+        } catch (error) {
+          // Silently skip review comment broadcasting if it fails
         }
-      } catch (error) {
-        // Silently skip review comment broadcasting if it fails
       }
     }
 
@@ -126,20 +148,25 @@ async function broadcastBetweenCycleActivity(
       }
     }
 
-    // Broadcast recent commits
+    // Broadcast only commits not yet seen in the feed
+    const newSeenHashes = new Set(seenCommitHashes);
     try {
       const recentCommits = await gitHubClient.listRecentCommits(5);
-      for (const commit of recentCommits) {
+      for (const commit of filterNewCommits(recentCommits, seenCommitHashes)) {
         broadcastCommit(commit);
+        newSeenHashes.add(commit.hash);
       }
     } catch (error) {
       // Silently skip commit broadcasting if it fails
     }
 
-    return snapshot;
+    return { snapshot, seenCommitHashes: newSeenHashes };
   } catch (error) {
     // Silently fail on between-cycle polling errors
-    return lastSnapshot || ({ pullRequests: [], issues: [], agentSessions: [] } as RepositorySnapshot);
+    return {
+      snapshot: lastSnapshot || ({ pullRequests: [], issues: [], agentSessions: [] } as RepositorySnapshot),
+      seenCommitHashes,
+    };
   }
 }
 
@@ -551,6 +578,7 @@ async function main(): Promise<void> {
 
   let iterationNumber = 0;
   let lastSnapshot: RepositorySnapshot | null = null;
+  let seenCommitHashes = new Set<string>();
 
   do {
     iterationNumber++;
@@ -592,7 +620,7 @@ async function main(): Promise<void> {
 
       // Broadcast activity if time permits
       if (Date.now() - startWaitTime < remainingMs - 1000) {
-        lastSnapshot = await broadcastBetweenCycleActivity(config, lastSnapshot);
+        ({ snapshot: lastSnapshot, seenCommitHashes } = await broadcastBetweenCycleActivity(config, lastSnapshot, seenCommitHashes));
       }
     }
   } while (true);

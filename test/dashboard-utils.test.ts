@@ -9,6 +9,8 @@ import {
   broadcastReviewComment,
   broadcastRepositorySnapshot,
   broadcastLifecycleUpdate,
+  hasPrStateChanged,
+  filterNewCommits,
 } from "../src/dashboard-utils.js";
 import { globalEventEmitter } from "../src/event-emitter.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
@@ -366,4 +368,64 @@ test("broadcastLifecycleUpdate: colorIndex equals issue.number modulo 6", async 
   assert.equal(pairs.find((p) => p.issue.number === 6)!.colorIndex, 0);
   assert.equal(pairs.find((p) => p.issue.number === 7)!.colorIndex, 1);
   assert.equal(pairs.find((p) => p.issue.number === 13)!.colorIndex, 1);
+});
+
+// hasPrStateChanged
+
+test("hasPrStateChanged: returns false when all fields are identical", () => {
+  const pr = makePR();
+  assert.equal(hasPrStateChanged(pr, pr), false);
+});
+
+test("hasPrStateChanged: detects state transition", () => {
+  const current = makePR({ state: "closed" });
+  const last = makePR({ state: "open" });
+  assert.equal(hasPrStateChanged(current, last), true);
+});
+
+test("hasPrStateChanged: detects draft change", () => {
+  const current = makePR({ draft: false });
+  const last = makePR({ draft: true });
+  assert.equal(hasPrStateChanged(current, last), true);
+});
+
+test("hasPrStateChanged: detects checksStatus change", () => {
+  const current = makePR({ checksStatus: "success" });
+  const last = makePR({ checksStatus: "pending" });
+  assert.equal(hasPrStateChanged(current, last), true);
+});
+
+test("hasPrStateChanged: detects unresolvedReviewCommentCount change", () => {
+  const current = makePR({ unresolvedReviewCommentCount: 3 });
+  const last = makePR({ unresolvedReviewCommentCount: 0 });
+  assert.equal(hasPrStateChanged(current, last), true);
+});
+
+test("hasPrStateChanged: detects hasMergeConflicts change", () => {
+  const current = makePR({ hasMergeConflicts: true });
+  const last = makePR({ hasMergeConflicts: false });
+  assert.equal(hasPrStateChanged(current, last), true);
+});
+
+// filterNewCommits
+
+function makeCommit(hash: string): import("../src/types.js").Commit {
+  return { hash, author: "dev", message: "msg", pushedAt: new Date().toISOString() };
+}
+
+test("filterNewCommits: returns all commits when seenHashes is empty", () => {
+  const commits = [makeCommit("aaa"), makeCommit("bbb")];
+  assert.deepEqual(filterNewCommits(commits, new Set()), commits);
+});
+
+test("filterNewCommits: excludes commits whose hash is already seen", () => {
+  const commits = [makeCommit("aaa"), makeCommit("bbb"), makeCommit("ccc")];
+  const result = filterNewCommits(commits, new Set(["aaa", "ccc"]));
+  assert.equal(result.length, 1);
+  assert.equal(result[0]!.hash, "bbb");
+});
+
+test("filterNewCommits: returns empty array when all commits are seen", () => {
+  const commits = [makeCommit("aaa"), makeCommit("bbb")];
+  assert.deepEqual(filterNewCommits(commits, new Set(["aaa", "bbb"])), []);
 });
