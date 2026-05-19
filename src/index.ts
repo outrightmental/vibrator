@@ -591,7 +591,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         }
       }
       if (mergedIssueNumbers.size > 0) {
-        broadcastLifecycleUpdate(snapshot, planningIssueNumbers, mergedIssueNumbers);
+        broadcastLifecycleUpdate(snapshot, planningIssueNumbers, mergedIssueNumbers, plan.blockedIssueNumbers);
       }
     } else {
       blank();
