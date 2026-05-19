@@ -1056,18 +1056,6 @@ a.gh-link:hover {
     return `
 const GITHUB_BASE_URL = 'https://github.com/${owner}/${repo}';
 
-// Palette of 6 distinct neon colours used to colour-coordinate pills with
-// worker threads. Colour slot = issueNumber % PILL_PALETTE.length, which
-// keeps the assignment stable for the lifetime of the SDLC cycle.
-const PILL_PALETTE = [
-  { hex: '#00ff88', rgb: '0,255,136' },   // green
-  { hex: '#ff00ff', rgb: '255,0,255' },   // magenta
-  { hex: '#0088ff', rgb: '0,136,255' },   // blue
-  { hex: '#ffff00', rgb: '255,255,0' },   // yellow
-  { hex: '#ff6600', rgb: '255,102,0' },   // orange
-  { hex: '#aa00ff', rgb: '170,0,255' },   // purple
-];
-
 // Per-cylinder stable neon identity (issue #21: CYL-1=Cyan, CYL-2=Magenta, CYL-3=Gold)
 const CYLINDER_COLORS      = ['#00ffff', '#ff00ff', '#ffd700', '#0088ff', '#ff6600', '#aa00ff'];
 const CYLINDER_COLORS_RGB  = ['0,255,255', '255,0,255', '255,215,0', '0,136,255', '255,102,0', '170,0,255'];
@@ -1110,7 +1098,7 @@ class DashboardUI {
     this.broadcastProcessing = false;
     this.BROADCAST_FANFARE_MS = 3000;
     this.BROADCAST_MAX_ITEMS = 15;
-    this.workerColors = ['#00ff88', '#ff00ff', '#0088ff', '#ffff00', '#ff6600', '#aa00ff'];
+    this.workerColors = CYLINDER_COLORS.slice();
     this.workerMap = {};
     this.shutdownRequested = false;
     this.appShutdown = false;
@@ -1517,6 +1505,7 @@ class DashboardUI {
     }
 
     this.renderPanelA();
+    this.recolorAllPills();
     this.addEventToStream(
       \`🔄 Engine \${engineIndex + 1} · cycle \${iterationNumber}\`, engineIndex, 'info'
     );
@@ -1551,6 +1540,7 @@ class DashboardUI {
       if (cyl.prNumber != null)    this.cylinderByPR.set(cyl.prNumber, idx);
 
       this.renderPanelA();
+      this.recolorAllPills();
     }
 
     const actionDesc = message.data.description || message.data.type || 'action';
@@ -1865,7 +1855,7 @@ class DashboardUI {
   }
 
   createPill(pair) {
-    const color = PILL_PALETTE[pair.colorIndex % PILL_PALETTE.length];
+    const color = this.resolvePillColor(pair.issue.number);
     const pill = document.createElement('div');
     pill.className = 'lifecycle-pill';
     pill.dataset.issueNumber = String(pair.issue.number);
@@ -1877,7 +1867,7 @@ class DashboardUI {
   }
 
   updatePill(pill, pair) {
-    const color = PILL_PALETTE[pair.colorIndex % PILL_PALETTE.length];
+    const color = this.resolvePillColor(pair.issue.number);
     pill.style.setProperty('--pill-color', color.hex);
     pill.style.setProperty('--pill-rgb', color.rgb);
     pill.style.setProperty('--pill-glow', \`rgba(\${color.rgb},0.3)\`);
@@ -1937,6 +1927,30 @@ class DashboardUI {
         <span class="pill-title">\${this.esc(pair.pr.title)}</span>
       </div>
     \`;
+  }
+
+  resolvePillColor(issueNumber) {
+    const cylIdx = this.cylinderByIssue.get(issueNumber);
+    if (cylIdx !== undefined) {
+      return {
+        hex: CYLINDER_COLORS[cylIdx] || '#00ffff',
+        rgb: CYLINDER_COLORS_RGB[cylIdx] || '0,255,255',
+      };
+    }
+    return { hex: '#555577', rgb: '85,85,119' };
+  }
+
+  recolorAllPills() {
+    const content = document.getElementById('lifecycle-content');
+    if (!content) return;
+    for (const pill of content.querySelectorAll('.lifecycle-pill')) {
+      const issueNumber = parseInt(pill.dataset.issueNumber, 10);
+      if (isNaN(issueNumber)) continue;
+      const color = this.resolvePillColor(issueNumber);
+      pill.style.setProperty('--pill-color', color.hex);
+      pill.style.setProperty('--pill-rgb', color.rgb);
+      pill.style.setProperty('--pill-glow', \`rgba(\${color.rgb},0.3)\`);
+    }
   }
 
   esc(text) {
