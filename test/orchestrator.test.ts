@@ -769,6 +769,46 @@ test("buildPlan never starts a blocked issue (text-based blocking regression che
   );
 });
 
+test("buildPlan never starts issues blocked with colon-form dependency syntax", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z" }),
+      createIssue({
+        number: 2,
+        createdAt: "2024-01-02T00:00:00.000Z",
+        body: "blocked by: #1",
+      }),
+      createIssue({
+        number: 3,
+        createdAt: "2024-01-03T00:00:00.000Z",
+        body: "",
+      }),
+      createIssue({
+        number: 4,
+        createdAt: "2024-01-04T00:00:00.000Z",
+        body: "blocks: #3",
+      }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 4);
+
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+    { type: "start-implementation", issueNumber: 4 },
+  ]);
+  assert.ok(
+    !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 2),
+    "Issue 2 must not start while blocked by #1 via colon syntax",
+  );
+  assert.ok(
+    !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 3),
+    "Issue 3 must not start while blocked by issue 4 via `blocks: #3` syntax",
+  );
+});
+
 test("selectEarliestMilestoneNumber returns undefined when no issues have milestones", () => {
   const issues = [
     createIssue({ number: 1 }),
