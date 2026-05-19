@@ -529,6 +529,7 @@ async function runEngineLoop(
         issueNumber: action.issueNumber ?? null,
         pullRequestNumber:
           action.type !== "start-implementation" ? action.pullRequestNumber : null,
+        model: config.claudeModel ?? null,
       });
 
       const actionContext = {

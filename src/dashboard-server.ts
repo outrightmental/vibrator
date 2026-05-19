@@ -1037,6 +1037,7 @@ class DashboardUI {
         issueNumber: null,
         prNumber: null,
         model: null,
+        iterationNumber: 0,
       });
     }
   }
@@ -1138,10 +1139,11 @@ class DashboardUI {
       }
 
       const modelLabel = formatModelName(cyl.model) || \`CYL \${cyl.index}\`;
+      const cycleLabel = cyl.iterationNumber > 0 ? \` #\${cyl.iterationNumber}\` : '';
       row.innerHTML = \`
         <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
         <div class="cylinder-info">
-          <div class="cylinder-label">\${escHtml(modelLabel)}</div>
+          <div class="cylinder-label">\${escHtml(modelLabel + cycleLabel)}</div>
           <div class="cylinder-status-text">\${escHtml(statusText)}</div>
         </div>
         <div class="cylinder-spinner"></div>
