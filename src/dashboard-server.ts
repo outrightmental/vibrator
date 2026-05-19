@@ -516,7 +516,7 @@ body {
 /* ── Panel A: Cylinder rows ── */
 .cylinder-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(0, 255, 136, 0.08);
@@ -547,6 +547,7 @@ body {
   box-shadow: 0 0 6px var(--cyl-color, #00ff88);
   flex-shrink: 0;
   opacity: 0.45;
+  margin-top: 2px;
   transition: opacity 0.3s ease;
 }
 
@@ -608,6 +609,33 @@ body {
 
 .cylinder-row.active .cylinder-status-text {
   color: rgba(255, 255, 255, 0.8);
+}
+
+.cylinder-thinking-stream {
+  margin-top: 4px;
+  max-height: 80px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-size: 9px;
+  font-family: monospace;
+  color: rgba(0, 255, 136, 0.55);
+  line-height: 1.4;
+  word-break: break-word;
+  white-space: pre-wrap;
+  display: none;
+}
+
+.cylinder-thinking-stream.active {
+  display: block;
+}
+
+.cylinder-thinking-stream::-webkit-scrollbar {
+  width: 3px;
+}
+
+.cylinder-thinking-stream::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 136, 0.3);
+  border-radius: 2px;
 }
 
 .phase-section.active .phase-title {
@@ -1041,9 +1069,6 @@ class DashboardUI {
     this.cylinderByIssue = new Map(); // issueNumber -> cylinderIdx (0-based)
     this.cylinderByPR = new Map();    // prNumber -> cylinderIdx (0-based)
     this.connected = false;
-    this.iterationNumber = 0;
-    this.nextCycleTime = null;
-    this.bannerTimeout = null;
     this.broadcastQueue = [];
     this.broadcastProcessing = false;
     this.BROADCAST_FANFARE_MS = 3000;
@@ -1056,7 +1081,6 @@ class DashboardUI {
   init() {
     this.render();
     this.connectWebSocket();
-    this.startCountdown();
   }
 
   initCylinders(n) {
@@ -1073,27 +1097,17 @@ class DashboardUI {
         issueNumber: null,
         prNumber: null,
         model: null,
+        iterationNumber: 0,
+        thinkingLines: [],
       });
     }
   }
 
   render() {
     this.appContainer.innerHTML = \`
-      <div class="cycle-banner hidden" id="cycle-banner">
-        <div class="cycle-banner-text">⚡ CYCLE START</div>
-        <div class="cycle-banner-subtext" id="banner-iteration">Iteration --</div>
-      </div>
       <div class="header">
         <div>
           <div class="header-title"><a class="gh-link" href="\${GITHUB_BASE_URL}" target="_blank" rel="noopener noreferrer">⚡ VIBRATOR</a> <span>AI SDLC BROADCAST</span></div>
-        </div>
-        <div class="iteration-info">
-          <div class="iteration-label">Iteration</div>
-          <div class="iteration-number" id="iteration-number">--</div>
-        </div>
-        <div class="countdown" id="countdown-container">
-          <div class="countdown-label" id="countdown-label">Next Cycle In</div>
-          <div class="countdown-timer" id="countdown-timer">--:--</div>
         </div>
       </div>
       <div class="main-content">
@@ -1188,11 +1202,15 @@ class DashboardUI {
       }
 
       const modelLabel = formatModelName(cyl.model) || \`CYL \${cyl.index}\`;
+      const cycleLabel = cyl.iterationNumber > 0 ? \` #\${cyl.iterationNumber}\` : '';
+      const thinkingLines = cyl.thinkingLines || [];
+      const hasThinking = isActive && thinkingLines.length > 0;
       row.innerHTML = \`
         <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
         <div class="cylinder-info">
-          <div class="cylinder-label">\${escHtml(modelLabel)}</div>
+          <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
           <div class="cylinder-status-text">\${statusHTML}</div>
+          <div class="cylinder-thinking-stream\${hasThinking ? ' active' : ''}" id="thinking-stream-\${cyl.index - 1}">\${thinkingLines.map(escHtml).join('\n')}</div>
         </div>
         <div class="cylinder-spinner"></div>
       \`;
@@ -1396,7 +1414,6 @@ class DashboardUI {
       case 'action-error':           this.handleActionError(message); break;
       case 'workflow-approval':      this.handleWorkflowApproval(message); break;
       case 'snapshot-update':        this.handleSnapshotUpdate(message); break;
-      case 'cycle-countdown':        this.handleCycleCountdown(message); break;
       case 'broadcast-github-activity':
       case 'broadcast-commit':
       case 'broadcast-pr-update':
@@ -1412,7 +1429,7 @@ class DashboardUI {
         this.handleLogMessage(message);
         break;
       case 'claude-thinking':
-        this.addLogLine('info', \`Claude [\${message.data.model}]: \${message.data.excerpt}\`);
+        this.handleClaudeThinking(message);
         break;
       default:
         this.addEventToStream(\`[EVENT] \${message.type}\`, -1, 'info');
@@ -1421,42 +1438,37 @@ class DashboardUI {
 
   // ── Event handlers ──────────────────────────────────────────────────────
   handleIterationStart(message) {
+    const engineIndex = message.data.engineIndex !== undefined ? message.data.engineIndex : 0;
+    const iterationNumber = message.data.iterationNumber;
     const n = message.data.maxConcurrency || this.maxConcurrency;
-    this.initCylinders(n);
-    this.cylinderByIssue.clear();
-    this.cylinderByPR.clear();
 
-    this.iterationNumber = message.data.iterationNumber;
-    const numEl = document.getElementById('iteration-number');
-    if (numEl) numEl.textContent = this.iterationNumber;
+    if (n !== this.maxConcurrency) {
+      this.initCylinders(n);
+    }
 
-    this.nextCycleTime = null;
-    const container = document.getElementById('countdown-container');
-    const label = document.getElementById('countdown-label');
-    const timer = document.getElementById('countdown-timer');
-    if (container) { container.classList.remove('state-waiting'); container.classList.add('state-working'); }
-    if (label) label.textContent = 'Working';
-    if (timer) timer.textContent = '●';
-    const bannerIt = document.getElementById('banner-iteration');
-    if (bannerIt) bannerIt.textContent = \`Iteration \${this.iterationNumber}\`;
+    if (this.cylinders[engineIndex]) {
+      const cyl = this.cylinders[engineIndex];
 
-    this.showCycleBanner();
+      // Clear stale issue/PR mappings so Panel B stops showing this engine as active
+      if (cyl.issueNumber != null && this.cylinderByIssue.get(cyl.issueNumber) === engineIndex) {
+        this.cylinderByIssue.delete(cyl.issueNumber);
+      }
+      if (cyl.prNumber != null && this.cylinderByPR.get(cyl.prNumber) === engineIndex) {
+        this.cylinderByPR.delete(cyl.prNumber);
+      }
+
+      cyl.iterationNumber = iterationNumber;
+      cyl.status = 'idle';
+      cyl.issueNumber = null;
+      cyl.prNumber = null;
+      cyl.actionType = null;
+      cyl.thinkingLines = [];
+    }
+
     this.renderPanelA();
     this.addEventToStream(
-      \`🔄 Iteration \${message.data.iterationNumber} started · N=\${n}\`, -1, 'info'
+      \`🔄 Engine \${engineIndex + 1} · cycle \${iterationNumber}\`, engineIndex, 'info'
     );
-  }
-
-  showCycleBanner() {
-    const banner = document.getElementById('cycle-banner');
-    if (!banner) return;
-    if (this.bannerTimeout) clearTimeout(this.bannerTimeout);
-    banner.classList.remove('hidden', 'fade-out');
-    void banner.offsetWidth;
-    this.bannerTimeout = setTimeout(() => {
-      banner.classList.add('fade-out');
-      setTimeout(() => banner.classList.add('hidden'), 800);
-    }, 3000);
   }
 
   handlePhaseUpdate(message) {
@@ -1468,11 +1480,21 @@ class DashboardUI {
 
     if (idx >= 0 && idx < this.cylinders.length) {
       const cyl = this.cylinders[idx];
+
+      // Clear stale mappings from this cylinder's previous action
+      if (cyl.issueNumber != null && this.cylinderByIssue.get(cyl.issueNumber) === idx) {
+        this.cylinderByIssue.delete(cyl.issueNumber);
+      }
+      if (cyl.prNumber != null && this.cylinderByPR.get(cyl.prNumber) === idx) {
+        this.cylinderByPR.delete(cyl.prNumber);
+      }
+
       cyl.status = 'active';
       cyl.actionType = message.data.type || null;
       cyl.issueNumber = message.data.issueNumber ?? null;
       cyl.prNumber = message.data.pullRequestNumber ?? null;
       cyl.model = message.data.model ?? null;
+      cyl.thinkingLines = [];
 
       if (cyl.issueNumber != null) this.cylinderByIssue.set(cyl.issueNumber, idx);
       if (cyl.prNumber != null)    this.cylinderByPR.set(cyl.prNumber, idx);
@@ -1491,6 +1513,7 @@ class DashboardUI {
     const idx = (message.data.actionIndex || 1) - 1;
     if (idx >= 0 && idx < this.cylinders.length) {
       this.cylinders[idx].status = 'done';
+      this.cylinders[idx].thinkingLines = [];
       this.renderPanelA();
     }
     this.addEventToStream(
@@ -1502,12 +1525,34 @@ class DashboardUI {
     const idx = (message.data.actionIndex || 1) - 1;
     if (idx >= 0 && idx < this.cylinders.length) {
       this.cylinders[idx].status = 'error';
+      this.cylinders[idx].thinkingLines = [];
       this.renderPanelA();
     }
     this.addEventToStream(
       \`✗ action [\${message.data.actionIndex}/\${message.data.totalActions}] failed: \${message.data.error || ''}\`,
       idx, 'error'
     );
+  }
+
+  handleClaudeThinking(message) {
+    const engineIndex = message.data.engineIndex;
+    const excerpt = message.data.excerpt || '';
+    if (engineIndex !== undefined && this.cylinders[engineIndex]) {
+      const cyl = this.cylinders[engineIndex];
+      const MAX_LINES = 6;
+      cyl.thinkingLines = cyl.thinkingLines || [];
+      cyl.thinkingLines.push(excerpt);
+      if (cyl.thinkingLines.length > MAX_LINES) {
+        cyl.thinkingLines = cyl.thinkingLines.slice(-MAX_LINES);
+      }
+      // Update the stream element in-place rather than re-rendering the whole panel
+      const el = document.getElementById(\`thinking-stream-\${engineIndex}\`);
+      if (el) {
+        el.textContent = cyl.thinkingLines.join('\n');
+        el.classList.add('active');
+        el.scrollTop = el.scrollHeight;
+      }
+    }
   }
 
   handleWorkflowApproval(message) {
@@ -1545,17 +1590,6 @@ class DashboardUI {
       \`📊 Snapshot: \${data.issueCount || 0} issues, \${data.prCount || 0} PRs, \${data.sessionCount || 0} sessions\`,
       -1, 'info'
     );
-  }
-
-  handleCycleCountdown(message) {
-    this.nextCycleTime = message.data.nextCycleTime
-      ? new Date(message.data.nextCycleTime).getTime()
-      : new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
-
-    const container = document.getElementById('countdown-container');
-    const label = document.getElementById('countdown-label');
-    if (container) { container.classList.remove('state-working'); container.classList.add('state-waiting'); }
-    if (label) label.textContent = 'Next Cycle In';
   }
 
   handleBroadcastEvent(message) {
@@ -1842,17 +1876,6 @@ class DashboardUI {
     }
   }
 
-  startCountdown() {
-    this.countdownInterval = setInterval(() => {
-      if (!this.nextCycleTime) return;
-      const diff = this.nextCycleTime - Date.now();
-      const el = document.getElementById('countdown-timer');
-      if (!el) return;
-      if (diff <= 0) { el.textContent = '0:00'; return; }
-      const s = Math.floor(diff / 1000);
-      el.textContent = \`\${Math.floor(s / 60)}:\${String(s % 60).padStart(2, '0')}\`;
-    }, 100);
-  }
 }
 
 const dashboard = new DashboardUI();
