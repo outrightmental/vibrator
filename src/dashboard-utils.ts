@@ -49,7 +49,9 @@ export function broadcastLifecycleUpdate(
         },
         prPhase: completedIssueNumbers.has(issueNumber) ? "completed" : "active",
         colorIndex: issue.number % 6,
-        blockedByIssueNumbers: blockedIssueNumbers[issue.number],
+        ...(blockedIssueNumbers[issue.number] !== undefined && {
+          blockedByIssueNumbers: blockedIssueNumbers[issue.number],
+        }),
       });
     }
   }
@@ -62,7 +64,9 @@ export function broadcastLifecycleUpdate(
       pr: null,
       prPhase: planningIssueNumbers.has(issue.number) ? "planning" : "absent",
       colorIndex: issue.number % 6,
-      blockedByIssueNumbers: blockedIssueNumbers[issue.number],
+      ...(blockedIssueNumbers[issue.number] !== undefined && {
+        blockedByIssueNumbers: blockedIssueNumbers[issue.number],
+      }),
     });
   }
 
