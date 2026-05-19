@@ -1248,7 +1248,9 @@ class DashboardUI {
     }
 
     const header = document.getElementById('panel-a-header');
-    if (header) header.textContent = \`⚙ \${this.maxConcurrency}-CYLINDER ENGINE\`;
+    if (header && !this.shutdownRequested && !this.appShutdown) {
+      header.textContent = \`⚙ \${this.maxConcurrency}-CYLINDER ENGINE\`;
+    }
   }
 
   // ── Panel B: Issue→PR Lifecycle ─────────────────────────────────────────
