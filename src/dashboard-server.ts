@@ -1016,14 +1016,6 @@ class DashboardUI {
         <div>
           <div class="header-title">⚡ VIBRATOR <span>AI SDLC BROADCAST</span></div>
         </div>
-        <div class="iteration-info">
-          <div class="iteration-label">Iteration</div>
-          <div class="iteration-number" id="iteration-number">--</div>
-        </div>
-        <div class="countdown" id="countdown-container">
-          <div class="countdown-label" id="countdown-label">Next Cycle In</div>
-          <div class="countdown-timer" id="countdown-timer">--:--</div>
-        </div>
       </div>
       <div class="main-content">
         <div class="panel panel-a">
@@ -1317,7 +1309,6 @@ class DashboardUI {
       case 'action-error':           this.handleActionError(message); break;
       case 'workflow-approval':      this.handleWorkflowApproval(message); break;
       case 'snapshot-update':        this.handleSnapshotUpdate(message); break;
-      case 'cycle-countdown':        this.handleCycleCountdown(message); break;
       case 'broadcast-github-activity':
       case 'broadcast-commit':
       case 'broadcast-pr-update':
@@ -1348,13 +1339,6 @@ class DashboardUI {
     if (this.cylinders[engineIndex]) {
       this.cylinders[engineIndex].iterationNumber = iterationNumber;
     }
-
-    const container = document.getElementById('countdown-container');
-    const label = document.getElementById('countdown-label');
-    const timer = document.getElementById('countdown-timer');
-    if (container) { container.classList.remove('state-waiting'); container.classList.add('state-working'); }
-    if (label) label.textContent = 'Working';
-    if (timer) timer.textContent = '●';
 
     this.renderPanelA();
     this.addEventToStream(
@@ -1459,17 +1443,6 @@ class DashboardUI {
       \`📊 Snapshot: \${data.issueCount || 0} issues, \${data.prCount || 0} PRs, \${data.sessionCount || 0} sessions\`,
       -1, 'info'
     );
-  }
-
-  handleCycleCountdown(message) {
-    this.nextCycleTime = message.data.nextCycleTime
-      ? new Date(message.data.nextCycleTime).getTime()
-      : new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
-
-    const container = document.getElementById('countdown-container');
-    const label = document.getElementById('countdown-label');
-    if (container) { container.classList.remove('state-working'); container.classList.add('state-waiting'); }
-    if (label) label.textContent = 'Next Cycle In';
   }
 
   handleBroadcastEvent(message) {
