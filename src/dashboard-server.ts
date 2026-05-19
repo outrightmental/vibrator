@@ -1187,13 +1187,10 @@ class DashboardUI {
   renderPanelA() {
     const list = document.getElementById('cylinder-list');
     if (!list) return;
-    list.innerHTML = '';
 
-    for (const cyl of this.cylinders) {
-      const row = document.createElement('div');
-      row.className = \`cylinder-row \${cyl.status}\`;
-      row.style.setProperty('--cyl-color', cyl.color);
-      row.style.setProperty('--cyl-color-rgb', cyl.colorRgb);
+    for (let i = 0; i < this.cylinders.length; i++) {
+      const cyl = this.cylinders[i];
+      const rowId = \`cylinder-row-\${i}\`;
 
       const isActive   = cyl.status === 'active';
       const isDone     = cyl.status === 'done';
@@ -1237,16 +1234,56 @@ class DashboardUI {
       const cycleLabel = cyl.iterationNumber > 0 ? \` #\${cyl.iterationNumber}\` : '';
       const thinkingLines = cyl.thinkingLines || [];
       const hasThinking = isActive && thinkingLines.length > 0;
-      row.innerHTML = \`
-        <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
-        <div class="cylinder-info">
-          <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
-          <div class="cylinder-status-text">\${statusHTML}</div>
-          <div class="cylinder-thinking-stream\${hasThinking ? ' active' : ''}" id="thinking-stream-\${cyl.index - 1}">\${thinkingLines.map(escHtml).join('\\n')}</div>
-        </div>
-        <div class="cylinder-spinner"></div>
-      \`;
-      list.appendChild(row);
+      const dotClass = isActive ? 'cylinder-dot pulsing' : 'cylinder-dot';
+      const thinkingClass = \`cylinder-thinking-stream\${hasThinking ? ' active' : ''}\`;
+
+      let row = document.getElementById(rowId);
+      if (!row) {
+        row = document.createElement('div');
+        row.id = rowId;
+        row.className = \`cylinder-row \${cyl.status}\`;
+        row.style.setProperty('--cyl-color', cyl.color);
+        row.style.setProperty('--cyl-color-rgb', cyl.colorRgb);
+        row.innerHTML = \`
+          <div class="\${dotClass}"></div>
+          <div class="cylinder-info">
+            <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
+            <div class="cylinder-status-text">\${statusHTML}</div>
+            <div class="\${thinkingClass}" id="thinking-stream-\${i}">\${thinkingLines.map(escHtml).join('\\n')}</div>
+          </div>
+          <div class="cylinder-spinner"></div>
+        \`;
+        list.appendChild(row);
+      } else {
+        const newRowClass = \`cylinder-row \${cyl.status}\`;
+        if (row.className !== newRowClass) row.className = newRowClass;
+        row.style.setProperty('--cyl-color', cyl.color);
+        row.style.setProperty('--cyl-color-rgb', cyl.colorRgb);
+
+        const dot = row.querySelector('.cylinder-dot');
+        if (dot && dot.className !== dotClass) dot.className = dotClass;
+
+        const labelEl = row.querySelector('.cylinder-label');
+        const newLabel = escHtml(modelLabel) + cycleLabel;
+        if (labelEl && labelEl.innerHTML !== newLabel) labelEl.innerHTML = newLabel;
+
+        const statusEl = row.querySelector('.cylinder-status-text');
+        if (statusEl && statusEl.innerHTML !== statusHTML) statusEl.innerHTML = statusHTML;
+
+        const thinkingEl = document.getElementById(\`thinking-stream-\${i}\`);
+        if (thinkingEl) {
+          if (thinkingEl.className !== thinkingClass) thinkingEl.className = thinkingClass;
+          const newContent = thinkingLines.map(escHtml).join('\\n');
+          if (thinkingEl.textContent !== newContent) thinkingEl.textContent = newContent;
+        }
+      }
+    }
+
+    // Remove stale rows if cylinder count shrank
+    for (let i = this.cylinders.length; ; i++) {
+      const stale = document.getElementById(\`cylinder-row-\${i}\`);
+      if (!stale) break;
+      stale.remove();
     }
 
     const header = document.getElementById('panel-a-header');
@@ -1931,16 +1968,28 @@ class DashboardUI {
       }
     }
 
+    // Create or update pills without moving existing ones
     for (const pair of sorted) {
       const key = String(pair.issue.number);
       let pill = content.querySelector('[data-issue-number="' + key + '"]');
       if (!pill) {
         pill = this.createPill(pair);
+        content.appendChild(pill);
       } else {
         this.updatePill(pill, pair);
       }
-      // Append in sorted order; if pill is already a child, appendChild moves it.
-      content.appendChild(pill);
+    }
+
+    // Reorder pills only when the DOM order doesn't already match the sorted order
+    const domOrder = [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber);
+    const sortedOrder = sorted.map(p => String(p.issue.number));
+    const needsReorder = domOrder.length !== sortedOrder.length ||
+                         domOrder.some((key, idx) => key !== sortedOrder[idx]);
+    if (needsReorder) {
+      for (const pair of sorted) {
+        const pill = content.querySelector('[data-issue-number="' + String(pair.issue.number) + '"]');
+        if (pill) content.appendChild(pill);
+      }
     }
   }
 
@@ -1982,9 +2031,15 @@ class DashboardUI {
     const content = document.getElementById('lifecycle-content');
     if (!content) return;
     const sorted = [...this.lastLifecyclePairs].sort((a, b) => this.compareLifecyclePairs(a, b));
-    for (const pair of sorted) {
-      const pill = content.querySelector('[data-issue-number="' + pair.issue.number + '"]');
-      if (pill) content.appendChild(pill);
+    const domOrder = [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber);
+    const sortedOrder = sorted.map(p => String(p.issue.number));
+    const needsReorder = domOrder.length !== sortedOrder.length ||
+                         domOrder.some((key, idx) => key !== sortedOrder[idx]);
+    if (needsReorder) {
+      for (const pair of sorted) {
+        const pill = content.querySelector('[data-issue-number="' + pair.issue.number + '"]');
+        if (pill) content.appendChild(pill);
+      }
     }
   }
 
@@ -2008,10 +2063,25 @@ class DashboardUI {
 
     const prHalf = pill.querySelector('.pill-pr-half');
     if (prHalf) {
-      // Update only the PR half class/content so the pill doesn't flicker
       const isBlocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
-      prHalf.className = \`pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}\`;
-      prHalf.innerHTML = this.prHalfContent(pair);
+      const newClass = \`pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}\`;
+      if (prHalf.className !== newClass) prHalf.className = newClass;
+      const newContent = this.prHalfContent(pair);
+      if (prHalf.innerHTML !== newContent) prHalf.innerHTML = newContent;
+    }
+
+    const issueHalf = pill.querySelector('.pill-issue-half');
+    if (issueHalf) {
+      const badgeEl = issueHalf.querySelector('.pill-badge');
+      if (badgeEl) {
+        const newBadge = pair.issue.state.toUpperCase();
+        if (badgeEl.textContent !== newBadge) badgeEl.textContent = newBadge;
+      }
+      const titleEl = issueHalf.querySelector('.pill-title');
+      if (titleEl) {
+        const newTitle = this.esc(pair.issue.title);
+        if (titleEl.innerHTML !== newTitle) titleEl.innerHTML = newTitle;
+      }
     }
   }
 
