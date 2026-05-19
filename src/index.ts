@@ -545,6 +545,7 @@ async function runEngineLoop(
         model: action.type === "squash-merge"
           ? (config.claudeCommitModel ?? DEFAULT_COMMIT_MODEL)
           : (config.claudeModel ?? null),
+        startedAt: Date.now(),
       });
 
       const actionContext = {

@@ -1566,7 +1566,7 @@ class DashboardUI {
       cyl.prNumber = message.data.pullRequestNumber ?? null;
       cyl.model = message.data.model ?? null;
       cyl.thinkingLines = [];
-      cyl.actionStartedAt = Date.now();
+      cyl.actionStartedAt = typeof message.data.startedAt === 'number' ? message.data.startedAt : Date.now();
       cyl.nextCycleAtMs = null;
       cyl.rateLimitedUntilMs = null;
 

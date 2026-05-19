@@ -216,6 +216,36 @@ test("DashboardServer caches engine-idle with rateLimitedUntilMs", async (t) => 
   assert.equal(idleMsg?.data.rateLimitedUntilMs, rateLimitedUntilMs, "rateLimitedUntilMs should be preserved in cache");
 });
 
+test("DashboardServer caches action-start with startedAt for accurate elapsed-time replay", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 7,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const startedAt = Date.now() - 300_000; // simulates action started 5 minutes ago
+  globalEventEmitter.emit("action-start", {
+    actionIndex: 1,
+    totalActions: 2,
+    type: "start-implementation",
+    issueNumber: 42,
+    description: "implementing #42",
+    startedAt,
+  });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 7}`);
+  const messages = await collectMessages(ws, 150);
+  ws.close();
+
+  const actionMsg = messages.find((m) => m.type === "action-start");
+  assert.ok(actionMsg !== undefined, "should replay action-start");
+  assert.equal(actionMsg?.data.startedAt, startedAt, "startedAt should be preserved in cache for accurate elapsed-time display");
+});
+
 test("DashboardServer caches and replays shutdown-requested and app-shutdown", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 3,
