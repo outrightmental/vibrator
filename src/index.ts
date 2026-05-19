@@ -504,6 +504,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
             issueNumber: action.issueNumber ?? null,
             pullRequestNumber:
               action.type !== "start-implementation" ? action.pullRequestNumber : null,
+            model: config.claudeModel ?? null,
           });
           return executeAction(
             gitHubClient,
