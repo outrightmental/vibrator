@@ -10,9 +10,9 @@ import type { ClaudeAccountManager } from "./claude-account-manager.js";
 // ─── Thinking-preview extractor ─────────────────────────────────────────────
 
 /**
- * Extracts a short readable preview from a raw verbose chunk emitted by the
- * Claude CLI stderr stream. Strips ANSI codes, picks the last non-empty line,
- * and truncates to a display-friendly length.
+ * Extracts readable lines from a raw verbose chunk emitted by the Claude CLI
+ * stderr stream. Strips ANSI codes and returns all non-empty lines joined with
+ * newlines, truncating any individual line that exceeds 200 characters.
  */
 export function extractThinkingPreview(chunk: string): string {
   const plain = chunk
