@@ -1210,7 +1210,7 @@ class DashboardUI {
         <div class="cylinder-info">
           <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
           <div class="cylinder-status-text">\${statusHTML}</div>
-          <div class="cylinder-thinking-stream\${hasThinking ? ' active' : ''}" id="thinking-stream-\${cyl.index - 1}">\${thinkingLines.map(escHtml).join('\n')}</div>
+          <div class="cylinder-thinking-stream\${hasThinking ? ' active' : ''}" id="thinking-stream-\${cyl.index - 1}">\${thinkingLines.map(escHtml).join('\\n')}</div>
         </div>
         <div class="cylinder-spinner"></div>
       \`;
