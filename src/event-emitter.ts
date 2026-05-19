@@ -17,7 +17,10 @@ export type DashboardEventType =
   | "broadcast-issue-update"
   | "lifecycle-update"
   | "log-message"
-  | "claude-thinking";
+  | "claude-thinking"
+  | "shutdown-requested"
+  | "engine-shutdown"
+  | "app-shutdown";
 
 export interface DashboardEvent {
   type: DashboardEventType;

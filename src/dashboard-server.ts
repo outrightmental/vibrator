@@ -88,6 +88,11 @@ export class DashboardServer {
     } else if (type === "iteration-start") {
       const engineIndex = (data.engineIndex as number) ?? 0;
       this.cachedEvents.set(`cylinder-${engineIndex}`, event);
+    } else if (type === "engine-shutdown") {
+      const engineIndex = (data.engineIndex as number) ?? 0;
+      this.cachedEvents.set(`cylinder-${engineIndex}`, event);
+    } else if (type === "shutdown-requested" || type === "app-shutdown") {
+      this.cachedEvents.set(type, event);
     }
   }
 
@@ -562,6 +567,12 @@ body {
 
 .cylinder-row.error {
   border-left: 3px solid #ff0055;
+  padding-left: 9px;
+}
+
+.cylinder-row.shutdown {
+  opacity: 0.5;
+  border-left: 3px solid #ff6600;
   padding-left: 9px;
 }
 
@@ -1101,6 +1112,8 @@ class DashboardUI {
     this.BROADCAST_MAX_ITEMS = 15;
     this.workerColors = ['#00ff88', '#ff00ff', '#0088ff', '#ffff00', '#ff6600', '#aa00ff'];
     this.workerMap = {};
+    this.shutdownRequested = false;
+    this.appShutdown = false;
     this.init();
   }
 
@@ -1192,12 +1205,15 @@ class DashboardUI {
       row.style.setProperty('--cyl-color', cyl.color);
       row.style.setProperty('--cyl-color-rgb', cyl.colorRgb);
 
-      const isActive = cyl.status === 'active';
-      const isDone   = cyl.status === 'done';
-      const isError  = cyl.status === 'error';
+      const isActive   = cyl.status === 'active';
+      const isDone     = cyl.status === 'done';
+      const isError    = cyl.status === 'error';
+      const isShutdown = cyl.status === 'shutdown';
 
       let statusHTML = 'idle';
-      if (isActive || isDone || isError) {
+      if (isShutdown) {
+        statusHTML = '⏹ shutdown';
+      } else if (isActive || isDone || isError) {
         const issueLink = cyl.issueNumber != null
           ? \`<a class="gh-link" href="\${GITHUB_BASE_URL}/issues/\${cyl.issueNumber}" target="_blank" rel="noopener noreferrer">#\${cyl.issueNumber}</a>\`
           : '';
@@ -1457,6 +1473,15 @@ class DashboardUI {
       case 'claude-thinking':
         this.handleClaudeThinking(message);
         break;
+      case 'shutdown-requested':
+        this.handleShutdownRequested(message);
+        break;
+      case 'engine-shutdown':
+        this.handleEngineShutdown(message);
+        break;
+      case 'app-shutdown':
+        this.handleAppShutdown(message);
+        break;
       default:
         this.addEventToStream(\`[EVENT] \${message.type}\`, -1, 'info');
     }
@@ -1579,6 +1604,40 @@ class DashboardUI {
         el.scrollTop = el.scrollHeight;
       }
     }
+  }
+
+  handleShutdownRequested(message) {
+    this.shutdownRequested = true;
+    const header = document.getElementById('panel-a-header');
+    if (header) header.textContent = \`⚙ \${this.maxConcurrency}-CYLINDER ENGINE · SHUTTING DOWN\`;
+    this.addEventToStream('⏹ Shutdown requested — engines will stop after current cycle', -1, 'warning');
+  }
+
+  handleEngineShutdown(message) {
+    const engineIndex = message.data.engineIndex;
+    if (engineIndex !== undefined && this.cylinders[engineIndex]) {
+      this.cylinders[engineIndex].status = 'shutdown';
+      this.cylinders[engineIndex].thinkingLines = [];
+      this.renderPanelA();
+    }
+    this.addEventToStream(
+      \`⏹ Engine \${(engineIndex ?? 0) + 1} shut down\`,
+      engineIndex !== undefined ? engineIndex : -1, 'warning'
+    );
+  }
+
+  handleAppShutdown(message) {
+    this.appShutdown = true;
+    const header = document.getElementById('panel-a-header');
+    if (header) header.textContent = \`⚙ \${this.maxConcurrency}-CYLINDER ENGINE · SHUTDOWN\`;
+    const statusEl = document.getElementById('connection-status');
+    const textEl = document.getElementById('connection-text');
+    if (statusEl && textEl) {
+      statusEl.classList.add('disconnected');
+      statusEl.style.cssText = 'background:rgba(255,102,0,0.12);border-color:#ff6600;color:#ff6600;';
+      textEl.textContent = '⏹ SHUTDOWN';
+    }
+    this.addEventToStream('⏹ Vibrator shutdown complete', -1, 'warning');
   }
 
   handleWorkflowApproval(message) {
@@ -1889,6 +1948,7 @@ class DashboardUI {
   }
 
   updateConnectionStatus(connected) {
+    if (this.appShutdown) return;
     const statusEl = document.getElementById('connection-status');
     const textEl   = document.getElementById('connection-text');
     if (!statusEl || !textEl) return;

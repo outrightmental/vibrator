@@ -366,6 +366,7 @@ async function runEngineLoop(
   planningMutex: PlanningMutex,
   claimedActions: Set<string>,
   pollingState: PollingState,
+  shutdownSignal: { requested: boolean },
 ): Promise<void> {
   const repo = `${config.owner}/${config.repo}`;
   const gitHubClient = new GitHubClient({
@@ -394,6 +395,12 @@ async function runEngineLoop(
   let iterationNumber = 0;
 
   do {
+    if (shutdownSignal.requested) {
+      globalEventEmitter.emit("engine-shutdown", { engineIndex });
+      write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
+      return;
+    }
+
     const cycleStart = Date.now();
     iterationNumber++;
 
@@ -603,7 +610,7 @@ async function runEngineLoop(
 
       const pollIntervalMs = 10000;
       const waitStart = Date.now();
-      while (Date.now() - waitStart < remainingMs) {
+      while (Date.now() - waitStart < remainingMs && !shutdownSignal.requested) {
         const timeLeft = remainingMs - (Date.now() - waitStart);
         if (timeLeft <= 0) break;
 
@@ -702,15 +709,43 @@ async function main(): Promise<void> {
     lastSnapshot: null,
     seenCommitHashes: new Set<string>(),
   };
+  const shutdownSignal = { requested: false };
+
+  // Listen for Escape key on the console to trigger graceful shutdown
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", (chunk: Buffer) => {
+      if (chunk[0] === 0x03) {
+        // Ctrl+C — exit immediately (raw mode swallows SIGINT)
+        process.exit(0);
+      }
+      if (chunk[0] === 0x1b && chunk.length === 1 && !shutdownSignal.requested) {
+        shutdownSignal.requested = true;
+        process.stdin.pause();
+        process.stdin.setRawMode(false);
+        blank();
+        write("Escape key pressed. Will shutdown engines and quit after work finishes.");
+        globalEventEmitter.emit("shutdown-requested", {});
+      }
+    });
+  }
 
   const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
-    runEngineLoop(config, i, planningMutex, claimedActions, pollingState),
+    runEngineLoop(config, i, planningMutex, claimedActions, pollingState, shutdownSignal),
   );
 
   await Promise.all(engines);
 
   blank();
-  write(`Done (--once mode). Exiting.`);
+  if (shutdownSignal.requested) {
+    write("All engines shut down. Exiting.");
+    globalEventEmitter.emit("app-shutdown", {});
+    // Give the dashboard a moment to deliver the event to connected browsers
+    await delay(500);
+  } else {
+    write(`Done (--once mode). Exiting.`);
+  }
   if (dashboardReady) {
     dashboard.close();
   }
