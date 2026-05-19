@@ -224,6 +224,8 @@ interface Config {
   owner: string;
   repo: string;
   claudeModel: string | undefined;
+  /** Model used for commit message generation. Defaults to claude-haiku when unset. */
+  claudeCommitModel: string | undefined;
   maxConcurrency: number;
   intervalMs: number;
   dashboardPort: number;
@@ -271,6 +273,7 @@ function parseArgs(argv: string[]): Config {
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
   const claudeModel = process.env.CLAUDE_MODEL;
+  const claudeCommitModel = process.env.CLAUDE_COMMIT_MODEL;
   const claudeAccountDirs = process.env.CLAUDE_ACCOUNTS
     ? parseClaudeAccountsEnv(process.env.CLAUDE_ACCOUNTS)
     : [];
@@ -294,6 +297,7 @@ function parseArgs(argv: string[]): Config {
     owner,
     repo,
     claudeModel,
+    claudeCommitModel,
     maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
     intervalMs: Number.isNaN(intervalMs) ? 60000 : intervalMs,
     dashboardPort: Number.isNaN(dashboardPort) ? 3000 : dashboardPort,
@@ -327,6 +331,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
 
   const claudeAgentClient = createClaudeAgentClient({
     ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
+    ...(config.claudeCommitModel !== undefined ? { claudeCommitModel: config.claudeCommitModel } : {}),
     ...(accountManager !== undefined ? { accountManager } : {}),
   });
 
