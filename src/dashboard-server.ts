@@ -1353,6 +1353,7 @@ class DashboardUI {
     const numEl = document.getElementById('iteration-number');
     if (numEl) numEl.textContent = this.iterationNumber;
 
+    this.nextCycleTime = null;
     const container = document.getElementById('countdown-container');
     const label = document.getElementById('countdown-label');
     const timer = document.getElementById('countdown-timer');
