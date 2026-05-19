@@ -29,6 +29,7 @@ export interface ActionGitHubClient {
   }): Promise<Array<{ name: string; logExcerpt: string }>>;
   cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
   postComment(pullRequestNumber: number, body: string): Promise<void>;
+  listPullRequestComments(pullRequestNumber: number): Promise<Array<{ author: string; body: string; createdAt: string }>>;
 }
 
 export interface ActionClaudeAgentClient {
@@ -56,6 +57,7 @@ export interface ActionClaudeAgentClient {
     issueNumber?: number;
     issueTitle?: string;
     issueBody?: string;
+    userComments?: ReadonlyArray<{ author: string; body: string; createdAt: string }>;
   }): Promise<{ madeChanges: boolean; headSha: string }>;
   resolveMergeConflicts(params: {
     owner: string;
@@ -63,6 +65,7 @@ export interface ActionClaudeAgentClient {
     pullRequestNumber: number;
     headRefName: string;
     baseRefName: string;
+    userComments?: ReadonlyArray<{ author: string; body: string; createdAt: string }>;
   }): Promise<{ headSha: string }>;
   addressFailingChecks(params: {
     owner: string;
@@ -71,6 +74,7 @@ export interface ActionClaudeAgentClient {
     headRefName: string;
     baseRefName: string;
     failingChecks: ReadonlyArray<{ name: string; logExcerpt: string }>;
+    userComments?: ReadonlyArray<{ author: string; body: string; createdAt: string }>;
   }): Promise<{ headSha: string }>;
   generateFinalDescription(params: {
     owner: string;
@@ -196,6 +200,7 @@ export async function executeAction(
         action.issueNumber !== undefined
           ? context.issues.find((i) => i.number === action.issueNumber)
           : undefined;
+      const userComments = await gitHubClient.listPullRequestComments(pullRequest.number);
       const result = await claudeAgentClient.selfReview({
         owner: context.owner,
         repo: context.repo,
@@ -209,6 +214,7 @@ export async function executeAction(
           issueTitle: issue.title,
           issueBody: issue.body,
         }),
+        userComments,
       });
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
@@ -252,10 +258,13 @@ export async function executeAction(
           `because CI checks have been pending for ${pendingDesc}, exceeding the ${thresholdMin}-minute timeout threshold.`,
         );
       }
-      const failingChecks = await gitHubClient.listFailingCheckRuns({
-        pullRequestNumber: pullRequest.number,
-        headSha: pullRequest.headSha,
-      });
+      const [failingChecks, userComments] = await Promise.all([
+        gitHubClient.listFailingCheckRuns({
+          pullRequestNumber: pullRequest.number,
+          headSha: pullRequest.headSha,
+        }),
+        gitHubClient.listPullRequestComments(pullRequest.number),
+      ]);
       const update = await claudeAgentClient.addressFailingChecks({
         owner: context.owner,
         repo: context.repo,
@@ -263,6 +272,7 @@ export async function executeAction(
         headRefName: pullRequest.headRefName,
         baseRefName: pullRequest.baseRefName,
         failingChecks,
+        userComments,
       });
       const checksNoCommits = update.headSha === pullRequest.headSha;
       if (checksNoCommits) {
@@ -289,12 +299,14 @@ export async function executeAction(
 
     case "resolve-conflicts": {
       const pullRequest = findPullRequest(context, action.pullRequestNumber);
+      const userComments = await gitHubClient.listPullRequestComments(pullRequest.number);
       const update = await claudeAgentClient.resolveMergeConflicts({
         owner: context.owner,
         repo: context.repo,
         pullRequestNumber: pullRequest.number,
         headRefName: pullRequest.headRefName,
         baseRefName: pullRequest.baseRefName,
+        userComments,
       });
       const conflictsNoCommits = update.headSha === pullRequest.headSha;
       if (conflictsNoCommits) {

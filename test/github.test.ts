@@ -245,3 +245,111 @@ test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fai
     "Expected a warning about parent numbers being unavailable",
   );
 });
+
+test("listPullRequestComments filters out the authenticated bot's own comments", async (t) => {
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = String(_url);
+
+      // GraphQL viewer query for authenticated login
+      if (url.includes("/graphql") && String(init?.body ?? "").includes("viewer")) {
+        return new Response(
+          JSON.stringify({ data: { viewer: { login: "vibrator-bot" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // REST comments endpoint
+      if (url.includes("/issues/42/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              user: { login: "vibrator-bot" },
+              body: "Reviewed code, no issues found.",
+              created_at: "2024-03-01T10:00:00Z",
+            },
+            {
+              user: { login: "alice" },
+              body: "Please add more tests",
+              created_at: "2024-03-02T09:00:00Z",
+            },
+            {
+              user: { login: "bob" },
+              body: "Consider edge cases",
+              created_at: "2024-03-03T08:00:00Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+
+  t.after(() => {
+    fetchMock.mock.restore();
+  });
+
+  const client = new GitHubClient({
+    owner: "outrightmental",
+    repo: "testrepo",
+    token: "token",
+  });
+
+  const comments = await client.listPullRequestComments(42);
+
+  // The bot's own comment is filtered out
+  assert.equal(comments.length, 2);
+  assert.equal(comments[0]?.author, "alice");
+  assert.equal(comments[0]?.body, "Please add more tests");
+  assert.equal(comments[1]?.author, "bob");
+  assert.equal(comments[1]?.body, "Consider edge cases");
+});
+
+test("listPullRequestComments returns empty array when all comments are from the bot", async (t) => {
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = String(_url);
+
+      if (url.includes("/graphql") && String(init?.body ?? "").includes("viewer")) {
+        return new Response(
+          JSON.stringify({ data: { viewer: { login: "vibrator-bot" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (url.includes("/issues/10/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              user: { login: "vibrator-bot" },
+              body: "Addressed failing CI checks.",
+              created_at: "2024-03-01T10:00:00Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+
+  t.after(() => {
+    fetchMock.mock.restore();
+  });
+
+  const client = new GitHubClient({
+    owner: "outrightmental",
+    repo: "testrepo",
+    token: "token",
+  });
+
+  const comments = await client.listPullRequestComments(10);
+  assert.equal(comments.length, 0);
+});
