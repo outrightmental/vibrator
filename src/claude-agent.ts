@@ -790,7 +790,7 @@ function buildPushRecoveryBackupBranchName(branch: string): string {
   return `vibrator/recovery-${sanitizedBranch || "branch"}-${Date.now()}`;
 }
 
-const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
+export const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
 
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
