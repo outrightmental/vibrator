@@ -781,7 +781,7 @@ test("buildPlan never starts issues blocked with colon-form dependency syntax", 
       createIssue({
         number: 3,
         createdAt: "2024-01-03T00:00:00.000Z",
-        body: "depends on: #1",
+        body: "",
       }),
       createIssue({
         number: 4,
@@ -805,7 +805,7 @@ test("buildPlan never starts issues blocked with colon-form dependency syntax", 
   );
   assert.ok(
     !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 3),
-    "Issue 3 must not start while blocked via colon syntax",
+    "Issue 3 must not start while blocked by issue 4 via `blocks: #3` syntax",
   );
 });
 
