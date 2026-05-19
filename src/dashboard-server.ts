@@ -206,7 +206,7 @@ body {
 
 .countdown {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   gap: 3px;
 }
@@ -219,6 +219,8 @@ body {
 }
 
 .countdown-timer {
+  margin-top: -6px !important;
+  margin-left: 6px !important;
   font-size: 22px;
   font-weight: 700;
   color: #00ff88;
