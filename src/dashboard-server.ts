@@ -1175,7 +1175,7 @@ class DashboardUI {
       row.innerHTML = \`
         <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
         <div class="cylinder-info">
-          <div class="cylinder-label">\${escHtml(modelLabel)}</div>
+          <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
           <div class="cylinder-status-text">\${statusHTML}</div>
         </div>
         <div class="cylinder-spinner"></div>
