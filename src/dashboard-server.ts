@@ -1644,11 +1644,11 @@ class DashboardUI {
       }
 
       const reason = typeof message.data.reason === 'string' ? message.data.reason : '';
-      const nextCycleInMs = typeof message.data.nextCycleInMs === 'number' ? message.data.nextCycleInMs : null;
+      const nextCycleAtMs = typeof message.data.nextCycleAtMs === 'number' ? message.data.nextCycleAtMs : null;
       const rateLimitedUntilMs = typeof message.data.rateLimitedUntilMs === 'number' ? message.data.rateLimitedUntilMs : null;
 
       cyl.idleStatusText = reason || 'idle';
-      cyl.nextCycleAtMs = nextCycleInMs !== null ? Date.now() + nextCycleInMs : null;
+      cyl.nextCycleAtMs = nextCycleAtMs;
       cyl.rateLimitedUntilMs = rateLimitedUntilMs;
 
       cyl.status = 'idle';

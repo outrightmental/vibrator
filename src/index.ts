@@ -631,7 +631,7 @@ async function runEngineLoop(
     if (remainingMs > 0) {
       globalEventEmitter.emit("engine-idle", {
         engineIndex,
-        nextCycleInMs: remainingMs,
+        nextCycleAtMs: Date.now() + remainingMs,
         ...(cycleRateLimitedUntilMs !== undefined
           ? { rateLimitedUntilMs: cycleRateLimitedUntilMs }
           : {}),
