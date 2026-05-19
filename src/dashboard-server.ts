@@ -227,6 +227,26 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.countdown.state-waiting .countdown-label {
+  color: #ffcc00;
+}
+
+.countdown.state-waiting .countdown-timer {
+  color: #ffcc00;
+  text-shadow: 0 0 15px rgba(255, 204, 0, 0.8);
+}
+
+.countdown.state-working .countdown-label {
+  color: #00ff88;
+  font-size: 12px;
+}
+
+.countdown.state-working .countdown-timer {
+  font-size: 32px;
+  color: #00ff88;
+  text-shadow: 0 0 20px rgba(0, 255, 136, 1), 0 0 40px rgba(0, 255, 136, 0.5);
+}
+
 
 .main-content {
   flex: 1;
@@ -1002,8 +1022,8 @@ class DashboardUI {
           <div class="iteration-label">Iteration</div>
           <div class="iteration-number" id="iteration-number">--</div>
         </div>
-        <div class="countdown">
-          <div class="countdown-label">Next Cycle In</div>
+        <div class="countdown" id="countdown-container">
+          <div class="countdown-label" id="countdown-label">Next Cycle In</div>
           <div class="countdown-timer" id="countdown-timer">--:--</div>
         </div>
       </div>
@@ -1332,6 +1352,13 @@ class DashboardUI {
     this.iterationNumber = message.data.iterationNumber;
     const numEl = document.getElementById('iteration-number');
     if (numEl) numEl.textContent = this.iterationNumber;
+
+    const container = document.getElementById('countdown-container');
+    const label = document.getElementById('countdown-label');
+    const timer = document.getElementById('countdown-timer');
+    if (container) { container.classList.remove('state-waiting'); container.classList.add('state-working'); }
+    if (label) label.textContent = 'Working';
+    if (timer) timer.textContent = '●';
     const bannerIt = document.getElementById('banner-iteration');
     if (bannerIt) bannerIt.textContent = \`Iteration \${this.iterationNumber}\`;
 
@@ -1445,6 +1472,11 @@ class DashboardUI {
     this.nextCycleTime = message.data.nextCycleTime
       ? new Date(message.data.nextCycleTime).getTime()
       : new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
+
+    const container = document.getElementById('countdown-container');
+    const label = document.getElementById('countdown-label');
+    if (container) { container.classList.remove('state-working'); container.classList.add('state-waiting'); }
+    if (label) label.textContent = 'Next Cycle In';
   }
 
   handleBroadcastEvent(message) {
