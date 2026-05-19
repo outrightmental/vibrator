@@ -1224,7 +1224,7 @@ class DashboardUI {
         <div class="cylinder-info">
           <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
           <div class="cylinder-status-text">\${statusHTML}</div>
-          <div class="cylinder-thinking-stream\${hasThinking ? ' active' : ''}" id="thinking-stream-\${cyl.index - 1}">\${thinkingLines.map(escHtml).join('\n')}</div>
+          <div class="cylinder-thinking-stream\${hasThinking ? ' active' : ''}" id="thinking-stream-\${cyl.index - 1}">\${thinkingLines.map(escHtml).join('\\n')}</div>
         </div>
         <div class="cylinder-spinner"></div>
       \`;
@@ -1564,7 +1564,7 @@ class DashboardUI {
       // Update the stream element in-place rather than re-rendering the whole panel
       const el = document.getElementById(\`thinking-stream-\${engineIndex}\`);
       if (el) {
-        el.textContent = cyl.thinkingLines.join('\n');
+        el.textContent = cyl.thinkingLines.join('\\n');
         el.classList.add('active');
         el.scrollTop = el.scrollHeight;
       }
