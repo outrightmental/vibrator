@@ -6,11 +6,15 @@ import { globalEventEmitter, type DashboardEvent } from "./event-emitter.js";
 interface DashboardServerConfig {
   port: number;
   host?: string;
+  owner: string;
+  repo: string;
 }
 
 export class DashboardServer {
   private port: number;
   private host: string;
+  private owner: string;
+  private repo: string;
   private server: http.Server;
   private wss: WebSocketServer;
   private htmlContent: string = "";
@@ -19,6 +23,8 @@ export class DashboardServer {
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
     this.host = config.host ?? "localhost";
+    this.owner = config.owner;
+    this.repo = config.repo;
 
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
     this.wss = new WebSocketServer({ server: this.server });
@@ -76,7 +82,7 @@ export class DashboardServer {
 
   private async generateHTML(): Promise<string> {
     const css = await this.generateCSS();
-    const js = this.generateJS();
+    const js = this.generateJS(this.owner, this.repo);
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -904,11 +910,84 @@ body {
 .stat  { display: flex; gap: 8px; }
 .stat-value { font-weight: 700; color: #ffff00; }
 
+/* ── GitHub links ── */
+a.gh-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+a.gh-link:hover {
+  text-decoration: underline;
+  filter: brightness(1.4);
+}
+.header-repo a.gh-link {
+  color: #ff00ff;
+}
+.pill-number a.gh-link {
+  color: inherit;
+  text-decoration: none;
+}
+.pill-number a.gh-link:hover {
+  text-decoration: underline;
+  filter: brightness(1.4);
+}
+
+/* ── Cycle start banner ── */
+.hidden { display: none !important; }
+
+.cycle-banner {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1000;
+  background: rgba(10, 14, 39, 0.97);
+  border: 3px solid #ff00ff;
+  padding: 36px 56px;
+  text-align: center;
+  border-radius: 8px;
+  box-shadow: 0 0 40px rgba(255, 0, 255, 0.6), inset 0 0 40px rgba(255, 0, 255, 0.08);
+  animation: bannerPop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.cycle-banner-text {
+  font-size: 32px;
+  font-weight: 700;
+  color: #ff00ff;
+  text-shadow: 0 0 20px rgba(255, 0, 255, 1);
+  margin: 0;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.cycle-banner-subtext {
+  font-size: 16px;
+  color: #00ff88;
+  margin-top: 12px;
+  text-shadow: 0 0 10px rgba(0, 255, 136, 0.8);
+}
+
+@keyframes bannerPop {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+  70%  { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes bannerFadeOut {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.cycle-banner.fade-out {
+  animation: bannerFadeOut 0.8s ease-out forwards;
+}
 `;
   }
 
-  private generateJS(): string {
+  private generateJS(owner: string, repo: string): string {
     return `
+const GITHUB_BASE_URL = 'https://github.com/${owner}/${repo}';
+
 // Palette of 6 distinct neon colours used to colour-coordinate pills with
 // worker threads. Colour slot = issueNumber % PILL_PALETTE.length, which
 // keeps the assignment stable for the lifetime of the SDLC cycle.
@@ -996,7 +1075,8 @@ class DashboardUI {
     this.appContainer.innerHTML = \`
       <div class="header">
         <div>
-          <div class="header-title">⚡ VIBRATOR <span>AI SDLC BROADCAST</span></div>
+          <div class="header-title"><a class="gh-link" href="\${GITHUB_BASE_URL}" target="_blank" rel="noopener noreferrer">⚡ VIBRATOR</a> <span>AI SDLC BROADCAST</span></div>
+          <div class="header-repo"><a class="gh-link" href="\${GITHUB_BASE_URL}" target="_blank" rel="noopener noreferrer">\${GITHUB_BASE_URL.replace('https://github.com/', '')}</a></div>
         </div>
       </div>
       <div class="main-content">
@@ -1059,29 +1139,35 @@ class DashboardUI {
       const isDone   = cyl.status === 'done';
       const isError  = cyl.status === 'error';
 
-      let statusText = 'idle';
+      let statusHTML = 'idle';
       if (isActive || isDone || isError) {
+        const issueLink = cyl.issueNumber != null
+          ? \`<a class="gh-link" href="\${GITHUB_BASE_URL}/issues/\${cyl.issueNumber}" target="_blank" rel="noopener noreferrer">#\${cyl.issueNumber}</a>\`
+          : '';
+        const prLink = cyl.prNumber != null
+          ? \`<a class="gh-link" href="\${GITHUB_BASE_URL}/pull/\${cyl.prNumber}" target="_blank" rel="noopener noreferrer">PR #\${cyl.prNumber}</a>\`
+          : '';
         switch (cyl.actionType) {
           case 'start-implementation':
-            statusText = \`implementing #\${cyl.issueNumber}\`;
+            statusHTML = \`implementing \${issueLink}\`;
             break;
           case 'self-review':
-            statusText = \`reviewing PR #\${cyl.prNumber}\`;
+            statusHTML = \`reviewing \${prLink}\`;
             break;
           case 'address-failing-checks':
-            statusText = \`fixing checks PR #\${cyl.prNumber}\`;
+            statusHTML = \`fixing checks \${prLink}\`;
             break;
           case 'squash-merge':
-            statusText = \`merging PR #\${cyl.prNumber}\`;
+            statusHTML = \`merging \${prLink}\`;
             break;
           case 'resolve-conflicts':
-            statusText = \`resolving conflicts PR #\${cyl.prNumber}\`;
+            statusHTML = \`resolving conflicts \${prLink}\`;
             break;
           default:
-            statusText = cyl.actionType || 'working';
+            statusHTML = escHtml(cyl.actionType || 'working');
         }
-        if (isDone)  statusText = \`✓ \${statusText}\`;
-        if (isError) statusText = \`✗ \${statusText}\`;
+        if (isDone)  statusHTML = \`✓ \${statusHTML}\`;
+        if (isError) statusHTML = \`✗ \${statusHTML}\`;
       }
 
       const modelLabel = formatModelName(cyl.model) || \`CYL \${cyl.index}\`;
@@ -1089,8 +1175,8 @@ class DashboardUI {
       row.innerHTML = \`
         <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
         <div class="cylinder-info">
-          <div class="cylinder-label">\${escHtml(modelLabel + cycleLabel)}</div>
-          <div class="cylinder-status-text">\${escHtml(statusText)}</div>
+          <div class="cylinder-label">\${escHtml(modelLabel)}</div>
+          <div class="cylinder-status-text">\${statusHTML}</div>
         </div>
         <div class="cylinder-spinner"></div>
       \`;
@@ -1650,11 +1736,12 @@ class DashboardUI {
   }
 
   pillHTML(pair) {
+    const issueUrl = GITHUB_BASE_URL + '/issues/' + pair.issue.number;
     return \`
       <div class="pill-issue-half">
         <div class="pill-label">Issue</div>
         <div class="pill-row">
-          <span class="pill-number">#\${pair.issue.number}</span>
+          <span class="pill-number"><a class="gh-link" href="\${issueUrl}" target="_blank" rel="noopener noreferrer">#\${pair.issue.number}</a></span>
           <span class="pill-badge">\${pair.issue.state.toUpperCase()}</span>
           <span class="pill-title">\${this.esc(pair.issue.title)}</span>
         </div>
@@ -1670,6 +1757,7 @@ class DashboardUI {
       }
       return \`<div class="pill-label">PR</div><div class="pill-row"><span class="pill-title">—</span></div>\`;
     }
+    const prUrl = GITHUB_BASE_URL + '/pull/' + pair.pr.number;
     const badges = [];
     if (pair.pr.draft) badges.push('DRAFT');
     if (pair.prPhase === 'completed') badges.push('MERGED');
@@ -1681,7 +1769,7 @@ class DashboardUI {
     return \`
       <div class="pill-label">PR</div>
       <div class="pill-row">
-        <span class="pill-number">#\${pair.pr.number}</span>
+        <span class="pill-number"><a class="gh-link" href="\${prUrl}" target="_blank" rel="noopener noreferrer">#\${pair.pr.number}</a></span>
         \${badgeHTML}
         <span class="pill-title">\${this.esc(pair.pr.title)}</span>
       </div>
