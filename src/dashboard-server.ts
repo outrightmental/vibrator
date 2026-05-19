@@ -1342,23 +1342,19 @@ class DashboardUI {
 
   // ── Event handlers ──────────────────────────────────────────────────────
   handleIterationStart(message) {
-    const n = message.data.maxConcurrency || this.maxConcurrency;
     const engineIndex = message.data.engineIndex !== undefined ? message.data.engineIndex : 0;
     const iterationNumber = message.data.iterationNumber || 1;
 
-    this.iterationNumber = message.data.iterationNumber;
-    const numEl = document.getElementById('iteration-number');
-    if (numEl) numEl.textContent = this.iterationNumber;
+    if (this.cylinders[engineIndex]) {
+      this.cylinders[engineIndex].iterationNumber = iterationNumber;
+    }
 
-    this.nextCycleTime = null;
     const container = document.getElementById('countdown-container');
     const label = document.getElementById('countdown-label');
     const timer = document.getElementById('countdown-timer');
     if (container) { container.classList.remove('state-waiting'); container.classList.add('state-working'); }
     if (label) label.textContent = 'Working';
     if (timer) timer.textContent = '●';
-    const bannerIt = document.getElementById('banner-iteration');
-    if (bannerIt) bannerIt.textContent = \`Iteration \${this.iterationNumber}\`;
 
     this.renderPanelA();
     this.addEventToStream(

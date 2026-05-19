@@ -621,9 +621,6 @@ async function main(): Promise<void> {
     const gitHubClient = new GitHubClient({ owner: config.owner, repo: config.repo, token });
     const sessionStore = new FileSessionStore(config.sessionStorePath);
     const snapshot = await loadSnapshot(gitHubClient, sessionStore);
-    const preReconcileActiveSessions = snapshot.agentSessions.filter(
-      (s) => s.status === "in_progress",
-    );
 
     section("Reconciliation");
     const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
@@ -631,7 +628,6 @@ async function main(): Promise<void> {
     for (const event of reconcileEvents) {
       note(`◦ ${describeSession(event.session, gitHubClient)}`, 2);
     }
-    void preReconcileActiveSessions; // referenced above for count context
   }
 
   // ── Launch N independent engine loops ─────────────────────────────────────
