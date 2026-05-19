@@ -19,6 +19,7 @@ export class DashboardServer {
   private wss: WebSocketServer;
   private htmlContent: string = "";
   private maxConcurrency: number = 3; // Default value for maxConcurrency
+  private cachedEvents: Map<string, DashboardEvent> = new Map();
 
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
@@ -64,9 +65,34 @@ export class DashboardServer {
     ws.on("close", () => {
       // Connection closed
     });
+
+    // Immediately replay current state so a reloaded browser sees live data
+    // without waiting for the next state-change event.
+    this.sendCachedState(ws);
+  }
+
+  private sendCachedState(ws: WebSocket): void {
+    if (ws.readyState !== 1) return;
+    for (const event of this.cachedEvents.values()) {
+      ws.send(JSON.stringify(event));
+    }
+  }
+
+  private updateStateCache(event: DashboardEvent): void {
+    const { type, data } = event;
+    if (type === "lifecycle-update" || type === "snapshot-update") {
+      this.cachedEvents.set(type, event);
+    } else if (type === "action-start" || type === "action-complete" || type === "action-error") {
+      const cylinderIdx = ((data.actionIndex as number) || 1) - 1;
+      this.cachedEvents.set(`cylinder-${cylinderIdx}`, event);
+    } else if (type === "iteration-start") {
+      const engineIndex = (data.engineIndex as number) ?? 0;
+      this.cachedEvents.set(`cylinder-${engineIndex}`, event);
+    }
   }
 
   private broadcastEvent(event: DashboardEvent): void {
+    this.updateStateCache(event);
     const message = JSON.stringify(event);
     for (const client of this.wss.clients) {
       if (client.readyState === 1) {
