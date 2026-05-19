@@ -709,6 +709,7 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI", async ()
         pullRequestNumber: prNumber,
         pullRequestTitle: "Test PR",
         pullRequestBody: "Body",
+        headRefName: prBranch,
         baseRefName: "main",
         closingIssueNumbers: [],
       });
