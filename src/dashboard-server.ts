@@ -2079,8 +2079,7 @@ class DashboardUI {
       }
       const titleEl = issueHalf.querySelector('.pill-title');
       if (titleEl) {
-        const newTitle = this.esc(pair.issue.title);
-        if (titleEl.innerHTML !== newTitle) titleEl.innerHTML = newTitle;
+        if (titleEl.textContent !== pair.issue.title) titleEl.textContent = pair.issue.title;
       }
     }
   }
