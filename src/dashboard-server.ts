@@ -550,6 +550,8 @@ body {
   align-items: flex-start;
   gap: 10px;
   padding: 10px 12px;
+  height: 160px;
+  overflow: hidden;
   border-bottom: 1px solid rgba(0, 255, 136, 0.08);
   transition: background 0.3s ease, border-color 0.3s ease;
 }
@@ -625,6 +627,9 @@ body {
 .cylinder-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
 }
 
 .cylinder-label {
@@ -649,21 +654,21 @@ body {
 }
 
 .cylinder-thinking-stream {
-  margin-top: 4px;
-  max-height: 80px;
+  margin-top: 6px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   font-size: 9px;
   font-family: monospace;
-  color: rgba(0, 255, 136, 0.55);
+  color: rgba(0, 255, 136, 0.25);
   line-height: 1.4;
   word-break: break-word;
   white-space: pre-wrap;
-  display: none;
 }
 
 .cylinder-thinking-stream.active {
-  display: block;
+  color: rgba(0, 255, 136, 0.65);
 }
 
 .cylinder-thinking-stream::-webkit-scrollbar {
@@ -1628,9 +1633,10 @@ class DashboardUI {
     const excerpt = message.data.excerpt || '';
     if (engineIndex !== undefined && this.cylinders[engineIndex]) {
       const cyl = this.cylinders[engineIndex];
-      const MAX_LINES = 6;
+      const MAX_LINES = 200;
       cyl.thinkingLines = cyl.thinkingLines || [];
-      cyl.thinkingLines.push(excerpt);
+      const newLines = excerpt.split('\\n').filter(l => l.trim().length > 0);
+      cyl.thinkingLines.push(...newLines);
       if (cyl.thinkingLines.length > MAX_LINES) {
         cyl.thinkingLines = cyl.thinkingLines.slice(-MAX_LINES);
       }

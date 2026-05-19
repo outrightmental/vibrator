@@ -91,9 +91,9 @@ test("extractImplementationPayload returns undefined for malformed JSON", () => 
   assert.equal(extractImplementationPayload(stdout), undefined);
 });
 
-test("extractThinkingPreview returns the last non-empty line", () => {
+test("extractThinkingPreview returns all non-empty lines joined with newlines", () => {
   const chunk = "Reading file\nAnalyzing code\nFound the issue";
-  assert.equal(extractThinkingPreview(chunk), "Found the issue");
+  assert.equal(extractThinkingPreview(chunk), "Reading file\nAnalyzing code\nFound the issue");
 });
 
 test("extractThinkingPreview strips ANSI escape sequences", () => {
@@ -104,7 +104,7 @@ test("extractThinkingPreview strips ANSI escape sequences", () => {
 
 test("extractThinkingPreview strips carriage returns", () => {
   const chunk = "line one\r\nline two\r\n";
-  assert.equal(extractThinkingPreview(chunk), "line two");
+  assert.equal(extractThinkingPreview(chunk), "line one\nline two");
 });
 
 test("extractThinkingPreview returns empty string for empty input", () => {
@@ -115,11 +115,11 @@ test("extractThinkingPreview returns empty string for whitespace-only input", ()
   assert.equal(extractThinkingPreview("   \n   \n"), "");
 });
 
-test("extractThinkingPreview truncates lines longer than 120 characters", () => {
-  const longLine = "x".repeat(200);
+test("extractThinkingPreview truncates individual lines longer than 200 characters", () => {
+  const longLine = "x".repeat(250);
   const result = extractThinkingPreview(longLine);
-  // 117 kept chars + 1 ellipsis char = 118
-  assert.equal(result.length, 118);
+  // 197 kept chars + 1 ellipsis char = 198
+  assert.equal(result.length, 198);
   assert.ok(result.endsWith("…"));
 });
 
