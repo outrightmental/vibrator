@@ -410,7 +410,18 @@ export function buildPlan(
   const pullRequests = sortByCreatedAt(
     snapshot.pullRequests.filter((pullRequest) => pullRequest.state === "open"),
   );
+  const openIssueNumbers = new Set(issues.map((issue) => issue.number));
   const blockedIssueIndex = buildBlockedIssueIndex(issues);
+
+  // Only expose open blockers to the dashboard — a closed issue no longer blocks anything.
+  const blockedIssueNumbers: Record<number, number[]> = {};
+  for (const [issueNum, blockers] of Object.entries(blockedIssueIndex)) {
+    const openBlockers = blockers.filter((b) => openIssueNumbers.has(b));
+    if (openBlockers.length > 0) {
+      blockedIssueNumbers[Number(issueNum)] = openBlockers;
+    }
+  }
+
   const pullRequestIndex = buildPullRequestIndex(pullRequests);
 
   // Build a map of issue number → project status for use in planPullRequestAction.
@@ -435,7 +446,6 @@ export function buildPlan(
   }
 
   const activePullRequestCount = pullRequests.length;
-  const openIssueNumbers = new Set(issues.map((issue) => issue.number));
   const implementationSessionsWithoutPullRequests = countImplementationSessionsWithoutPullRequests(
     snapshot.agentSessions,
     openIssueNumbers,
@@ -447,7 +457,7 @@ export function buildPlan(
   );
 
   if (remainingCapacity === 0) {
-    return { actions, blockedIssueNumbers: blockedIssueIndex };
+    return { actions, blockedIssueNumbers };
   }
 
   const unavailableIssueNumbers = new Set<number>();
@@ -503,5 +513,5 @@ export function buildPlan(
     actions.push({ type: "start-implementation", issueNumber: issue.number });
   }
 
-  return { actions, blockedIssueNumbers: blockedIssueIndex };
+  return { actions, blockedIssueNumbers };
 }
