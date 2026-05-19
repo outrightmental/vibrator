@@ -481,7 +481,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
       .filter((a) => a.type === "start-implementation")
       .map((a) => a.issueNumber),
   );
-  broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
+  broadcastLifecycleUpdate(snapshot, planningIssueNumbers, new Set(), plan.blockedIssueNumbers);
 
   section("Blocked issues");
   if (blockedEntries.length === 0) {

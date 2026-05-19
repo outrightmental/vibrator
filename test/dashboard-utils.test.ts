@@ -359,6 +359,64 @@ test("broadcastLifecycleUpdate: pairs are sorted in ascending issue-number order
   assert.deepEqual(pairs.map((p) => p.issue.number), [5, 17, 30]);
 });
 
+test("broadcastLifecycleUpdate: pairs are sorted active→planning→unblocked→blocked→completed", async () => {
+  const issues = [
+    makeIssue({ number: 1 }), // blocked absent
+    makeIssue({ number: 2 }), // unblocked absent
+    makeIssue({ number: 3 }), // active (has open PR)
+    makeIssue({ number: 4 }), // planning
+    makeIssue({ number: 5 }), // completed
+  ];
+  const pr3 = makePR({ number: 103, closingIssueNumbers: [3] });
+  const pr5 = makePR({ number: 105, closingIssueNumbers: [5] });
+  const snapshot = { issues, pullRequests: [pr3, pr5], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(
+    snapshot,
+    new Set([4]),        // planning
+    new Set([5]),        // completed
+    { 1: [10] },         // #1 blocked by #10
+  );
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number }; prPhase: string }>;
+  assert.deepEqual(
+    pairs.map((p) => p.issue.number),
+    [3, 4, 2, 1, 5],
+    "order: active, planning, unblocked absent, blocked, completed",
+  );
+});
+
+test("broadcastLifecycleUpdate: blocked absent issue has blockedByIssueNumbers populated", async () => {
+  const issue = makeIssue({ number: 8 });
+  const snapshot = { issues: [issue], pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), { 8: [2, 5] });
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ blockedByIssueNumbers?: number[] }>;
+  assert.deepEqual(pairs[0]!.blockedByIssueNumbers, [2, 5]);
+});
+
+test("broadcastLifecycleUpdate: unblocked absent issue has no blockedByIssueNumbers", async () => {
+  const issue = makeIssue({ number: 9 });
+  const snapshot = { issues: [issue], pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ blockedByIssueNumbers?: number[] }>;
+  assert.equal(pairs[0]!.blockedByIssueNumbers, undefined);
+});
+
+test("broadcastLifecycleUpdate: within same phase group, sort by ascending issue number", async () => {
+  const issues = [makeIssue({ number: 20 }), makeIssue({ number: 5 }), makeIssue({ number: 12 })];
+  const snapshot = { issues, pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), { 20: [1], 5: [1] });
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } }>;
+  // #12 is unblocked (first), then #5 and #20 are blocked (ascending)
+  assert.deepEqual(pairs.map((p) => p.issue.number), [12, 5, 20]);
+});
+
 test("broadcastLifecycleUpdate: colorIndex equals issue.number modulo 6", async () => {
   const issues = [makeIssue({ number: 6 }), makeIssue({ number: 7 }), makeIssue({ number: 13 })];
   const snapshot = { issues, pullRequests: [], agentSessions: [] };
