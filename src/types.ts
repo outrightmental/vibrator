@@ -22,6 +22,13 @@ export interface Issue {
    * Undefined for top-level issues.
    */
   parentNumber?: number;
+  /** Label names applied to this issue. */
+  labels: string[];
+  /**
+   * The issue's status in the GitHub Project (e.g. "Ready", "In Progress",
+   * "In Review"). Only populated when project mode is active.
+   */
+  projectStatus?: string;
 }
 
 export interface PullRequest {
@@ -63,6 +70,12 @@ export interface PullRequest {
   closingIssueNumbers: number[];
   /** Linked issues (closing references + broader linked keywords). */
   linkedIssueNumbers: number[];
+  /**
+   * True when there are human PR comments newer than the last comment
+   * vibrator processed. Only set (true) in project mode when the latest
+   * completed session for this PR is `request-review`.
+   */
+  hasNewCommentsSinceLastRead?: boolean;
 }
 
 export type AgentSessionPhase =
@@ -70,7 +83,8 @@ export type AgentSessionPhase =
   | "self-review"
   | "address-failing-checks"
   | "resolve-conflicts"
-  | "squash-merge";
+  | "squash-merge"
+  | "request-review";
 
 export type AgentSessionStatus = "in_progress" | "completed" | "failed";
 
@@ -141,6 +155,13 @@ export type OrchestratorAction =
       pullRequestHeadRefName: string;
       closingIssueNumbers: number[];
       pullRequestBody: string;
+    }
+  | {
+      type: "request-review";
+      issueNumber: number | undefined;
+      pullRequestNumber: number;
+      /** Human reviewer logins to request review from. */
+      reviewers: string[];
     };
 
 export interface OrchestratorPlan {

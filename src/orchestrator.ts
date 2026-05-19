@@ -10,6 +10,18 @@ import type {
 /** Maximum time to wait for CI checks to complete before treating them as failed. */
 export const CHECKS_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
+/**
+ * Configuration for Human-in-the-Loop project mode.
+ * When provided to `buildPlan`, vibrator filters issues by project status,
+ * skips issues labelled "manual", never auto-merges, and instead requests
+ * human review after self-review passes.
+ */
+export interface ProjectModeConfig {
+  projectNumber: number;
+  /** GitHub login(s) to request review from when work is ready. */
+  reviewers: string[];
+}
+
 const BLOCKED_BY_PATTERN = /\b(?:blocked by|depends on)\s+#(\d+)\b/gi;
 const BLOCKS_PATTERN = /\bblocks\s+#(\d+)\b/gi;
 const CLOSING_ISSUE_KEYWORDS = ["close[sd]?", "fix(?:e[sd]?|es)?", "resolve[sd]?"] as const;
@@ -159,6 +171,8 @@ function planPullRequestAction(
   pullRequest: PullRequest,
   issueNumbers: readonly number[],
   agentSessions: AgentSession[],
+  projectMode?: ProjectModeConfig,
+  issueProjectStatuses?: ReadonlyMap<number, string>,
 ): OrchestratorAction | undefined {
   const primaryIssueNumber = issueNumbers[0];
 
@@ -228,6 +242,30 @@ function planPullRequestAction(
     return undefined;
   }
 
+  // In project mode, handle re-queue conditions after human review was requested.
+  if (projectMode && latestCompletedSession?.phase === "request-review") {
+    // PR converted to draft → human wants more work done.
+    const needsWork =
+      pullRequest.draft ||
+      pullRequest.hasNewCommentsSinceLastRead ||
+      // Issue moved back to "Ready" in the project board.
+      (actionIssueNumber !== undefined &&
+        issueProjectStatuses?.get(actionIssueNumber)?.toLowerCase() === "ready");
+
+    if (!needsWork) {
+      // Waiting for human review — nothing to do this iteration.
+      return undefined;
+    }
+    if (mergeGateAction !== "proceed") {
+      return mergeGateAction;
+    }
+    return withIssueNumber({
+      type: "self-review",
+      pullRequestNumber: pullRequest.number,
+      pullRequestHeadSha: pullRequest.headSha,
+    });
+  }
+
   // After a code-changing phase, check CI before the next self-review.
   if (
     latestCompletedSession?.phase === "implementation" ||
@@ -257,9 +295,21 @@ function planPullRequestAction(
       });
     }
 
-    // Self-review found nothing to change (clean pass). Check if the
-    // immediately preceding completed session was also a clean self-review.
-    // Two consecutive clean passes → squash-merge.
+    // Clean self-review. In project mode, one clean pass → request human review
+    // (never auto-merge).
+    if (projectMode) {
+      if (mergeGateAction !== "proceed") {
+        return mergeGateAction;
+      }
+      return withIssueNumber({
+        type: "request-review",
+        pullRequestNumber: pullRequest.number,
+        reviewers: projectMode.reviewers,
+      });
+    }
+
+    // Non-project mode: check if the immediately preceding completed session
+    // was also a clean self-review. Two consecutive clean passes → squash-merge.
     const completedBeforeLatest = relevantSessions
       .filter((s) => s.status === "completed" && s.id !== latestCompletedSession.id)
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
@@ -338,6 +388,7 @@ export function buildMergedPullRequestBody(
 export function buildPlan(
   snapshot: RepositorySnapshot,
   maxConcurrency = 3,
+  projectMode?: ProjectModeConfig,
 ): OrchestratorPlan {
   const issues = sortByCreatedAt(snapshot.issues.filter((issue) => issue.state === "open"));
   const pullRequests = sortByCreatedAt(
@@ -346,12 +397,21 @@ export function buildPlan(
   const blockedIssueIndex = buildBlockedIssueIndex(issues);
   const pullRequestIndex = buildPullRequestIndex(pullRequests);
 
+  // Build a map of issue number → project status for use in planPullRequestAction.
+  const issueProjectStatuses = new Map(
+    issues
+      .filter((i) => i.projectStatus !== undefined)
+      .map((i) => [i.number, i.projectStatus!]),
+  );
+
   const actions: OrchestratorAction[] = [];
   for (const pullRequest of pullRequests) {
     const action = planPullRequestAction(
       pullRequest,
       pullRequest.linkedIssueNumbers,
       snapshot.agentSessions,
+      projectMode,
+      issueProjectStatuses,
     );
     if (action) {
       actions.push(action);
@@ -389,6 +449,16 @@ export function buildPlan(
 
   const eligibleIssues = issues.filter((issue) => {
     if (unavailableIssueNumbers.has(issue.number)) {
+      return false;
+    }
+
+    // Issues labelled "manual" are never picked up automatically.
+    if (issue.labels.includes("manual")) {
+      return false;
+    }
+
+    // In project mode, only pick up issues that are in "Ready" state.
+    if (projectMode && issue.projectStatus?.toLowerCase() !== "ready") {
       return false;
     }
 

@@ -102,6 +102,7 @@ interface GitHubIssueResponse {
   updated_at: string;
   pull_request?: object;
   type?: { name?: string | null } | null;
+  labels?: Array<{ name: string }>;
 }
 
 interface GitHubPullRequestResponse {
@@ -142,6 +143,12 @@ interface PullRequestReviewThreadsQueryResponse {
 
 /** Identifier vibrator uses when posting reviews so we can recognize our own reviews later. */
 export const VIBRATOR_REVIEW_MARKER = "<!-- vibrator-review -->";
+
+interface ProjectMeta {
+  id: string;
+  statusFieldId: string;
+  statusOptions: Array<{ id: string; name: string }>;
+}
 
 function shouldRetryMergeWithAdmin(error: unknown): boolean {
   if (!(error instanceof Error)) {
@@ -393,6 +400,7 @@ export class GitHubClient {
           createdAt: issue.created_at,
           updatedAt: issue.updated_at,
           type: issue.type?.name ?? null,
+          labels: (issue.labels ?? []).map((label) => label.name),
           ...(parentNumber !== undefined ? { parentNumber } : {}),
         };
       });
@@ -1232,6 +1240,276 @@ export class GitHubClient {
     ).length;
   }
 
+  /**
+   * Convert a draft pull request to ready-for-review using the GraphQL mutation.
+   * No-op if the PR is already ready.
+   */
+  async markPullRequestReadyForReview(pullRequestNumber: number): Promise<void> {
+    // Look up the PR node ID via REST first.
+    const pr = await this.request<{ node_id: string }>(
+      `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}`,
+    );
+    await this.graphqlRequest(
+      `
+        mutation MarkPullRequestReadyForReview($prId: ID!) {
+          markPullRequestReadyForReview(input: { pullRequestId: $prId }) {
+            pullRequest { isDraft }
+          }
+        }
+      `,
+      { prId: pr.node_id },
+    );
+  }
+
+  /**
+   * Request review from specific GitHub users on a pull request.
+   */
+  async requestPullRequestReview(pullRequestNumber: number, reviewers: string[]): Promise<void> {
+    if (reviewers.length === 0) return;
+    await this.request(
+      `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}/requested_reviewers`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewers }),
+      },
+    );
+  }
+
+  /**
+   * Ensure a label exists in the repository, creating it if it does not.
+   * Silently succeeds if the label already exists.
+   */
+  async ensureLabelExists(name: string, color: string, description?: string): Promise<void> {
+    try {
+      await this.request(
+        `/repos/${this.options.owner}/${this.options.repo}/labels/${encodeURIComponent(name)}`,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode !== 404) {
+        throw error;
+      }
+      await this.request(`/repos/${this.options.owner}/${this.options.repo}/labels`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, color, description: description ?? "" }),
+      });
+    }
+  }
+
+  /**
+   * Cached project metadata: node ID, status field ID, and status option map.
+   */
+  private projectMetaCache: Map<number, ProjectMeta> | undefined;
+
+  private async getProjectMeta(projectNumber: number): Promise<ProjectMeta> {
+    if (!this.projectMetaCache) {
+      this.projectMetaCache = new Map();
+    }
+    const cached = this.projectMetaCache.get(projectNumber);
+    if (cached) return cached;
+
+    type QueryResult = {
+      repository: {
+        projectV2: {
+          id: string;
+          field: {
+            id: string;
+            options: Array<{ id: string; name: string }>;
+          } | null;
+        } | null;
+      } | null;
+    };
+
+    const data = await this.graphqlRequest<QueryResult>(
+      `
+        query ProjectMeta($owner: String!, $repo: String!, $projectNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            projectV2(number: $projectNumber) {
+              id
+              field(name: "Status") {
+                ... on ProjectV2SingleSelectField {
+                  id
+                  options { id name }
+                }
+              }
+            }
+          }
+        }
+      `,
+      { owner: this.options.owner, repo: this.options.repo, projectNumber },
+    );
+
+    const project = data.repository?.projectV2;
+    if (!project) {
+      throw new Error(
+        `GitHub Project #${projectNumber} not found in ${this.options.owner}/${this.options.repo}`,
+      );
+    }
+    if (!project.field) {
+      throw new Error(
+        `GitHub Project #${projectNumber} has no "Status" single-select field`,
+      );
+    }
+
+    const meta: ProjectMeta = {
+      id: project.id,
+      statusFieldId: project.field.id,
+      statusOptions: project.field.options,
+    };
+    this.projectMetaCache.set(projectNumber, meta);
+    return meta;
+  }
+
+  /**
+   * Fetch the project status for each open issue in the given project.
+   * Returns a map of issue number → { itemId, status, statusOptionId }.
+   */
+  async fetchProjectIssueStatuses(
+    projectNumber: number,
+  ): Promise<Map<number, { itemId: string; status: string; statusOptionId: string }>> {
+    type QueryResult = {
+      repository: {
+        projectV2: {
+          items: {
+            nodes: Array<{
+              id: string;
+              content: { __typename: string; number?: number } | null;
+              fieldValueByName: {
+                __typename: string;
+                name?: string;
+                optionId?: string;
+              } | null;
+            }>;
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
+        } | null;
+      } | null;
+    };
+
+    const result = new Map<number, { itemId: string; status: string; statusOptionId: string }>();
+    let after: string | null = null;
+
+    do {
+      const data: QueryResult = await this.graphqlRequest<QueryResult>(
+        `
+          query ProjectIssueStatuses($owner: String!, $repo: String!, $projectNumber: Int!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+              projectV2(number: $projectNumber) {
+                items(first: 100, after: $after) {
+                  nodes {
+                    id
+                    content {
+                      __typename
+                      ... on Issue { number }
+                    }
+                    fieldValueByName(name: "Status") {
+                      __typename
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        name
+                        optionId
+                      }
+                    }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          }
+        `,
+        { owner: this.options.owner, repo: this.options.repo, projectNumber, after },
+      );
+
+      const projectV2 = data.repository?.projectV2;
+      const items = projectV2?.items;
+      if (!items) break;
+
+      for (const item of items.nodes) {
+        if (item.content?.__typename !== "Issue" || item.content.number === undefined) continue;
+        const statusName = item.fieldValueByName?.__typename === "ProjectV2ItemFieldSingleSelectValue"
+          ? (item.fieldValueByName.name ?? "")
+          : "";
+        const statusOptionId = item.fieldValueByName?.__typename === "ProjectV2ItemFieldSingleSelectValue"
+          ? (item.fieldValueByName.optionId ?? "")
+          : "";
+        result.set(item.content.number, {
+          itemId: item.id,
+          status: statusName,
+          statusOptionId,
+        });
+      }
+
+      after = items.pageInfo.hasNextPage ? items.pageInfo.endCursor : null;
+    } while (after);
+
+    return result;
+  }
+
+  /**
+   * Move an issue's status in the GitHub Project to the given status name
+   * (e.g. "In Progress", "In Review"). No-ops if the project item or target
+   * status option cannot be found.
+   */
+  async moveIssueToProjectStatus(
+    projectNumber: number,
+    issueNumber: number,
+    targetStatus: string,
+  ): Promise<void> {
+    let meta: ProjectMeta;
+    let statuses: Map<number, { itemId: string; status: string; statusOptionId: string }>;
+    try {
+      [meta, statuses] = await Promise.all([
+        this.getProjectMeta(projectNumber),
+        this.fetchProjectIssueStatuses(projectNumber),
+      ]);
+    } catch (error) {
+      console.warn(
+        `[vibrator] Could not move issue #${issueNumber} to project status "${targetStatus}": ${String(error)}`,
+      );
+      return;
+    }
+
+    const item = statuses.get(issueNumber);
+    if (!item) {
+      console.warn(
+        `[vibrator] Issue #${issueNumber} is not in project #${projectNumber} — skipping status move.`,
+      );
+      return;
+    }
+
+    const option = meta.statusOptions.find(
+      (opt) => opt.name.toLowerCase() === targetStatus.toLowerCase(),
+    );
+    if (!option) {
+      console.warn(
+        `[vibrator] Project #${projectNumber} has no status option "${targetStatus}" — skipping status move. ` +
+        `Available options: ${meta.statusOptions.map((o) => o.name).join(", ")}`,
+      );
+      return;
+    }
+
+    await this.graphqlRequest(
+      `
+        mutation UpdateProjectItemStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+          updateProjectV2ItemFieldValue(input: {
+            projectId: $projectId
+            itemId: $itemId
+            fieldId: $fieldId
+            value: { singleSelectOptionId: $optionId }
+          }) {
+            projectV2Item { id }
+          }
+        }
+      `,
+      {
+        projectId: meta.id,
+        itemId: item.itemId,
+        fieldId: meta.statusFieldId,
+        optionId: option.id,
+      },
+    );
+  }
+
   private async listUnresolvedPullRequestReviewThreadIds(
     pullRequestNumber: number,
   ): Promise<string[]> {
@@ -1281,6 +1559,7 @@ export class GitHubClient {
 export async function loadSnapshot(
   gitHubClient: GitHubClient,
   sessionStore: FileSessionStore,
+  projectConfig?: { projectNumber: number },
 ): Promise<RepositorySnapshot> {
   const [issues, pullRequests, agentSessions] = await Promise.all([
     gitHubClient.listOpenIssues(),
@@ -1288,7 +1567,58 @@ export async function loadSnapshot(
     sessionStore.load(),
   ]);
 
-  return { issues, pullRequests, agentSessions };
+  if (!projectConfig) {
+    return { issues, pullRequests, agentSessions };
+  }
+
+  // Merge project status into issues.
+  let projectStatuses: Map<number, { itemId: string; status: string; statusOptionId: string }>;
+  try {
+    projectStatuses = await gitHubClient.fetchProjectIssueStatuses(projectConfig.projectNumber);
+  } catch (error) {
+    console.warn(`[vibrator] Could not fetch project statuses: ${String(error)}`);
+    projectStatuses = new Map();
+  }
+
+  const issuesWithStatus = issues.map((issue) => {
+    const entry = projectStatuses.get(issue.number);
+    return entry ? { ...issue, projectStatus: entry.status } : issue;
+  });
+
+  // For PRs whose latest completed session is `request-review`, check for
+  // new human comments since the last-read timestamp.
+  const openPullRequests = pullRequests.filter((pr) => pr.state === "open");
+  const pullRequestsWithNewComments = await Promise.all(
+    openPullRequests.map(async (pr) => {
+      const prSessions = agentSessions
+        .filter((s) => s.pullRequestNumber === pr.number && s.status === "completed")
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      if (prSessions[0]?.phase !== "request-review") {
+        return pr;
+      }
+
+      const lastReadAt = await sessionStore.getLastReadCommentAt(pr.number);
+      if (!lastReadAt) {
+        return pr;
+      }
+
+      // Quick check: if PR hasn't been updated since the last-read timestamp,
+      // skip the full comment fetch.
+      if (Date.parse(pr.updatedAt) <= Date.parse(lastReadAt)) {
+        return pr;
+      }
+
+      try {
+        const comments = await gitHubClient.listPullRequestComments(pr.number);
+        const hasNew = comments.some((c) => Date.parse(c.createdAt) > Date.parse(lastReadAt));
+        return hasNew ? { ...pr, hasNewCommentsSinceLastRead: true } : pr;
+      } catch {
+        return pr;
+      }
+    }),
+  );
+
+  return { issues: issuesWithStatus, pullRequests: pullRequestsWithNewComments, agentSessions };
 }
 
 export function buildDefaultSessionStorePath(owner: string, repo: string): string {

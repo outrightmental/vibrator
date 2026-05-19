@@ -59,6 +59,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     updatedAt: new Date().toISOString(),
     state: "open",
     type: null,
+    labels: [],
     ...overrides,
   };
 }
