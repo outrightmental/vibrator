@@ -8,12 +8,23 @@ export interface LifecyclePair {
   prPhase: "absent" | "planning" | "active" | "completed";
   /** Stable color slot index (issue.number % palette length) */
   colorIndex: number;
+  /** Issue numbers blocking this issue, if any (populated for pre-implementation issues) */
+  blockedByIssueNumbers?: number[];
+}
+
+function phaseSortPriority(phase: string, isBlocked: boolean): number {
+  if (phase === "active") return 0;
+  if (phase === "planning") return 1;
+  if (phase === "absent" && !isBlocked) return 2;
+  if (phase === "absent" && isBlocked) return 3;
+  return 4; // completed
 }
 
 export function broadcastLifecycleUpdate(
   snapshot: RepositorySnapshot,
   planningIssueNumbers: ReadonlySet<number> = new Set(),
   completedIssueNumbers: ReadonlySet<number> = new Set(),
+  blockedIssueNumbers: Readonly<Record<number, number[]>> = {},
 ): void {
   const pairs: LifecyclePair[] = [];
   const pairedIssueNumbers = new Set<number>();
@@ -38,6 +49,9 @@ export function broadcastLifecycleUpdate(
         },
         prPhase: completedIssueNumbers.has(issueNumber) ? "completed" : "active",
         colorIndex: issue.number % 6,
+        ...(blockedIssueNumbers[issue.number] !== undefined && {
+          blockedByIssueNumbers: blockedIssueNumbers[issue.number],
+        }),
       });
     }
   }
@@ -50,11 +64,22 @@ export function broadcastLifecycleUpdate(
       pr: null,
       prPhase: planningIssueNumbers.has(issue.number) ? "planning" : "absent",
       colorIndex: issue.number % 6,
+      ...(blockedIssueNumbers[issue.number] !== undefined && {
+        blockedByIssueNumbers: blockedIssueNumbers[issue.number],
+      }),
     });
   }
 
-  // Stable display order: ascending issue number
-  pairs.sort((a, b) => a.issue.number - b.issue.number);
+  // Display order: active → planning → unblocked absent → blocked → completed
+  // Within each group, ascending issue number
+  pairs.sort((a, b) => {
+    const aBlocked = (a.blockedByIssueNumbers?.length ?? 0) > 0;
+    const bBlocked = (b.blockedByIssueNumbers?.length ?? 0) > 0;
+    const aPriority = phaseSortPriority(a.prPhase, aBlocked);
+    const bPriority = phaseSortPriority(b.prPhase, bBlocked);
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    return a.issue.number - b.issue.number;
+  });
 
   globalEventEmitter.emit("lifecycle-update", { pairs });
 }
