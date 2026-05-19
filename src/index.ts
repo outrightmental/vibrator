@@ -373,7 +373,7 @@ async function runEngineLoop(
   if (config.dryRun) modeNotes.push("DRY RUN");
   if (config.once) modeNotes.push("--once");
   write(
-    `concurrency: ${config.maxConcurrency} · interval: ${formatDuration(config.intervalMs)}` +
+    `concurrency: ${config.maxConcurrency} · cycle-minimum: ${formatDuration(config.cycleMinimumMs)}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
   );
   if (accountManager) {
@@ -390,6 +390,9 @@ async function runEngineLoop(
     }
   }
   write(HEAVY_RULE);
+
+  do {
+    const cycleStart = Date.now();
 
     // ── Engine cycle header ───────────────────────────────────────────────
     write(HEAVY_RULE);
@@ -620,6 +623,7 @@ async function runEngineLoop(
         }
       }
     }
+    iterationNumber++;
   } while (true);
 }
 
