@@ -762,13 +762,18 @@ async function main(): Promise<void> {
     await delay(500);
   } else {
     write(`Done (--once mode). Exiting.`);
+    if (process.stdin.isTTY) {
+      process.stdin.pause();
+      process.stdin.setRawMode(false);
+    }
   }
   if (dashboardReady) {
     dashboard.close();
   }
+  process.exit(0);
 }
 
 main().catch((error: unknown) => {
   console.error(`[${timestamp()}] Fatal error:`, error);
-  process.exitCode = 1;
+  process.exit(1);
 });
