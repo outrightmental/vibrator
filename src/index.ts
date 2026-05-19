@@ -598,7 +598,13 @@ async function runEngineLoop(
       bullet("nothing to do this cycle");
     }
 
-    if (config.once) return;
+    if (config.once) {
+      if (shutdownSignal.requested) {
+        globalEventEmitter.emit("engine-shutdown", { engineIndex });
+        write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
+      }
+      return;
+    }
 
     // ── Wait phase: pause only if cycle time has not yet elapsed ──────────
     const elapsed = Date.now() - cycleStart;
