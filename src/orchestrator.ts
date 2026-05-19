@@ -22,8 +22,8 @@ export interface ProjectModeConfig {
   reviewers: string[];
 }
 
-const BLOCKED_BY_PATTERN = /\b(?:blocked by|depends on)\s+#(\d+)\b/gi;
-const BLOCKS_PATTERN = /\bblocks\s+#(\d+)\b/gi;
+const BLOCKED_BY_PATTERN = /\b(?:blocked by|depends on)\s*:?\s*#(\d+)\b/gi;
+const BLOCKS_PATTERN = /\bblocks\s*:?\s*#(\d+)\b/gi;
 const CLOSING_ISSUE_KEYWORDS = ["close[sd]?", "fix(?:e[sd]?|es)?", "resolve[sd]?"] as const;
 const LINKED_ISSUE_KEYWORDS = [...CLOSING_ISSUE_KEYWORDS, "implement(?:s|ed)?", "for"] as const;
 const CLOSING_ISSUE_KEYWORD_PATTERN = String.raw`(?:${CLOSING_ISSUE_KEYWORDS.join("|")})`;
