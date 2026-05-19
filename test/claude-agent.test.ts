@@ -14,6 +14,7 @@ import {
   FINAL_DESCRIPTION_START_MARKER,
   IMPLEMENTATION_PAYLOAD_END_MARKER,
   IMPLEMENTATION_PAYLOAD_START_MARKER,
+  formatUserCommentsSection,
   isRebaseInProgress,
   isClaudeUsageLimitMessage,
   isClaudeTermsAcceptanceMessage,
@@ -606,4 +607,24 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("formatUserCommentsSection returns empty array when no comments provided", () => {
+  assert.deepEqual(formatUserCommentsSection(undefined), []);
+  assert.deepEqual(formatUserCommentsSection([]), []);
+});
+
+test("formatUserCommentsSection formats comments with author, date, and body", () => {
+  const comments = [
+    { author: "alice", body: "Please add more tests", createdAt: "2024-02-01T10:00:00.000Z" },
+    { author: "bob", body: "Consider edge cases", createdAt: "2024-02-02T08:00:00.000Z" },
+  ];
+  const result = formatUserCommentsSection(comments);
+  assert.ok(result.length > 0, "should produce non-empty output");
+  const joined = result.join("\n");
+  assert.ok(joined.includes("alice"), "should include first comment author");
+  assert.ok(joined.includes("Please add more tests"), "should include first comment body");
+  assert.ok(joined.includes("bob"), "should include second comment author");
+  assert.ok(joined.includes("Consider edge cases"), "should include second comment body");
+  assert.ok(joined.includes("Human comments on this PR"), "should include header text");
 });

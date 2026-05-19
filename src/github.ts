@@ -164,11 +164,18 @@ export interface GitHubClientOptions {
   htmlBaseUrl?: string;
 }
 
+export interface PullRequestComment {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
 export class GitHubClient {
   private readonly apiBaseUrl: string;
   readonly htmlBaseUrl: string;
   readonly owner: string;
   readonly repo: string;
+  private authenticatedLoginCache: Promise<string> | undefined;
 
   constructor(private readonly options: GitHubClientOptions) {
     this.apiBaseUrl = options.apiBaseUrl ?? "https://api.github.com";
@@ -327,6 +334,44 @@ export class GitHubClient {
       `/repos/${this.options.owner}/${this.options.repo}`,
     );
     return data.default_branch;
+  }
+
+  /**
+   * Returns the GitHub login of the currently authenticated user (the bot
+   * account running vibrator). Result is cached per client instance.
+   */
+  async getAuthenticatedLogin(): Promise<string> {
+    if (!this.authenticatedLoginCache) {
+      this.authenticatedLoginCache = this.graphqlRequest<{ viewer: { login: string } }>(
+        `query { viewer { login } }`,
+        {},
+      ).then((data) => data.viewer.login);
+    }
+    return this.authenticatedLoginCache;
+  }
+
+  /**
+   * Lists comments left on a pull request by humans — i.e. excluding
+   * comments posted by the authenticated vibrator bot account. These are
+   * the regular "conversation" comments (not inline review thread comments)
+   * that users leave via the GitHub website or CLI.
+   */
+  async listPullRequestComments(pullRequestNumber: number): Promise<PullRequestComment[]> {
+    const [comments, botLogin] = await Promise.all([
+      this.getAllPages<{
+        user: { login: string } | null;
+        body: string;
+        created_at: string;
+      }>(`/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/comments`),
+      this.getAuthenticatedLogin(),
+    ]);
+    return comments
+      .filter((comment) => comment.user?.login !== botLogin)
+      .map((comment) => ({
+        author: comment.user?.login ?? "unknown",
+        body: comment.body,
+        createdAt: comment.created_at,
+      }));
   }
 
   async listOpenIssues(): Promise<Issue[]> {

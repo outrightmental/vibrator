@@ -28,6 +28,7 @@ type SessionInput = {
 interface Harness {
   calls: string[];
   sessions: SessionInput[];
+  capturedUserComments: Array<Array<{ author: string; body: string; createdAt: string }>>;
   gitHubClient: ActionGitHubClient;
   sessionStore: ActionSessionStore;
   claudeAgentClient: ActionClaudeAgentClient;
@@ -84,9 +85,11 @@ function createHarness(input: {
   };
   failingCheckRuns?: Array<{ name: string; logExcerpt: string }>;
   newPullRequest?: { number: number; headSha: string; created?: boolean };
+  pullRequestComments?: Array<{ author: string; body: string; createdAt: string }>;
 }): Harness {
   const calls: string[] = [];
   const sessions: SessionInput[] = [];
+  const capturedUserComments: Array<Array<{ author: string; body: string; createdAt: string }>> = [];
   const newPullRequest: { number: number; headSha: string; created: boolean } = {
     ...input.newPullRequest,
     number: input.newPullRequest?.number ?? 999,
@@ -122,6 +125,9 @@ function createHarness(input: {
     async postComment(pullRequestNumber, body) {
       calls.push(`post-comment:${pullRequestNumber}:${body}`);
     },
+    async listPullRequestComments(_pullRequestNumber) {
+      return input.pullRequestComments ?? [];
+    },
   };
 
   const sessionStore: ActionSessionStore = {
@@ -145,6 +151,7 @@ function createHarness(input: {
     },
     async selfReview(params) {
       calls.push(`self-review:${params.pullRequestNumber}`);
+      if (params.userComments) capturedUserComments.push([...params.userComments]);
       return {
         madeChanges: input.selfReviewMadeChanges ?? false,
         headSha: input.selfReviewHeadSha ?? "sha-after-self-review",
@@ -152,12 +159,14 @@ function createHarness(input: {
     },
     async resolveMergeConflicts(params) {
       calls.push(`resolve-conflicts:${params.pullRequestNumber}`);
+      if (params.userComments) capturedUserComments.push([...params.userComments]);
       return { headSha: "sha-after-resolve" };
     },
     async addressFailingChecks(params) {
       calls.push(
         `address-checks:${params.pullRequestNumber}:${params.failingChecks.length}-checks`,
       );
+      if (params.userComments) capturedUserComments.push([...params.userComments]);
       return { headSha: "sha-after-checks" };
     },
     async generateFinalDescription(params) {
@@ -169,6 +178,7 @@ function createHarness(input: {
   return {
     calls,
     sessions,
+    capturedUserComments,
     gitHubClient,
     sessionStore,
     claudeAgentClient,
@@ -481,4 +491,76 @@ test("executeAction throws when start-implementation cannot find the issue in th
     () => run(harness, { type: "start-implementation", issueNumber: 999 }),
     /Issue #999 not found/,
   );
+});
+
+test("executeAction passes PR comments to selfReview", async () => {
+  const pullRequest = createPullRequest({ number: 20, linkedIssueNumbers: [5] });
+  const comments = [
+    { author: "alice", body: "Please add more tests", createdAt: "2024-02-01T10:00:00.000Z" },
+  ];
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    issues: [createIssue({ number: 5 })],
+    pullRequestComments: comments,
+  });
+
+  await run(harness, {
+    type: "self-review",
+    issueNumber: 5,
+    pullRequestNumber: 20,
+    pullRequestHeadSha: "sha-20",
+  });
+
+  assert.equal(harness.capturedUserComments.length, 1);
+  assert.deepEqual(harness.capturedUserComments[0], comments);
+});
+
+test("executeAction passes PR comments to addressFailingChecks", async () => {
+  const pullRequest = createPullRequest({
+    number: 21,
+    linkedIssueNumbers: [],
+    checksStatus: "failure",
+  });
+  const comments = [
+    { author: "bob", body: "The lint step is misconfigured", createdAt: "2024-02-02T08:00:00.000Z" },
+  ];
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    pullRequestComments: comments,
+  });
+
+  await run(harness, {
+    type: "address-failing-checks",
+    issueNumber: undefined,
+    pullRequestNumber: 21,
+    pullRequestHeadSha: "sha-21",
+  });
+
+  assert.equal(harness.capturedUserComments.length, 1);
+  assert.deepEqual(harness.capturedUserComments[0], comments);
+});
+
+test("executeAction passes PR comments to resolveMergeConflicts", async () => {
+  const pullRequest = createPullRequest({
+    number: 22,
+    linkedIssueNumbers: [],
+    hasMergeConflicts: true,
+  });
+  const comments = [
+    { author: "carol", body: "Keep the new API signature", createdAt: "2024-02-03T09:00:00.000Z" },
+  ];
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    pullRequestComments: comments,
+  });
+
+  await run(harness, {
+    type: "resolve-conflicts",
+    issueNumber: undefined,
+    pullRequestNumber: 22,
+    pullRequestHeadSha: "sha-22",
+  });
+
+  assert.equal(harness.capturedUserComments.length, 1);
+  assert.deepEqual(harness.capturedUserComments[0], comments);
 });
