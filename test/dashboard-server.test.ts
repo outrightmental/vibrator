@@ -91,8 +91,10 @@ test("DashboardServer replaces cylinder cache on iteration-start", async (t) => 
     (m) => m.type === "action-start" || m.type === "iteration-start",
   );
   assert.equal(cylinderMessages.length, 1, "only one cylinder-0 event should be cached");
+  const cylinderMsg = cylinderMessages[0];
+  assert.ok(cylinderMsg !== undefined, "expected a cylinder message");
   assert.equal(
-    cylinderMessages[0].type,
+    cylinderMsg.type,
     "iteration-start",
     "iteration-start should replace action-start in cache",
   );
