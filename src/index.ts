@@ -5,6 +5,11 @@ import "dotenv/config";
 import { executeAction, type ExecuteActionResult } from "./actions.js";
 import { createClaudeAgentClient } from "./claude-agent.js";
 import {
+  ClaudeAccountManager,
+  defaultAccountStorePath,
+  parseClaudeAccountsEnv,
+} from "./claude-account-manager.js";
+import {
   buildDefaultSessionStorePath,
   getGhToken,
   GitHubClient,
@@ -270,6 +275,10 @@ interface Config {
   dryRun: boolean;
   noBrowser: boolean;
   sessionStorePath: string;
+  /** Paths to Claude config directories for multi-account rotation (empty = single account). */
+  claudeAccountDirs: string[];
+  /** File path for persisted Claude account rate-limit state. */
+  claudeAccountStorePath: string;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -304,6 +313,11 @@ function parseArgs(argv: string[]): Config {
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
   const claudeModel = process.env.CLAUDE_MODEL;
+  const claudeAccountDirs = process.env.CLAUDE_ACCOUNTS
+    ? parseClaudeAccountsEnv(process.env.CLAUDE_ACCOUNTS)
+    : [];
+  const claudeAccountStorePath =
+    process.env.CLAUDE_ACCOUNTS_STORE_PATH ?? defaultAccountStorePath();
 
   return {
     owner,
@@ -316,6 +330,8 @@ function parseArgs(argv: string[]): Config {
     dryRun,
     noBrowser,
     sessionStorePath,
+    claudeAccountDirs,
+    claudeAccountStorePath,
   };
 }
 
@@ -333,15 +349,47 @@ async function runEngineLoop(
     token: await getGhToken(),
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
-  const claudeAgentClient = createClaudeAgentClient(
-    config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {},
-  );
+
+  let accountManager: ClaudeAccountManager | undefined;
+  if (config.claudeAccountDirs.length > 0) {
+    accountManager = new ClaudeAccountManager(
+      config.claudeAccountDirs,
+      config.claudeAccountStorePath,
+    );
+    await accountManager.load();
+  }
+
+  const claudeAgentClient = createClaudeAgentClient({
+    ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
+    ...(accountManager !== undefined ? { accountManager } : {}),
+  });
 
   let iterationNumber = 0;
 
-  do {
-    iterationNumber++;
-    const cycleStart = Date.now();
+  write(HEAVY_RULE);
+  write(`vibrator status update · ${timestamp()} · iteration ${iterationNumber}`);
+  write(`repo: ${repo} (${gitHubClient.repositoryUrl()})`);
+  const modeNotes: string[] = [];
+  if (config.dryRun) modeNotes.push("DRY RUN");
+  if (config.once) modeNotes.push("--once");
+  write(
+    `concurrency: ${config.maxConcurrency} · interval: ${formatDuration(config.intervalMs)}` +
+      (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
+  );
+  if (accountManager) {
+    const states = accountManager.getStates();
+    const now = Date.now();
+    const available = states.filter((s) => !s.rateLimitedUntilMs || now >= s.rateLimitedUntilMs).length;
+    write(`claude accounts: ${available}/${states.length} available`);
+    for (const s of states) {
+      const limited = s.rateLimitedUntilMs && now < s.rateLimitedUntilMs;
+      const status = limited
+        ? `rate-limited until ${new Date(s.rateLimitedUntilMs!).toLocaleTimeString()}`
+        : "available";
+      note(`◦ ${s.configDir} — ${status}`);
+    }
+  }
+  write(HEAVY_RULE);
 
     // ── Engine cycle header ───────────────────────────────────────────────
     write(HEAVY_RULE);
