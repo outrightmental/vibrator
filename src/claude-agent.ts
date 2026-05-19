@@ -182,6 +182,12 @@ export interface ImplementIssueResult {
   headSha: string;
 }
 
+export interface UserComment {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
 export interface SelfReviewParams {
   owner: string;
   repo: string;
@@ -196,6 +202,8 @@ export interface SelfReviewParams {
   issueNumber?: number;
   issueTitle?: string;
   issueBody?: string;
+  /** Human comments on the PR (excluding bot comments) that should steer the review. */
+  userComments?: ReadonlyArray<UserComment>;
 }
 
 export interface SelfReviewResult {
@@ -215,6 +223,8 @@ export interface ResolveMergeConflictsParams {
   pullRequestNumber: number;
   headRefName: string;
   baseRefName: string;
+  /** Human comments on the PR (excluding bot comments) that should steer conflict resolution. */
+  userComments?: ReadonlyArray<UserComment>;
 }
 
 export interface AddressFailingChecksParams {
@@ -228,6 +238,8 @@ export interface AddressFailingChecksParams {
     name: string;
     logExcerpt: string;
   }>;
+  /** Human comments on the PR (excluding bot comments) that should steer the fix. */
+  userComments?: ReadonlyArray<UserComment>;
 }
 
 export interface GenerateFinalDescriptionParams {
@@ -470,6 +482,18 @@ export function extractImplementationPayload(
   return { pullRequestTitle: obj.title, pullRequestBody: obj.body };
 }
 
+export function formatUserCommentsSection(userComments: ReadonlyArray<UserComment> | undefined): string[] {
+  if (!userComments || userComments.length === 0) return [];
+  const formatted = userComments.map((c) => `**${c.author}** (${c.createdAt}):\n${c.body}`);
+  return [
+    "",
+    "Human comments on this PR (take these into account when doing your work):",
+    "---",
+    ...formatted,
+    "---",
+  ];
+}
+
 function buildImplementationPrompt(params: ImplementIssueParams, branch: string): string {
   return [
     `You are implementing GitHub issue #${params.issueNumber} in the repository ${params.owner}/${params.repo}.`,
@@ -528,12 +552,14 @@ function buildSelfReviewPrompt(params: SelfReviewParams): string {
     "---",
     params.pullRequestBody || "(empty)",
     "---",
+    ...formatUserCommentsSection(params.userComments),
     "",
     "Instructions:",
     `1. Read the full diff (\`git diff origin/${params.baseRefName}..HEAD\`) and the surrounding code carefully.`,
     `2. Evaluate the changes strictly against the requirements in issue #${params.issueNumber !== undefined ? params.issueNumber : "(above)"}. Only flag problems that are relevant to what this issue asked for: bugs, missing requirements, broken or missing tests, security issues, or significant design problems within the scope of this change. Do not comment on pre-existing code or unrelated areas.`,
-    "3. If you find any problems, fix them directly by editing the files. Commit every change with a clear, descriptive commit message that explains what was changed and why.",
-    "4. If you find nothing that needs to change, make no commits and output only a brief 'LGTM' message.",
+    "3. If there are human comments on the PR (shown above), address any requests or concerns raised in them.",
+    "4. If you find any problems, fix them directly by editing the files. Commit every change with a clear, descriptive commit message that explains what was changed and why.",
+    "5. If you find nothing that needs to change, make no commits and output only a brief 'LGTM' message.",
     "",
     "Be honest and thorough — this is your own code and the goal is to ship high-quality work that fully satisfies the issue.",
   ].join("\n");
@@ -544,12 +570,14 @@ function buildResolveConflictsPrompt(params: ResolveMergeConflictsParams): strin
     `You are resolving merge conflicts on pull request #${params.pullRequestNumber} in ${params.owner}/${params.repo}.`,
     "",
     `The current branch \`${params.headRefName}\` has been rebased onto \`origin/${params.baseRefName}\` and is in a conflicted state (or about to be — run \`git status\` first).`,
+    ...formatUserCommentsSection(params.userComments),
     "",
     "Instructions:",
     "1. Inspect the conflicts (`git status`, `git diff --check`).",
     "2. Resolve each conflict by editing the files so the resulting code is correct and integrates both sides of the merge meaningfully.",
-    "3. `git add` the resolved files and commit (either continue the rebase with `git rebase --continue` or, if a non-rebase merge is in progress, `git commit`).",
-    "4. Do not push — the orchestrator handles pushing.",
+    "3. If there are human comments on the PR (shown above), keep their requests in mind when resolving conflicts.",
+    "4. `git add` the resolved files and commit (either continue the rebase with `git rebase --continue` or, if a non-rebase merge is in progress, `git commit`).",
+    "5. Do not push — the orchestrator handles pushing.",
     "",
     "If you cannot resolve a conflict safely, abort the rebase/merge (`git rebase --abort` / `git merge --abort`) and exit with a clear explanation.",
   ].join("\n");
@@ -568,12 +596,14 @@ function buildAddressFailingChecksPrompt(params: AddressFailingChecksParams): st
     "---",
     checkList || "(no failing-check details were captured — investigate with `gh pr checks` and `gh run view`)",
     "---",
+    ...formatUserCommentsSection(params.userComments),
     "",
     "Instructions:",
     "1. Diagnose the failure(s) by reading the code referenced in the logs.",
     "2. Fix the underlying problem. Re-run the tests/linters locally if available.",
-    "3. Commit every change with a descriptive commit message.",
-    "4. Do not push — the orchestrator handles pushing.",
+    "3. If there are human comments on the PR (shown above), address any requests or concerns raised in them.",
+    "4. Commit every change with a descriptive commit message.",
+    "5. Do not push — the orchestrator handles pushing.",
   ].join("\n");
 }
 
