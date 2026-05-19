@@ -2,12 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import childProcess from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   GitHubClient,
   isVibratorReview,
+  loadSnapshot,
   VIBRATOR_REVIEW_MARKER,
 } from "../src/github.js";
+import { FileSessionStore } from "../src/session-store.js";
 
 function captureStderr(t: test.TestContext): { output: () => string } {
   let stderrOutput = "";
@@ -352,4 +357,103 @@ test("listPullRequestComments returns empty array when all comments are from the
 
   const comments = await client.listPullRequestComments(10);
   assert.equal(comments.length, 0);
+});
+
+// ─── loadSnapshot project-mode: hasNewCommentsSinceLastRead detection ─────────
+
+function makePr(overrides: Partial<{ updatedAt: string; draft: boolean }> = {}) {
+  return {
+    number: 10,
+    title: "PR 10",
+    body: "",
+    headSha: "sha",
+    headRefName: "branch",
+    baseRefName: "main",
+    state: "open" as const,
+    draft: overrides.draft ?? false,
+    hasMergeConflicts: false,
+    hasCleanReviewOnHead: false,
+    unresolvedReviewCommentCount: 0,
+    checksStatus: "success" as const,
+    headCommitPushedAt: undefined,
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: overrides.updatedAt ?? "2024-01-02T00:00:00.000Z",
+    linkedIssueNumbers: [1],
+    closingIssueNumbers: [1],
+  };
+}
+
+test("loadSnapshot (project mode) sets hasNewCommentsSinceLastRead when a human comment is newer than lastReadAt", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const store = new FileSessionStore(join(dir, "sessions.json"));
+  await store.createSession({ issueNumber: 1, pullRequestNumber: 10, phase: "request-review", status: "completed" });
+  await store.setLastReadCommentAt(10, "2024-01-01T12:00:00.000Z");
+
+  const client = new GitHubClient({ owner: "owner", repo: "repo", token: "fake" });
+  t.mock.method(client, "listOpenIssues", async () => []);
+  t.mock.method(client, "listOpenPullRequests", async () => [makePr()]);
+  t.mock.method(client, "fetchProjectIssueStatuses", async () => new Map());
+  // Comment at 15:00 is newer than lastReadAt (12:00).
+  t.mock.method(client, "listPullRequestComments", async () => [
+    { author: "alice", body: "Please fix X", createdAt: "2024-01-01T15:00:00.000Z" },
+  ]);
+
+  const snapshot = await loadSnapshot(client, store, { projectNumber: 1 });
+
+  const pr = snapshot.pullRequests.find((p) => p.number === 10);
+  assert.ok(pr !== undefined, "PR #10 should be in snapshot");
+  assert.equal(pr.hasNewCommentsSinceLastRead, true);
+});
+
+test("loadSnapshot (project mode) does not set hasNewCommentsSinceLastRead when all comments predate lastReadAt", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const store = new FileSessionStore(join(dir, "sessions.json"));
+  await store.createSession({ issueNumber: 1, pullRequestNumber: 10, phase: "request-review", status: "completed" });
+  await store.setLastReadCommentAt(10, "2024-01-01T12:00:00.000Z");
+
+  const client = new GitHubClient({ owner: "owner", repo: "repo", token: "fake" });
+  t.mock.method(client, "listOpenIssues", async () => []);
+  t.mock.method(client, "listOpenPullRequests", async () => [makePr()]);
+  t.mock.method(client, "fetchProjectIssueStatuses", async () => new Map());
+  // Comment at 10:00 predates lastReadAt (12:00).
+  t.mock.method(client, "listPullRequestComments", async () => [
+    { author: "alice", body: "Old feedback", createdAt: "2024-01-01T10:00:00.000Z" },
+  ]);
+
+  const snapshot = await loadSnapshot(client, store, { projectNumber: 1 });
+
+  const pr = snapshot.pullRequests.find((p) => p.number === 10);
+  assert.ok(pr !== undefined, "PR #10 should be in snapshot");
+  assert.equal(pr.hasNewCommentsSinceLastRead, undefined);
+});
+
+test("loadSnapshot (project mode) skips comment fetch when pr.updatedAt is not newer than lastReadAt", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const store = new FileSessionStore(join(dir, "sessions.json"));
+  await store.createSession({ issueNumber: 1, pullRequestNumber: 10, phase: "request-review", status: "completed" });
+  // lastReadAt is 12:00; PR updatedAt is also 12:00 — no need to fetch.
+  await store.setLastReadCommentAt(10, "2024-01-01T12:00:00.000Z");
+
+  const client = new GitHubClient({ owner: "owner", repo: "repo", token: "fake" });
+  t.mock.method(client, "listOpenIssues", async () => []);
+  // PR updatedAt equals lastReadAt — the optimization should skip the comment fetch.
+  t.mock.method(client, "listOpenPullRequests", async () => [makePr({ updatedAt: "2024-01-01T12:00:00.000Z" })]);
+  t.mock.method(client, "fetchProjectIssueStatuses", async () => new Map());
+  let commentsFetched = false;
+  t.mock.method(client, "listPullRequestComments", async () => {
+    commentsFetched = true;
+    return [];
+  });
+
+  const snapshot = await loadSnapshot(client, store, { projectNumber: 1 });
+
+  assert.equal(commentsFetched, false, "comments should not be fetched when updatedAt <= lastReadAt");
+  const pr = snapshot.pullRequests.find((p) => p.number === 10);
+  assert.equal(pr?.hasNewCommentsSinceLastRead, undefined);
 });
