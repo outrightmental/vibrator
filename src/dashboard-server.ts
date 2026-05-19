@@ -1114,6 +1114,8 @@ class DashboardUI {
   init() {
     this.render();
     this.connectWebSocket();
+    // Tick every second to keep elapsed-time and countdown displays current
+    setInterval(() => this.renderPanelA(), 1000);
   }
 
   initCylinders(n) {
@@ -1133,6 +1135,9 @@ class DashboardUI {
         model: null,
         iterationNumber: 0,
         thinkingLines: [],
+        actionStartedAt: null,
+        nextCycleAtMs: null,
+        rateLimitedUntilMs: null,
       });
     }
   }
@@ -1202,7 +1207,7 @@ class DashboardUI {
       const isError    = cyl.status === 'error';
       const isShutdown = cyl.status === 'shutdown';
 
-      let statusHTML = escHtml(cyl.idleStatusText || 'idle');
+      let statusHTML;
       if (isShutdown) {
         statusHTML = '⏹ shutdown';
       } else if (isActive || isDone || isError) {
@@ -1233,6 +1238,19 @@ class DashboardUI {
         }
         if (isDone)  statusHTML = \`✓ \${statusHTML}\`;
         if (isError) statusHTML = \`✗ \${statusHTML}\`;
+        if (isActive && cyl.actionStartedAt) {
+          statusHTML += \` · \${this.formatDuration(Date.now() - cyl.actionStartedAt)}\`;
+        }
+      } else {
+        // idle — show live countdown or rate-limit info
+        const now = Date.now();
+        if (cyl.rateLimitedUntilMs && cyl.rateLimitedUntilMs > now) {
+          statusHTML = \`rate limited · \${this.formatDuration(cyl.rateLimitedUntilMs - now)}\`;
+        } else if (cyl.nextCycleAtMs && cyl.nextCycleAtMs > now) {
+          statusHTML = this.formatDuration(cyl.nextCycleAtMs - now);
+        } else {
+          statusHTML = escHtml(cyl.idleStatusText || 'idle');
+        }
       }
 
       const modelLabel = formatModelName(cyl.model) || \`CYL \${cyl.index}\`;
@@ -1552,6 +1570,9 @@ class DashboardUI {
       cyl.actionType = null;
       cyl.idleStatusText = 'idle';
       cyl.thinkingLines = [];
+      cyl.actionStartedAt = null;
+      cyl.nextCycleAtMs = null;
+      cyl.rateLimitedUntilMs = null;
     }
 
     this.renderPanelA();
@@ -1587,6 +1608,9 @@ class DashboardUI {
       cyl.prNumber = message.data.pullRequestNumber ?? null;
       cyl.model = message.data.model ?? null;
       cyl.thinkingLines = [];
+      cyl.actionStartedAt = typeof message.data.startedAt === 'number' ? message.data.startedAt : Date.now();
+      cyl.nextCycleAtMs = null;
+      cyl.rateLimitedUntilMs = null;
 
       if (cyl.issueNumber != null) this.cylinderByIssue.set(cyl.issueNumber, idx);
       if (cyl.prNumber != null)    this.cylinderByPR.set(cyl.prNumber, idx);
@@ -1663,19 +1687,18 @@ class DashboardUI {
       }
 
       const reason = typeof message.data.reason === 'string' ? message.data.reason : '';
-      const nextCycleInMs = typeof message.data.nextCycleInMs === 'number' ? message.data.nextCycleInMs : null;
-      if (reason.length > 0) {
-        cyl.idleStatusText = reason;
-      } else if (nextCycleInMs !== null && nextCycleInMs > 0) {
-        cyl.idleStatusText = \`next cycle in \${this.formatDuration(nextCycleInMs)}\`;
-      } else {
-        cyl.idleStatusText = 'idle';
-      }
+      const nextCycleAtMs = typeof message.data.nextCycleAtMs === 'number' ? message.data.nextCycleAtMs : null;
+      const rateLimitedUntilMs = typeof message.data.rateLimitedUntilMs === 'number' ? message.data.rateLimitedUntilMs : null;
+
+      cyl.idleStatusText = reason || 'idle';
+      cyl.nextCycleAtMs = nextCycleAtMs;
+      cyl.rateLimitedUntilMs = rateLimitedUntilMs;
 
       cyl.status = 'idle';
       cyl.issueNumber = null;
       cyl.prNumber = null;
       cyl.actionType = null;
+      cyl.actionStartedAt = null;
       cyl.thinkingLines = [];
 
       this.renderPanelA();
