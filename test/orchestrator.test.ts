@@ -734,6 +734,55 @@ test("buildPlan blockedIssueNumbers includes parent entries from child relations
   assert.deepEqual(plan.blockedIssueNumbers[10], [1]);
 });
 
+test("buildPlan blockedIssueNumbers omits closed blockers from text-based dependencies", () => {
+  // Issue #2 says "blocked by #1", but #1 is already closed (not in the snapshot).
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({
+        number: 2,
+        createdAt: "2024-01-02T00:00:00.000Z",
+        body: "blocked by #1",
+      }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // #2 is eligible because its only blocker (#1) is closed.
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 2 }]);
+  // The dashboard must not show #2 as blocked.
+  assert.equal(plan.blockedIssueNumbers[2], undefined);
+});
+
+test("buildPlan blockedIssueNumbers omits closed blockers even when at zero capacity", () => {
+  // Issue #2 says "blocked by #1", but #1 is already closed.
+  // Capacity is saturated by a PR, exercising the early-return path.
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z", body: "blocked by #1" }),
+      createIssue({ number: 3, createdAt: "2024-01-03T00:00:00.000Z" }),
+      createIssue({ number: 4, createdAt: "2024-01-04T00:00:00.000Z" }),
+    ],
+    pullRequests: [
+      createPullRequest({ number: 101, linkedIssueNumbers: [3] }),
+      createPullRequest({ number: 102, linkedIssueNumbers: [4] }),
+    ],
+    agentSessions: [],
+  };
+
+  // maxConcurrency=2 matches the two open PRs → no capacity for new implementation work.
+  const plan = buildPlan(snapshot, 2);
+
+  assert.ok(
+    !plan.actions.some((a) => a.type === "start-implementation"),
+    "No start-implementation actions when at capacity",
+  );
+  // Dashboard must not show #2 as blocked by the closed issue #1.
+  assert.equal(plan.blockedIssueNumbers[2], undefined);
+});
+
 test("buildPlan never starts a blocked issue (text-based blocking regression check)", () => {
   const snapshot: RepositorySnapshot = {
     issues: [
