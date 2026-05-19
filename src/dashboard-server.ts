@@ -1548,7 +1548,7 @@ class DashboardUI {
       // Update the stream element in-place rather than re-rendering the whole panel
       const el = document.getElementById(\`thinking-stream-\${engineIndex}\`);
       if (el) {
-        el.textContent = cyl.thinkingLines.join('\n');
+        el.textContent = cyl.thinkingLines.join('\\n');
         el.classList.add('active');
         el.scrollTop = el.scrollHeight;
       }
