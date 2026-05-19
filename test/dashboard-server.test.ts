@@ -99,3 +99,56 @@ test("DashboardServer replaces cylinder cache on iteration-start", async (t) => 
     "iteration-start should replace action-start in cache",
   );
 });
+
+test("DashboardServer replaces cylinder cache on engine-shutdown", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 2,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  // iteration-start for cylinder 1, then engine-shutdown supersedes it in the cache
+  globalEventEmitter.emit("iteration-start", {
+    engineIndex: 1,
+    iterationNumber: 2,
+    maxConcurrency: 2,
+  });
+  globalEventEmitter.emit("engine-shutdown", { engineIndex: 1 });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 2}`);
+  const messages = await collectMessages(ws, 150);
+  ws.close();
+
+  const cylinderMessages = messages.filter(
+    (m) => m.type === "iteration-start" || m.type === "engine-shutdown",
+  );
+  assert.equal(cylinderMessages.length, 1, "only one cylinder-1 event should be cached");
+  assert.equal(cylinderMessages[0]?.type, "engine-shutdown", "engine-shutdown should replace iteration-start in cache");
+});
+
+test("DashboardServer caches and replays shutdown-requested and app-shutdown", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 3,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  globalEventEmitter.emit("shutdown-requested", {});
+  globalEventEmitter.emit("app-shutdown", {});
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 3}`);
+  const messages = await collectMessages(ws, 150);
+  ws.close();
+
+  const types = messages.map((m) => m.type);
+  assert.ok(types.includes("shutdown-requested"), "should replay shutdown-requested");
+  assert.ok(types.includes("app-shutdown"), "should replay app-shutdown");
+});
