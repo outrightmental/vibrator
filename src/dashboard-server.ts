@@ -1403,8 +1403,20 @@ class DashboardUI {
 
     if (this.cylinders[engineIndex]) {
       const cyl = this.cylinders[engineIndex];
+
+      // Clear stale issue/PR mappings so Panel B stops showing this engine as active
+      if (cyl.issueNumber != null && this.cylinderByIssue.get(cyl.issueNumber) === engineIndex) {
+        this.cylinderByIssue.delete(cyl.issueNumber);
+      }
+      if (cyl.prNumber != null && this.cylinderByPR.get(cyl.prNumber) === engineIndex) {
+        this.cylinderByPR.delete(cyl.prNumber);
+      }
+
       cyl.iterationNumber = iterationNumber;
       cyl.status = 'idle';
+      cyl.issueNumber = null;
+      cyl.prNumber = null;
+      cyl.actionType = null;
     }
 
     this.renderPanelA();
