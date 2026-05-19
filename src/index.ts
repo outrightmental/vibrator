@@ -15,7 +15,7 @@ import {
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
-import { buildPlan } from "./orchestrator.js";
+import { buildPlan, type ProjectModeConfig } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
@@ -248,6 +248,8 @@ function describeAction(
       return `Squash-merge PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "resolve-conflicts":
       return `Resolve merge conflicts in PR #${action.pullRequestNumber}${issueContext} via Claude (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+    case "request-review":
+      return `Request human review on PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
   }
 }
 
@@ -279,6 +281,8 @@ interface Config {
   claudeAccountDirs: string[];
   /** File path for persisted Claude account rate-limit state. */
   claudeAccountStorePath: string;
+  /** Human-in-the-Loop project mode config. Undefined = standard auto-merge mode. */
+  projectMode: ProjectModeConfig | undefined;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -319,6 +323,19 @@ function parseArgs(argv: string[]): Config {
   const claudeAccountStorePath =
     process.env.CLAUDE_ACCOUNTS_STORE_PATH ?? defaultAccountStorePath();
 
+  const projectNumberRaw = process.env.GITHUB_PROJECT_NUMBER;
+  const projectNumber = projectNumberRaw
+    ? Number.parseInt(projectNumberRaw, 10)
+    : undefined;
+  const reviewersRaw = process.env.VIBRATOR_REVIEWERS;
+  const reviewers = reviewersRaw
+    ? reviewersRaw.split(",").map((r) => r.trim()).filter(Boolean)
+    : [];
+  const projectMode: ProjectModeConfig | undefined =
+    projectNumber !== undefined && !Number.isNaN(projectNumber)
+      ? { projectNumber, reviewers }
+      : undefined;
+
   return {
     owner,
     repo,
@@ -332,6 +349,7 @@ function parseArgs(argv: string[]): Config {
     sessionStorePath,
     claudeAccountDirs,
     claudeAccountStorePath,
+    projectMode,
   };
 }
 
@@ -370,10 +388,144 @@ async function runEngineLoop(
     const cycleStart = Date.now();
     iterationNumber++;
 
-    // ── Engine cycle header ───────────────────────────────────────────────
-    write(HEAVY_RULE);
-    write(
-      `vibrator engine-${engineIndex + 1} · iteration ${iterationNumber} · ${timestamp()}`,
+  // --- Workflow approvals ------------------------------------------------
+  section("Workflow approvals");
+  try {
+    const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
+    if (pendingRuns.length === 0) {
+      bullet("0 runs awaiting maintainer approval");
+    } else {
+      bullet(`${pendingRuns.length} run(s) awaiting maintainer approval`);
+      for (const run of pendingRuns) {
+        const label = `run ${run.id} "${run.name || "unnamed"}" [status=${run.status}, event=${run.event}, branch=${run.headBranch || "?"}] (${run.htmlUrl})`;
+        if (config.dryRun) {
+          note(`→ [dry-run] would approve ${label}`, 2);
+          continue;
+        }
+        note(`→ approving ${label}…`, 2);
+        try {
+          const result = await gitHubClient.approveWorkflowRun(run.id);
+          note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
+          globalEventEmitter.emit("workflow-approval", {
+            runId: run.id,
+            runName: run.name,
+            approved: result.approved,
+          });
+        } catch (error) {
+          note(`✗ failed to approve ${label}: ${(error as Error).message}`, 2);
+        }
+      }
+    }
+  } catch (error) {
+    bullet(`failed to list workflow runs awaiting approval: ${(error as Error).message}`);
+  }
+
+  // --- Repository snapshot ----------------------------------------------
+  const snapshot = await loadSnapshot(
+    gitHubClient,
+    sessionStore,
+    config.projectMode ? { projectNumber: config.projectMode.projectNumber } : undefined,
+  );
+  const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
+  const draftPullRequestCount = openPullRequests.filter((pr) => pr.draft).length;
+  const readyPullRequestCount = openPullRequests.filter((pr) => !pr.draft).length;
+  const preReconcileActiveSessions = snapshot.agentSessions.filter(
+    (s) => s.status === "in_progress",
+  );
+
+  globalEventEmitter.emit("snapshot-update", {
+    issueCount: snapshot.issues.length,
+    prCount: openPullRequests.length,
+    draftPrCount: draftPullRequestCount,
+    readyPrCount: readyPullRequestCount,
+    sessionCount: preReconcileActiveSessions.length,
+    issues: snapshot.issues.map((i) => ({
+      number: i.number,
+      title: i.title,
+      state: i.state,
+    })),
+    pullRequests: openPullRequests.map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      state: pr.state,
+      draft: pr.draft,
+      checksStatus: pr.checksStatus,
+      closingIssueNumbers: pr.closingIssueNumbers,
+      linkedIssueNumbers: pr.linkedIssueNumbers,
+    })),
+  });
+
+  // Broadcast repository snapshot and PR updates to dashboard
+  broadcastRepositorySnapshot(snapshot, config.owner, config.repo, preReconcileActiveSessions.length);
+  for (const pr of openPullRequests) {
+    const draftLabel = pr.draft ? "[DRAFT]" : "";
+    const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
+    broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
+  }
+
+  globalEventEmitter.emit("phase-update", { phase: "implementation" });
+
+  section("Repository snapshot");
+  bullet(`${snapshot.issues.length} open issue(s)`);
+  bullet(
+    `${openPullRequests.length} open pull request(s)` +
+      (openPullRequests.length > 0
+        ? ` (${draftPullRequestCount} draft, ${readyPullRequestCount} ready)`
+        : ""),
+  );
+  bullet(`${preReconcileActiveSessions.length} active agent session(s)`);
+  for (const session of preReconcileActiveSessions) {
+    note(`◦ ${describeSession(session, gitHubClient)}`, 2);
+  }
+
+  // --- Reconciliation ---------------------------------------------------
+  // Every Claude action runs synchronously, so any `in_progress` session
+  // observed here can only be the carcass of a previous vibrator process
+  // that crashed mid-action. Fail those so the planner can re-plan.
+  section("Reconciliation");
+  const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
+  bullet(`${reconcileEvents.length} stale session(s) failed`);
+  for (const event of reconcileEvents) {
+    note(`◦ ${describeSession(event.session, gitHubClient)}`, 2);
+  }
+
+  snapshot.agentSessions = await sessionStore.load();
+
+  // --- Plan -------------------------------------------------------------
+  globalEventEmitter.emit("phase-update", { phase: "review" });
+
+  const plan = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
+  const blockedEntries = Object.entries(plan.blockedIssueNumbers);
+
+  // Emit Panel B lifecycle state — issues tagged as "planning" when their
+  // start-implementation action is in the current plan
+  const planningIssueNumbers = new Set(
+    plan.actions
+      .filter((a) => a.type === "start-implementation")
+      .map((a) => a.issueNumber),
+  );
+  broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
+
+  section("Blocked issues");
+  if (blockedEntries.length === 0) {
+    note("(none)");
+  } else {
+    for (const [blocked, blockers] of blockedEntries) {
+      const blockedNumber = Number.parseInt(blocked, 10);
+      const blockerSummary = blockers
+        .map((n) => `#${n} (${gitHubClient.issueUrl(n)})`)
+        .join(", ");
+      bullet(`#${blockedNumber} (${gitHubClient.issueUrl(blockedNumber)}) blocked by ${blockerSummary}`);
+    }
+  }
+
+  section("Plan");
+  if (plan.actions.length === 0) {
+    bullet("0 actions to execute");
+  } else {
+    bullet(
+      `${plan.actions.length} action(s) to execute` +
+        (plan.actions.length > 1 ? ` — running concurrently` : ""),
     );
     if (engineIndex === 0) {
       write(`repo: ${repo} (${gitHubClient.repositoryUrl()})`);
@@ -512,6 +664,7 @@ async function runEngineLoop(
         repo: config.repo,
         issues: snapshot.issues,
         pullRequests: snapshot.pullRequests,
+        ...(config.projectMode ? { projectMode: config.projectMode } : {}),
       };
 
       try {
@@ -639,16 +792,39 @@ async function main(): Promise<void> {
     `cycle-minimum: ${formatDuration(config.cycleMinimumMs)} · concurrency: ${config.maxConcurrency}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
   );
+  if (config.projectMode) {
+    write(
+      `project mode: project #${config.projectMode.projectNumber} · no auto-merge · reviewers: ${
+        config.projectMode.reviewers.length > 0
+          ? config.projectMode.reviewers.join(", ")
+          : "(none configured)"
+      }`,
+    );
+  }
   write(HEAVY_RULE);
 
-  // ── Startup reconciliation ────────────────────────────────────────────────
-  // Any in_progress session observed at startup is the carcass of a process
-  // that crashed mid-action. Fail those so the planner can re-plan.
-  {
-    const token = await getGhToken();
-    const gitHubClient = new GitHubClient({ owner: config.owner, repo: config.repo, token });
-    const sessionStore = new FileSessionStore(config.sessionStorePath);
-    const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+  // Ensure the "manual" label exists in the repository so users can apply it
+  // to issues they want vibrator to skip.
+  try {
+    const startupGitHubClient = new GitHubClient({
+      owner: config.owner,
+      repo: config.repo,
+      token: await getGhToken(),
+    });
+    await startupGitHubClient.ensureLabelExists(
+      "manual",
+      "e0e0e0",
+      "Prevents vibrator from automatically picking up this issue",
+    );
+  } catch (error) {
+    console.warn(
+      `[vibrator] Could not ensure "manual" label exists: ${(error as Error).message}`,
+    );
+  }
+
+  let iterationNumber = 0;
+  let lastSnapshot: RepositorySnapshot | null = null;
+  let seenCommitHashes = new Set<string>();
 
     section("Reconciliation");
     const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
