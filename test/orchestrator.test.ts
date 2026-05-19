@@ -340,6 +340,113 @@ test("buildPlan asks Claude to resolve merge conflicts before any other PR actio
   ]);
 });
 
+test("buildPlan resolves merge conflicts even when a self-review has already run", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 12 })],
+    pullRequests: [
+      createPullRequest({
+        number: 22,
+        linkedIssueNumbers: [12],
+        hasMergeConflicts: true,
+        headSha: "sha-conflict",
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "self-review-1",
+        issueNumber: 12,
+        pullRequestNumber: 22,
+        phase: "self-review",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { madeChanges: false },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "resolve-conflicts",
+      issueNumber: 12,
+      pullRequestNumber: 22,
+      pullRequestHeadSha: "sha-conflict",
+    },
+  ]);
+});
+
+test("buildPlan resolves merge conflicts even when the PR is otherwise ready to squash-merge", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 12 })],
+    pullRequests: [
+      createPullRequest({
+        number: 22,
+        linkedIssueNumbers: [12],
+        hasMergeConflicts: true,
+        headSha: "sha-conflict",
+        headRefName: "branch-22",
+        closingIssueNumbers: [12],
+      }),
+    ],
+    agentSessions: [
+      createSession({
+        id: "self-review-1",
+        issueNumber: 12,
+        pullRequestNumber: 22,
+        phase: "self-review",
+        updatedAt: "2024-01-02T00:00:00.000Z",
+        result: { madeChanges: false },
+      }),
+      createSession({
+        id: "self-review-2",
+        issueNumber: 12,
+        pullRequestNumber: 22,
+        phase: "self-review",
+        updatedAt: "2024-01-03T00:00:00.000Z",
+        result: { madeChanges: false },
+      }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "resolve-conflicts",
+      issueNumber: 12,
+      pullRequestNumber: 22,
+      pullRequestHeadSha: "sha-conflict",
+    },
+  ]);
+});
+
+test("buildPlan resolves merge conflicts even when CI checks are also failing", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 12 })],
+    pullRequests: [
+      createPullRequest({
+        number: 22,
+        linkedIssueNumbers: [12],
+        hasMergeConflicts: true,
+        checksStatus: "failure",
+        headSha: "sha-conflict",
+      }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "resolve-conflicts",
+      issueNumber: 12,
+      pullRequestNumber: 22,
+      pullRequestHeadSha: "sha-conflict",
+    },
+  ]);
+});
+
 test("buildPlan asks Claude to fix failing checks before merging", () => {
   const snapshot: RepositorySnapshot = {
     issues: [createIssue({ number: 12 })],
