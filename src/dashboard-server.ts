@@ -1019,18 +1019,6 @@ a.gh-link:hover {
     return `
 const GITHUB_BASE_URL = 'https://github.com/${owner}/${repo}';
 
-// Palette of 6 distinct neon colours used to colour-coordinate pills with
-// worker threads. Colour slot = issueNumber % PILL_PALETTE.length, which
-// keeps the assignment stable for the lifetime of the SDLC cycle.
-const PILL_PALETTE = [
-  { hex: '#00ff88', rgb: '0,255,136' },   // green
-  { hex: '#ff00ff', rgb: '255,0,255' },   // magenta
-  { hex: '#0088ff', rgb: '0,136,255' },   // blue
-  { hex: '#ffff00', rgb: '255,255,0' },   // yellow
-  { hex: '#ff6600', rgb: '255,102,0' },   // orange
-  { hex: '#aa00ff', rgb: '170,0,255' },   // purple
-];
-
 // Per-cylinder stable neon identity (issue #21: CYL-1=Cyan, CYL-2=Magenta, CYL-3=Gold)
 const CYLINDER_COLORS      = ['#00ffff', '#ff00ff', '#ffd700', '#0088ff', '#ff6600', '#aa00ff'];
 const CYLINDER_COLORS_RGB  = ['0,255,255', '255,0,255', '255,215,0', '0,136,255', '255,102,0', '170,0,255'];
