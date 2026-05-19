@@ -163,3 +163,22 @@ test("FileSessionStore setLastReadCommentAt updates existing timestamp for same 
     assert.equal(result, "2024-06-02T00:00:00.000Z");
   });
 });
+
+test("FileSessionStore createSession preserves lastReadPrComments", async () => {
+  await withTempStore(async (store) => {
+    await store.setLastReadCommentAt(10, "2024-06-01T12:00:00.000Z");
+    await store.createSession({ issueNumber: 1, phase: "request-review", status: "completed" });
+    const result = await store.getLastReadCommentAt(10);
+    assert.equal(result, "2024-06-01T12:00:00.000Z", "createSession must not erase lastReadPrComments");
+  });
+});
+
+test("FileSessionStore completeSession preserves lastReadPrComments", async () => {
+  await withTempStore(async (store) => {
+    const session = await store.createSession({ issueNumber: 1, phase: "self-review" });
+    await store.setLastReadCommentAt(10, "2024-06-01T12:00:00.000Z");
+    await store.completeSession(session.id, { madeChanges: false });
+    const result = await store.getLastReadCommentAt(10);
+    assert.equal(result, "2024-06-01T12:00:00.000Z", "completeSession must not erase lastReadPrComments");
+  });
+});

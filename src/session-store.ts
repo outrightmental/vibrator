@@ -135,7 +135,8 @@ export class FileSessionStore {
   }
 
   async save(sessions: AgentSession[]): Promise<void> {
-    await this.writeState({ sessions });
+    const state = await this.loadState();
+    await this.writeState({ ...state, sessions });
   }
 
   async createSession(input: {
