@@ -85,7 +85,7 @@ export class DashboardServer {
     } else if (type === "action-start" || type === "action-complete" || type === "action-error") {
       const cylinderIdx = ((data.actionIndex as number) || 1) - 1;
       this.cachedEvents.set(`cylinder-${cylinderIdx}`, event);
-    } else if (type === "iteration-start") {
+    } else if (type === "iteration-start" || type === "engine-idle") {
       const engineIndex = (data.engineIndex as number) ?? 0;
       this.cachedEvents.set(`cylinder-${engineIndex}`, event);
     } else if (type === "engine-shutdown") {
@@ -1121,6 +1121,7 @@ class DashboardUI {
         colorRgb: CYLINDER_COLORS_RGB[i] || '136,136,136',
         colorName: CYLINDER_COLOR_NAMES[i] || \`CYL-\${i + 1}\`,
         status: 'idle',
+        idleStatusText: 'idle',
         actionType: null,
         issueNumber: null,
         prNumber: null,
@@ -1199,7 +1200,7 @@ class DashboardUI {
       const isError    = cyl.status === 'error';
       const isShutdown = cyl.status === 'shutdown';
 
-      let statusHTML = 'idle';
+      let statusHTML = escHtml(cyl.idleStatusText || 'idle');
       if (isShutdown) {
         statusHTML = '⏹ shutdown';
       } else if (isActive || isDone || isError) {
@@ -1464,6 +1465,9 @@ class DashboardUI {
       case 'claude-thinking':
         this.handleClaudeThinking(message);
         break;
+      case 'engine-idle':
+        this.handleEngineIdle(message);
+        break;
       case 'shutdown-requested':
         this.handleShutdownRequested(message);
         break;
@@ -1504,6 +1508,7 @@ class DashboardUI {
       cyl.issueNumber = null;
       cyl.prNumber = null;
       cyl.actionType = null;
+      cyl.idleStatusText = 'idle';
       cyl.thinkingLines = [];
     }
 
@@ -1535,6 +1540,7 @@ class DashboardUI {
 
       cyl.status = 'active';
       cyl.actionType = message.data.type || null;
+      cyl.idleStatusText = null;
       cyl.issueNumber = message.data.issueNumber ?? null;
       cyl.prNumber = message.data.pullRequestNumber ?? null;
       cyl.model = message.data.model ?? null;
@@ -1598,6 +1604,40 @@ class DashboardUI {
         el.classList.add('active');
         el.scrollTop = el.scrollHeight;
       }
+    }
+  }
+
+  handleEngineIdle(message) {
+    const engineIndex = message.data.engineIndex;
+    if (engineIndex !== undefined && this.cylinders[engineIndex]) {
+      const cyl = this.cylinders[engineIndex];
+
+      if (cyl.issueNumber != null && this.cylinderByIssue.get(cyl.issueNumber) === engineIndex) {
+        this.cylinderByIssue.delete(cyl.issueNumber);
+      }
+      if (cyl.prNumber != null && this.cylinderByPR.get(cyl.prNumber) === engineIndex) {
+        this.cylinderByPR.delete(cyl.prNumber);
+      }
+
+      const reason = typeof message.data.reason === 'string' ? message.data.reason : '';
+      const nextCycleInMs = typeof message.data.nextCycleInMs === 'number' ? message.data.nextCycleInMs : null;
+      if (reason.length > 0) {
+        cyl.idleStatusText = reason;
+      } else if (nextCycleInMs !== null && nextCycleInMs > 0) {
+        cyl.idleStatusText = \`next cycle in \${this.formatDuration(nextCycleInMs)}\`;
+      } else {
+        cyl.idleStatusText = 'idle';
+      }
+
+      cyl.status = 'idle';
+      cyl.issueNumber = null;
+      cyl.prNumber = null;
+      cyl.actionType = null;
+      cyl.thinkingLines = [];
+
+      this.renderPanelA();
+      this.recolorAllPills();
+      this.resortLifecyclePills();
     }
   }
 
@@ -1709,6 +1749,14 @@ class DashboardUI {
     if (!this.broadcastProcessing) {
       this.processNextBroadcastEvent();
     }
+  }
+
+  formatDuration(ms) {
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes > 0) return \`\${minutes}m \${seconds}s\`;
+    return \`\${seconds}s\`;
   }
 
   processNextBroadcastEvent() {

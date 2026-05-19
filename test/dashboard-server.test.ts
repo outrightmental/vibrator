@@ -130,6 +130,38 @@ test("DashboardServer replaces cylinder cache on engine-shutdown", async (t) => 
   assert.equal(cylinderMessages[0]?.type, "engine-shutdown", "engine-shutdown should replace iteration-start in cache");
 });
 
+test("DashboardServer replaces cylinder cache on engine-idle", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 4,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  globalEventEmitter.emit("action-start", {
+    actionIndex: 1,
+    totalActions: 2,
+    type: "start-implementation",
+    issueNumber: 9,
+    description: "implementing #9",
+  });
+  globalEventEmitter.emit("engine-idle", {
+    engineIndex: 0,
+    reason: "nothing to do this cycle",
+  });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 4}`);
+  const messages = await collectMessages(ws, 150);
+  ws.close();
+
+  const cylinderMessages = messages.filter((m) => m.type === "action-start" || m.type === "engine-idle");
+  assert.equal(cylinderMessages.length, 1, "only one cylinder-0 event should be cached");
+  assert.equal(cylinderMessages[0]?.type, "engine-idle", "engine-idle should replace action-start in cache");
+});
+
 test("DashboardServer caches and replays shutdown-requested and app-shutdown", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 3,

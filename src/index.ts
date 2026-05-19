@@ -519,7 +519,8 @@ async function runEngineLoop(
     });
 
     // ── Execution phase ───────────────────────────────────────────────────
-    if (planned.action !== null) {
+    const hasAction = planned.action !== null;
+    if (hasAction) {
       const action = planned.action;
       const snapshot = planned.snapshot;
 
@@ -596,6 +597,10 @@ async function runEngineLoop(
     } else {
       section(`Engine ${engineIndex + 1}: Idle`);
       bullet("nothing to do this cycle");
+      globalEventEmitter.emit("engine-idle", {
+        engineIndex,
+        reason: "nothing to do this cycle",
+      });
     }
 
     if (config.once) {
@@ -611,6 +616,12 @@ async function runEngineLoop(
     const remainingMs = Math.max(0, config.cycleMinimumMs - elapsed);
 
     if (remainingMs > 0) {
+      if (hasAction) {
+        globalEventEmitter.emit("engine-idle", {
+          engineIndex,
+          nextCycleInMs: remainingMs,
+        });
+      }
       blank();
       write(`Engine ${engineIndex + 1}: next cycle in ${formatDuration(remainingMs)}.`);
 

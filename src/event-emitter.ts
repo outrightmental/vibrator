@@ -18,6 +18,7 @@ export type DashboardEventType =
   | "lifecycle-update"
   | "log-message"
   | "claude-thinking"
+  | "engine-idle"
   | "shutdown-requested"
   | "engine-shutdown"
   | "app-shutdown";
