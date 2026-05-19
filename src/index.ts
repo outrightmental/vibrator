@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import "dotenv/config";
 
 import { executeAction, type ExecuteActionResult } from "./actions.js";
-import { createClaudeAgentClient } from "./claude-agent.js";
+import { createClaudeAgentClient, DEFAULT_COMMIT_MODEL } from "./claude-agent.js";
 import {
   ClaudeAccountManager,
   defaultAccountStorePath,
@@ -536,7 +536,9 @@ async function runEngineLoop(
         issueNumber: action.issueNumber ?? null,
         pullRequestNumber:
           action.type !== "start-implementation" ? action.pullRequestNumber : null,
-        model: config.claudeModel ?? null,
+        model: action.type === "squash-merge"
+          ? (config.claudeCommitModel ?? DEFAULT_COMMIT_MODEL)
+          : (config.claudeModel ?? null),
       });
 
       const actionContext = {
