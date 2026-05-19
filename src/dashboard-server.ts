@@ -1334,7 +1334,7 @@ class DashboardUI {
   // ── Event handlers ──────────────────────────────────────────────────────
   handleIterationStart(message) {
     const engineIndex = message.data.engineIndex !== undefined ? message.data.engineIndex : 0;
-    const iterationNumber = message.data.iterationNumber || 1;
+    const iterationNumber = message.data.iterationNumber;
     const n = message.data.maxConcurrency || this.maxConcurrency;
 
     if (n !== this.maxConcurrency) {

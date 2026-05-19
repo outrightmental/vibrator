@@ -393,6 +393,7 @@ async function runEngineLoop(
 
   do {
     const cycleStart = Date.now();
+    iterationNumber++;
 
     // ── Engine cycle header ───────────────────────────────────────────────
     write(HEAVY_RULE);
@@ -623,7 +624,6 @@ async function runEngineLoop(
         }
       }
     }
-    iterationNumber++;
   } while (true);
 }
 
