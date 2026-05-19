@@ -382,6 +382,7 @@ async function runEngineLoop(
   const claudeAgentClient = createClaudeAgentClient({
     ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
     ...(accountManager !== undefined ? { accountManager } : {}),
+    engineIndex,
   });
 
   let iterationNumber = 0;

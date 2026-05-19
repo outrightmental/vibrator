@@ -505,7 +505,7 @@ body {
 /* ── Panel A: Cylinder rows ── */
 .cylinder-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(0, 255, 136, 0.08);
@@ -536,6 +536,7 @@ body {
   box-shadow: 0 0 6px var(--cyl-color, #00ff88);
   flex-shrink: 0;
   opacity: 0.45;
+  margin-top: 2px;
   transition: opacity 0.3s ease;
 }
 
@@ -597,6 +598,33 @@ body {
 
 .cylinder-row.active .cylinder-status-text {
   color: rgba(255, 255, 255, 0.8);
+}
+
+.cylinder-thinking-stream {
+  margin-top: 4px;
+  max-height: 80px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-size: 9px;
+  font-family: monospace;
+  color: rgba(0, 255, 136, 0.55);
+  line-height: 1.4;
+  word-break: break-word;
+  white-space: pre-wrap;
+  display: none;
+}
+
+.cylinder-thinking-stream.active {
+  display: block;
+}
+
+.cylinder-thinking-stream::-webkit-scrollbar {
+  width: 3px;
+}
+
+.cylinder-thinking-stream::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 136, 0.3);
+  border-radius: 2px;
 }
 
 .phase-section.active .phase-title {
@@ -1059,6 +1087,7 @@ class DashboardUI {
         prNumber: null,
         model: null,
         iterationNumber: 0,
+        thinkingLines: [],
       });
     }
   }
@@ -1163,11 +1192,14 @@ class DashboardUI {
 
       const modelLabel = formatModelName(cyl.model) || \`CYL \${cyl.index}\`;
       const cycleLabel = cyl.iterationNumber > 0 ? \` #\${cyl.iterationNumber}\` : '';
+      const thinkingLines = cyl.thinkingLines || [];
+      const hasThinking = isActive && thinkingLines.length > 0;
       row.innerHTML = \`
         <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
         <div class="cylinder-info">
           <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
           <div class="cylinder-status-text">\${statusHTML}</div>
+          <div class="cylinder-thinking-stream\${hasThinking ? ' active' : ''}" id="thinking-stream-\${cyl.index - 1}">\${thinkingLines.map(escHtml).join('\n')}</div>
         </div>
         <div class="cylinder-spinner"></div>
       \`;
@@ -1386,7 +1418,7 @@ class DashboardUI {
         this.handleLogMessage(message);
         break;
       case 'claude-thinking':
-        this.addLogLine('info', \`Claude [\${message.data.model}]: \${message.data.excerpt}\`);
+        this.handleClaudeThinking(message);
         break;
       default:
         this.addEventToStream(\`[EVENT] \${message.type}\`, -1, 'info');
@@ -1419,6 +1451,7 @@ class DashboardUI {
       cyl.issueNumber = null;
       cyl.prNumber = null;
       cyl.actionType = null;
+      cyl.thinkingLines = [];
     }
 
     this.renderPanelA();
@@ -1450,6 +1483,7 @@ class DashboardUI {
       cyl.issueNumber = message.data.issueNumber ?? null;
       cyl.prNumber = message.data.pullRequestNumber ?? null;
       cyl.model = message.data.model ?? null;
+      cyl.thinkingLines = [];
 
       if (cyl.issueNumber != null) this.cylinderByIssue.set(cyl.issueNumber, idx);
       if (cyl.prNumber != null)    this.cylinderByPR.set(cyl.prNumber, idx);
@@ -1468,6 +1502,7 @@ class DashboardUI {
     const idx = (message.data.actionIndex || 1) - 1;
     if (idx >= 0 && idx < this.cylinders.length) {
       this.cylinders[idx].status = 'done';
+      this.cylinders[idx].thinkingLines = [];
       this.renderPanelA();
     }
     this.addEventToStream(
@@ -1479,12 +1514,34 @@ class DashboardUI {
     const idx = (message.data.actionIndex || 1) - 1;
     if (idx >= 0 && idx < this.cylinders.length) {
       this.cylinders[idx].status = 'error';
+      this.cylinders[idx].thinkingLines = [];
       this.renderPanelA();
     }
     this.addEventToStream(
       \`✗ action [\${message.data.actionIndex}/\${message.data.totalActions}] failed: \${message.data.error || ''}\`,
       idx, 'error'
     );
+  }
+
+  handleClaudeThinking(message) {
+    const engineIndex = message.data.engineIndex;
+    const excerpt = message.data.excerpt || '';
+    if (engineIndex !== undefined && this.cylinders[engineIndex]) {
+      const cyl = this.cylinders[engineIndex];
+      const MAX_LINES = 6;
+      cyl.thinkingLines = cyl.thinkingLines || [];
+      cyl.thinkingLines.push(excerpt);
+      if (cyl.thinkingLines.length > MAX_LINES) {
+        cyl.thinkingLines = cyl.thinkingLines.slice(-MAX_LINES);
+      }
+      // Update the stream element in-place rather than re-rendering the whole panel
+      const el = document.getElementById(\`thinking-stream-\${engineIndex}\`);
+      if (el) {
+        el.textContent = cyl.thinkingLines.join('\n');
+        el.classList.add('active');
+        el.scrollTop = el.scrollHeight;
+      }
+    }
   }
 
   handleWorkflowApproval(message) {
