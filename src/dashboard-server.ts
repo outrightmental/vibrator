@@ -503,6 +503,16 @@ body {
   flex-shrink: 0;
 }
 
+.pill-badge-blocked {
+  border-color: rgba(255, 100, 80, 0.7);
+  color: rgba(255, 130, 110, 1);
+}
+
+.pill-pr-half.absent.blocked {
+  border: 2px dashed rgba(255, 100, 80, 0.35);
+  opacity: 0.75;
+}
+
 /* ── Panel A: Cylinder rows ── */
 .cylinder-row {
   display: flex;
@@ -1790,13 +1800,15 @@ class DashboardUI {
     const prHalf = pill.querySelector('.pill-pr-half');
     if (prHalf) {
       // Update only the PR half class/content so the pill doesn't flicker
-      prHalf.className = \`pill-pr-half \${pair.prPhase}\`;
+      const isBlocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
+      prHalf.className = \`pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}\`;
       prHalf.innerHTML = this.prHalfContent(pair);
     }
   }
 
   pillHTML(pair) {
     const issueUrl = GITHUB_BASE_URL + '/issues/' + pair.issue.number;
+    const isBlocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
     return \`
       <div class="pill-issue-half">
         <div class="pill-label">Issue</div>
@@ -1806,7 +1818,7 @@ class DashboardUI {
           <span class="pill-title">\${this.esc(pair.issue.title)}</span>
         </div>
       </div>
-      <div class="pill-pr-half \${pair.prPhase}">\${this.prHalfContent(pair)}</div>
+      <div class="pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}">\${this.prHalfContent(pair)}</div>
     \`;
   }
 
@@ -1814,6 +1826,12 @@ class DashboardUI {
     if (!pair.pr) {
       if (pair.prPhase === 'planning') {
         return \`<div class="pill-label">PR</div><div class="pill-row"><span class="pill-title">implementing…</span></div>\`;
+      }
+      if (pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0) {
+        const blockerBadges = pair.blockedByIssueNumbers
+          .map(n => \`<span class="pill-badge pill-badge-blocked">#\${n}</span>\`)
+          .join('');
+        return \`<div class="pill-label">Blocked by</div><div class="pill-row">\${blockerBadges}</div>\`;
       }
       return \`<div class="pill-label">PR</div><div class="pill-row"><span class="pill-title">—</span></div>\`;
     }
