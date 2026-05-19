@@ -11,6 +11,12 @@ import type {
 
 interface SessionState {
   sessions: AgentSession[];
+  /**
+   * Maps pull request number → ISO timestamp of the most recent human
+   * comment vibrator has read for that PR. Used in project mode to detect
+   * new comments that should trigger a re-queue.
+   */
+  lastReadPrComments?: Record<number, string>;
 }
 
 const MAX_PERSISTED_TERMINAL_SESSIONS = 200;
@@ -97,7 +103,11 @@ export class FileSessionStore {
     try {
       const contents = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(contents) as SessionState;
-      return { sessions: parsed.sessions ?? [] };
+      const state: SessionState = { sessions: parsed.sessions ?? [] };
+      if (parsed.lastReadPrComments && Object.keys(parsed.lastReadPrComments).length > 0) {
+        state.lastReadPrComments = parsed.lastReadPrComments;
+      }
+      return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return { sessions: [] };
@@ -110,7 +120,12 @@ export class FileSessionStore {
   private async writeState(state: SessionState): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     const tempFilePath = `${this.filePath}.${randomUUID()}.tmp`;
-    const payload: SessionState = { sessions: pruneSessions(state.sessions) };
+    const payload: SessionState = {
+      sessions: pruneSessions(state.sessions),
+      ...(state.lastReadPrComments && Object.keys(state.lastReadPrComments).length > 0
+        ? { lastReadPrComments: state.lastReadPrComments }
+        : {}),
+    };
     await writeFile(tempFilePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     await replaceFileCrossPlatform(tempFilePath, this.filePath);
   }
@@ -173,6 +188,22 @@ export class FileSessionStore {
     }
     await this.save(sessions);
     return session;
+  }
+
+  async getLastReadCommentAt(pullRequestNumber: number): Promise<string | undefined> {
+    const state = await this.loadState();
+    return state.lastReadPrComments?.[pullRequestNumber];
+  }
+
+  async setLastReadCommentAt(pullRequestNumber: number, createdAt: string): Promise<void> {
+    const state = await this.loadState();
+    await this.writeState({
+      ...state,
+      lastReadPrComments: {
+        ...(state.lastReadPrComments ?? {}),
+        [pullRequestNumber]: createdAt,
+      },
+    });
   }
 
   async failSession(sessionId: string): Promise<AgentSession | undefined> {

@@ -15,7 +15,7 @@ import {
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
-import { buildPlan } from "./orchestrator.js";
+import { buildPlan, type ProjectModeConfig } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
@@ -202,6 +202,8 @@ function describeAction(
       return `Squash-merge PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
     case "resolve-conflicts":
       return `Resolve merge conflicts in PR #${action.pullRequestNumber}${issueContext} via Claude (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
+    case "request-review":
+      return `Request human review on PR #${action.pullRequestNumber}${issueContext} (${gitHubClient.pullRequestUrl(action.pullRequestNumber)})`;
   }
 }
 
@@ -233,6 +235,8 @@ interface Config {
   claudeAccountDirs: string[];
   /** File path for persisted Claude account rate-limit state. */
   claudeAccountStorePath: string;
+  /** Human-in-the-Loop project mode config. Undefined = standard auto-merge mode. */
+  projectMode: ProjectModeConfig | undefined;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -273,6 +277,19 @@ function parseArgs(argv: string[]): Config {
   const claudeAccountStorePath =
     process.env.CLAUDE_ACCOUNTS_STORE_PATH ?? defaultAccountStorePath();
 
+  const projectNumberRaw = process.env.GITHUB_PROJECT_NUMBER;
+  const projectNumber = projectNumberRaw
+    ? Number.parseInt(projectNumberRaw, 10)
+    : undefined;
+  const reviewersRaw = process.env.VIBRATOR_REVIEWERS;
+  const reviewers = reviewersRaw
+    ? reviewersRaw.split(",").map((r) => r.trim()).filter(Boolean)
+    : [];
+  const projectMode: ProjectModeConfig | undefined =
+    projectNumber !== undefined && !Number.isNaN(projectNumber)
+      ? { projectNumber, reviewers }
+      : undefined;
+
   return {
     owner,
     repo,
@@ -286,6 +303,7 @@ function parseArgs(argv: string[]): Config {
     sessionStorePath,
     claudeAccountDirs,
     claudeAccountStorePath,
+    projectMode,
   };
 }
 
@@ -375,7 +393,11 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   }
 
   // --- Repository snapshot ----------------------------------------------
-  const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+  const snapshot = await loadSnapshot(
+    gitHubClient,
+    sessionStore,
+    config.projectMode ? { projectNumber: config.projectMode.projectNumber } : undefined,
+  );
   const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
   const draftPullRequestCount = openPullRequests.filter((pr) => pr.draft).length;
   const readyPullRequestCount = openPullRequests.filter((pr) => !pr.draft).length;
@@ -444,7 +466,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
   // --- Plan -------------------------------------------------------------
   globalEventEmitter.emit("phase-update", { phase: "review" });
 
-  const plan = buildPlan(snapshot, config.maxConcurrency);
+  const plan = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
   const blockedEntries = Object.entries(plan.blockedIssueNumbers);
 
   // Emit Panel B lifecycle state — issues tagged as "planning" when their
@@ -492,6 +514,7 @@ async function runIteration(config: Config, iterationNumber: number): Promise<vo
         repo: config.repo,
         issues: snapshot.issues,
         pullRequests: snapshot.pullRequests,
+        ...(config.projectMode ? { projectMode: config.projectMode } : {}),
       };
 
       const results = await Promise.allSettled(
@@ -615,7 +638,35 @@ async function main(): Promise<void> {
     `interval: ${formatDuration(config.intervalMs)} · concurrency: ${config.maxConcurrency}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
   );
+  if (config.projectMode) {
+    write(
+      `project mode: project #${config.projectMode.projectNumber} · no auto-merge · reviewers: ${
+        config.projectMode.reviewers.length > 0
+          ? config.projectMode.reviewers.join(", ")
+          : "(none configured)"
+      }`,
+    );
+  }
   write(HEAVY_RULE);
+
+  // Ensure the "manual" label exists in the repository so users can apply it
+  // to issues they want vibrator to skip.
+  try {
+    const startupGitHubClient = new GitHubClient({
+      owner: config.owner,
+      repo: config.repo,
+      token: await getGhToken(),
+    });
+    await startupGitHubClient.ensureLabelExists(
+      "manual",
+      "e0e0e0",
+      "Prevents vibrator from automatically picking up this issue",
+    );
+  } catch (error) {
+    console.warn(
+      `[vibrator] Could not ensure "manual" label exists: ${(error as Error).message}`,
+    );
+  }
 
   let iterationNumber = 0;
   let lastSnapshot: RepositorySnapshot | null = null;

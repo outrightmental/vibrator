@@ -129,3 +129,37 @@ test("FileSessionStore preserves active sessions through writes", async () => {
     assert.ok(sessions.some((s) => s.id === active.id));
   });
 });
+
+test("FileSessionStore getLastReadCommentAt returns undefined when nothing recorded", async () => {
+  await withTempStore(async (store) => {
+    const result = await store.getLastReadCommentAt(42);
+    assert.equal(result, undefined);
+  });
+});
+
+test("FileSessionStore setLastReadCommentAt persists and getLastReadCommentAt retrieves it", async () => {
+  await withTempStore(async (store) => {
+    await store.setLastReadCommentAt(10, "2024-06-01T12:00:00.000Z");
+    const result = await store.getLastReadCommentAt(10);
+    assert.equal(result, "2024-06-01T12:00:00.000Z");
+  });
+});
+
+test("FileSessionStore setLastReadCommentAt preserves existing sessions when updating", async () => {
+  await withTempStore(async (store) => {
+    await store.createSession({ issueNumber: 1, phase: "implementation", status: "completed" });
+    await store.setLastReadCommentAt(5, "2024-06-01T00:00:00.000Z");
+    const sessions = await store.load();
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]!.issueNumber, 1);
+  });
+});
+
+test("FileSessionStore setLastReadCommentAt updates existing timestamp for same PR", async () => {
+  await withTempStore(async (store) => {
+    await store.setLastReadCommentAt(10, "2024-06-01T00:00:00.000Z");
+    await store.setLastReadCommentAt(10, "2024-06-02T00:00:00.000Z");
+    const result = await store.getLastReadCommentAt(10);
+    assert.equal(result, "2024-06-02T00:00:00.000Z");
+  });
+});

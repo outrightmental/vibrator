@@ -30,6 +30,12 @@ export interface ActionGitHubClient {
   cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
   postComment(pullRequestNumber: number, body: string): Promise<void>;
   listPullRequestComments(pullRequestNumber: number): Promise<Array<{ author: string; body: string; createdAt: string }>>;
+  /** Convert a PR from draft to ready-for-review (no-op if already ready). */
+  markPullRequestReadyForReview?(pullRequestNumber: number): Promise<void>;
+  /** Request review from specific GitHub users. */
+  requestPullRequestReview?(pullRequestNumber: number, reviewers: string[]): Promise<void>;
+  /** Move an issue to a project status (e.g. "In Progress"). */
+  moveIssueToProjectStatus?(projectNumber: number, issueNumber: number, status: string): Promise<void>;
 }
 
 export interface ActionClaudeAgentClient {
@@ -96,6 +102,8 @@ export interface ActionSessionStore {
     status?: AgentSessionStatus;
     result?: AgentSessionResult;
   }): Promise<unknown>;
+  /** Record the ISO timestamp of the most recent PR comment vibrator has read. */
+  setLastReadCommentAt?(pullRequestNumber: number, createdAt: string): Promise<void>;
 }
 
 export interface ExecuteActionContext {
@@ -105,6 +113,11 @@ export interface ExecuteActionContext {
   issues: ReadonlyArray<Issue>;
   /** All open pull requests in the snapshot — used to look up branch / base. */
   pullRequests: ReadonlyArray<PullRequest>;
+  /** When set, enables Human-in-the-Loop project mode behaviours. */
+  projectMode?: {
+    projectNumber: number;
+    reviewers: string[];
+  };
 }
 
 function findIssue(context: ExecuteActionContext, issueNumber: number): Issue {
@@ -152,6 +165,16 @@ export async function executeAction(
   switch (action.type) {
     case "start-implementation": {
       const issue = findIssue(context, action.issueNumber);
+
+      // In project mode, mark the issue as "In Progress" before starting work.
+      if (context.projectMode && gitHubClient.moveIssueToProjectStatus) {
+        await gitHubClient.moveIssueToProjectStatus(
+          context.projectMode.projectNumber,
+          issue.number,
+          "In Progress",
+        );
+      }
+
       const baseBranch = await gitHubClient.getDefaultBranch();
       const implementation = await claudeAgentClient.implementIssue({
         owner: context.owner,
@@ -201,6 +224,16 @@ export async function executeAction(
           ? context.issues.find((i) => i.number === action.issueNumber)
           : undefined;
       const userComments = await gitHubClient.listPullRequestComments(pullRequest.number);
+
+      // Record the last-read comment timestamp so re-queue detection works.
+      const latestCommentAt = userComments.reduce<string | undefined>(
+        (latest, c) => (!latest || c.createdAt > latest ? c.createdAt : latest),
+        undefined,
+      );
+      if (latestCommentAt && sessionStore.setLastReadCommentAt) {
+        await sessionStore.setLastReadCommentAt(pullRequest.number, latestCommentAt);
+      }
+
       const result = await claudeAgentClient.selfReview({
         owner: context.owner,
         repo: context.repo,
@@ -359,6 +392,64 @@ export async function executeAction(
         status: "completed",
         result: { pullRequestBody: mergedBody },
       });
+      return {};
+    }
+
+    case "request-review": {
+      const pullRequest = findPullRequest(context, action.pullRequestNumber);
+
+      // Capture the latest human comment timestamp before requesting review,
+      // so we can detect new comments that arrive after this point.
+      const userComments = await gitHubClient.listPullRequestComments(pullRequest.number);
+      const latestCommentAt = userComments.reduce<string | undefined>(
+        (latest, c) => (!latest || c.createdAt > latest ? c.createdAt : latest),
+        undefined,
+      );
+      // Use the current time as the last-read marker so any subsequent
+      // comments are correctly identified as "new".
+      const lastReadMarker = latestCommentAt ?? new Date().toISOString();
+      if (sessionStore.setLastReadCommentAt) {
+        await sessionStore.setLastReadCommentAt(pullRequest.number, lastReadMarker);
+      }
+
+      // Convert from draft to ready-for-review if needed.
+      if (pullRequest.draft && gitHubClient.markPullRequestReadyForReview) {
+        await gitHubClient.markPullRequestReadyForReview(pullRequest.number);
+      }
+
+      // Request review from the configured human reviewer(s).
+      if (action.reviewers.length > 0 && gitHubClient.requestPullRequestReview) {
+        await gitHubClient.requestPullRequestReview(pullRequest.number, action.reviewers);
+      }
+
+      // Move the issue to "In Review" in the project board.
+      if (
+        action.issueNumber !== undefined &&
+        context.projectMode &&
+        gitHubClient.moveIssueToProjectStatus
+      ) {
+        await gitHubClient.moveIssueToProjectStatus(
+          context.projectMode.projectNumber,
+          action.issueNumber,
+          "In Review",
+        );
+      }
+
+      await sessionStore.createSession({
+        issueNumber: action.issueNumber,
+        pullRequestNumber: pullRequest.number,
+        phase: "request-review",
+        status: "completed",
+      });
+
+      const reviewersText =
+        action.reviewers.length > 0
+          ? ` from ${action.reviewers.map((r) => `@${r}`).join(", ")}`
+          : "";
+      await gitHubClient.postComment(
+        pullRequest.number,
+        `Automated self-review passed. Requesting human review${reviewersText}.`,
+      );
       return {};
     }
   }
