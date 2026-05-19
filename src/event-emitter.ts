@@ -9,7 +9,6 @@ export type DashboardEventType =
   | "plan-update"
   | "iteration-start"
   | "iteration-complete"
-  | "cycle-countdown"
   | "broadcast-github-activity"
   | "broadcast-commit"
   | "broadcast-pr-update"
