@@ -183,6 +183,70 @@ body {
   margin-top: 2px;
 }
 
+.iteration-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.iteration-label {
+  font-size: 10px;
+  color: #ff00ff;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.iteration-number {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ff00ff;
+  text-shadow: 0 0 10px rgba(255, 0, 255, 0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+.countdown {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.countdown-label {
+  font-size: 10px;
+  color: #0088ff;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.countdown-timer {
+  font-size: 22px;
+  font-weight: 700;
+  color: #00ff88;
+  text-shadow: 0 0 15px rgba(0, 255, 136, 1);
+  font-variant-numeric: tabular-nums;
+}
+
+.countdown.state-waiting .countdown-label {
+  color: #ffcc00;
+}
+
+.countdown.state-waiting .countdown-timer {
+  color: #ffcc00;
+  text-shadow: 0 0 15px rgba(255, 204, 0, 0.8);
+}
+
+.countdown.state-working .countdown-label {
+  color: #00ff88;
+  font-size: 12px;
+}
+
+.countdown.state-working .countdown-timer {
+  font-size: 32px;
+  color: #00ff88;
+  text-shadow: 0 0 20px rgba(0, 255, 136, 1), 0 0 40px rgba(0, 255, 136, 0.5);
+}
+
 
 .main-content {
   flex: 1;
@@ -952,6 +1016,14 @@ class DashboardUI {
         <div>
           <div class="header-title">⚡ VIBRATOR <span>AI SDLC BROADCAST</span></div>
         </div>
+        <div class="iteration-info">
+          <div class="iteration-label">Iteration</div>
+          <div class="iteration-number" id="iteration-number">--</div>
+        </div>
+        <div class="countdown" id="countdown-container">
+          <div class="countdown-label" id="countdown-label">Next Cycle In</div>
+          <div class="countdown-timer" id="countdown-timer">--:--</div>
+        </div>
       </div>
       <div class="main-content">
         <div class="panel panel-a">
@@ -1274,34 +1346,19 @@ class DashboardUI {
     const engineIndex = message.data.engineIndex !== undefined ? message.data.engineIndex : 0;
     const iterationNumber = message.data.iterationNumber || 1;
 
-    // Re-initialise cylinder array only when concurrency changes
-    if (n !== this.maxConcurrency) {
-      this.initCylinders(n);
-    }
+    this.iterationNumber = message.data.iterationNumber;
+    const numEl = document.getElementById('iteration-number');
+    if (numEl) numEl.textContent = this.iterationNumber;
 
-    // Update the specific engine's cylinder state
-    if (engineIndex < this.cylinders.length) {
-      const cyl = this.cylinders[engineIndex];
-      cyl.iterationNumber = iterationNumber;
-      cyl.status = 'idle';
-      cyl.actionType = null;
-      cyl.issueNumber = null;
-      cyl.prNumber = null;
-      // Clear this engine's issue/PR assignments from the lookup maps
-      for (const [issueNum, idx] of this.cylinderByIssue.entries()) {
-        if (idx === engineIndex) this.cylinderByIssue.delete(issueNum);
-      }
-      for (const [prNum, idx] of this.cylinderByPR.entries()) {
-        if (idx === engineIndex) this.cylinderByPR.delete(prNum);
-      }
-    }
-
-    // Show banner only when engine 0 starts its first cycle
-    if (engineIndex === 0 && iterationNumber === 1) {
-      const bannerIt = document.getElementById('banner-iteration');
-      if (bannerIt) bannerIt.textContent = \`Engine 1 · Cycle 1\`;
-      this.showCycleBanner();
-    }
+    this.nextCycleTime = null;
+    const container = document.getElementById('countdown-container');
+    const label = document.getElementById('countdown-label');
+    const timer = document.getElementById('countdown-timer');
+    if (container) { container.classList.remove('state-waiting'); container.classList.add('state-working'); }
+    if (label) label.textContent = 'Working';
+    if (timer) timer.textContent = '●';
+    const bannerIt = document.getElementById('banner-iteration');
+    if (bannerIt) bannerIt.textContent = \`Iteration \${this.iterationNumber}\`;
 
     this.renderPanelA();
     this.addEventToStream(
@@ -1406,6 +1463,17 @@ class DashboardUI {
       \`📊 Snapshot: \${data.issueCount || 0} issues, \${data.prCount || 0} PRs, \${data.sessionCount || 0} sessions\`,
       -1, 'info'
     );
+  }
+
+  handleCycleCountdown(message) {
+    this.nextCycleTime = message.data.nextCycleTime
+      ? new Date(message.data.nextCycleTime).getTime()
+      : new Date(message.timestamp).getTime() + (message.data.msUntilCycle || 0);
+
+    const container = document.getElementById('countdown-container');
+    const label = document.getElementById('countdown-label');
+    if (container) { container.classList.remove('state-working'); container.classList.add('state-waiting'); }
+    if (label) label.textContent = 'Next Cycle In';
   }
 
   handleBroadcastEvent(message) {
