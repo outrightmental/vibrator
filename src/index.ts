@@ -366,31 +366,6 @@ async function runEngineLoop(
 
   let iterationNumber = 0;
 
-  write(HEAVY_RULE);
-  write(`vibrator status update · ${timestamp()} · iteration ${iterationNumber}`);
-  write(`repo: ${repo} (${gitHubClient.repositoryUrl()})`);
-  const modeNotes: string[] = [];
-  if (config.dryRun) modeNotes.push("DRY RUN");
-  if (config.once) modeNotes.push("--once");
-  write(
-    `concurrency: ${config.maxConcurrency} · cycle-minimum: ${formatDuration(config.cycleMinimumMs)}` +
-      (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
-  );
-  if (accountManager) {
-    const states = accountManager.getStates();
-    const now = Date.now();
-    const available = states.filter((s) => !s.rateLimitedUntilMs || now >= s.rateLimitedUntilMs).length;
-    write(`claude accounts: ${available}/${states.length} available`);
-    for (const s of states) {
-      const limited = s.rateLimitedUntilMs && now < s.rateLimitedUntilMs;
-      const status = limited
-        ? `rate-limited until ${new Date(s.rateLimitedUntilMs!).toLocaleTimeString()}`
-        : "available";
-      note(`◦ ${s.configDir} — ${status}`);
-    }
-  }
-  write(HEAVY_RULE);
-
   do {
     const cycleStart = Date.now();
     iterationNumber++;
