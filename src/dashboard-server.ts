@@ -1604,7 +1604,7 @@ class DashboardUI {
   handleShutdownRequested(message) {
     this.shutdownRequested = true;
     const header = document.getElementById('panel-a-header');
-    if (header) header.textContent = \`⚙ \${this.maxConcurrency}-CYLINDER ENGINE · SHUTTING DOWN\`;
+    if (header) header.textContent = \`⚙ SHUTTING DOWN\`;
     this.addEventToStream('⏹ Shutdown requested — engines will stop after current cycle', -1, 'warning');
   }
 
@@ -1624,7 +1624,7 @@ class DashboardUI {
   handleAppShutdown(message) {
     this.appShutdown = true;
     const header = document.getElementById('panel-a-header');
-    if (header) header.textContent = \`⚙ \${this.maxConcurrency}-CYLINDER ENGINE · SHUTDOWN\`;
+    if (header) header.textContent = \`⚙ SHUT DOWN\`;
     const statusEl = document.getElementById('connection-status');
     const textEl = document.getElementById('connection-text');
     if (statusEl && textEl) {
