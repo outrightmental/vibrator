@@ -429,6 +429,64 @@ test("broadcastLifecycleUpdate: colorIndex equals issue.number modulo 6", async 
   assert.equal(pairs.find((p) => p.issue.number === 13)!.colorIndex, 1);
 });
 
+// manual-label filtering — issues with the "manual" label must never appear
+// in the dashboard (see issue #89).
+
+test("broadcastLifecycleUpdate: excludes issues labelled 'manual'", async () => {
+  const issues = [
+    makeIssue({ number: 1, labels: ["manual"] }),
+    makeIssue({ number: 2 }),
+  ];
+  const snapshot = { issues, pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } }>;
+  assert.deepEqual(pairs.map((p) => p.issue.number), [2]);
+});
+
+test("broadcastLifecycleUpdate: drops PR pair when the linked issue is 'manual'", async () => {
+  const issues = [makeIssue({ number: 3, labels: ["manual"] })];
+  const pr = makePR({ number: 30, closingIssueNumbers: [3] });
+  const snapshot = { issues, pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<unknown>;
+  assert.equal(pairs.length, 0);
+});
+
+test("broadcastIssueUpdate: emits nothing when the issue is labelled 'manual'", async () => {
+  const issue = makeIssue({ number: 11, labels: ["manual"] });
+  let emitted = false;
+  const unsub = globalEventEmitter.subscribe((event: DashboardEvent) => {
+    if (event.type === "broadcast-issue-update") emitted = true;
+  });
+  broadcastIssueUpdate(issue, "opened");
+  // Give the emitter a tick to flush any synchronous listeners.
+  await new Promise((resolve) => setImmediate(resolve));
+  unsub();
+  assert.equal(emitted, false);
+});
+
+test("broadcastRepositorySnapshot: open-issue count excludes 'manual'-labelled issues", async () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      makeIssue({ number: 1, labels: ["manual"] }),
+      makeIssue({ number: 2 }),
+      makeIssue({ number: 3 }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+  const dataPromise = captureNextEvent("broadcast-github-activity");
+  broadcastRepositorySnapshot(snapshot, "owner", "repo");
+  const data = await dataPromise;
+  assert.equal(data.issueCount, 2);
+  assert.ok((data.content as string).includes("2 open issues"));
+  assert.ok((data.stateAfter as string).startsWith("2 issues open"));
+});
+
 // hasPrStateChanged
 
 test("hasPrStateChanged: returns false when all fields are identical", () => {

@@ -1,6 +1,12 @@
 import { globalEventEmitter } from "./event-emitter.js";
 import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
+// Issues labelled "manual" are intentionally hidden from the dashboard; the
+// orchestrator also refuses to pick them up automatically.
+function isManualIssue(issue: Issue): boolean {
+  return issue.labels.includes("manual");
+}
+
 export interface LifecyclePair {
   issue: { number: number; title: string; state: string };
   pr: { number: number; title: string; state: string; draft: boolean; checksStatus: string } | null;
@@ -30,6 +36,7 @@ export function broadcastLifecycleUpdate(
 ): void {
   const pairs: LifecyclePair[] = [];
   const pairedIssueNumbers = new Set<number>();
+  const visibleIssues = snapshot.issues.filter((i) => !isManualIssue(i));
 
   // Pair each open PR with its closing issues (falling back to linked issues)
   for (const pr of snapshot.pullRequests) {
@@ -37,7 +44,7 @@ export function broadcastLifecycleUpdate(
       pr.closingIssueNumbers.length > 0 ? pr.closingIssueNumbers : pr.linkedIssueNumbers;
     for (const issueNumber of issueNums) {
       if (pairedIssueNumbers.has(issueNumber)) continue;
-      const issue = snapshot.issues.find((i) => i.number === issueNumber);
+      const issue = visibleIssues.find((i) => i.number === issueNumber);
       if (!issue) continue;
       pairedIssueNumbers.add(issueNumber);
       pairs.push({
@@ -59,7 +66,7 @@ export function broadcastLifecycleUpdate(
   }
 
   // Issues not yet paired get an absent or planning right half
-  for (const issue of snapshot.issues) {
+  for (const issue of visibleIssues) {
     if (pairedIssueNumbers.has(issue.number)) continue;
     pairs.push({
       issue: { number: issue.number, title: issue.title, state: issue.state },
@@ -96,6 +103,7 @@ export function broadcastRepositorySnapshot(
   const openPRs = snapshot.pullRequests.filter((pr) => pr.state === "open");
   const draftPRs = openPRs.filter((pr) => pr.draft);
   const readyPRs = openPRs.filter((pr) => !pr.draft);
+  const visibleIssues = snapshot.issues.filter((i) => !isManualIssue(i));
 
   const checkStats = {
     success: readyPRs.filter((pr) => pr.checksStatus === "success").length,
@@ -105,7 +113,7 @@ export function broadcastRepositorySnapshot(
 
   const activeSessionCount = overrideSessionCount ?? snapshot.agentSessions.filter((s) => s.status === "in_progress").length;
 
-  const stateAfter = `${snapshot.issues.length} issues open | ${readyPRs.length} ready PRs | ${activeSessionCount} active sessions | CI: ${checkStats.success}✅ ${checkStats.failure}❌ ${checkStats.pending}⏳`;
+  const stateAfter = `${visibleIssues.length} issues open | ${readyPRs.length} ready PRs | ${activeSessionCount} active sessions | CI: ${checkStats.success}✅ ${checkStats.failure}❌ ${checkStats.pending}⏳`;
 
   const excellence = checkStats.failure === 0 && checkStats.success > 0
     ? `All ${checkStats.success} CI check(s) green — PRs in great shape`
@@ -114,9 +122,9 @@ export function broadcastRepositorySnapshot(
     : "Full repository visibility maintained across all active work";
 
   globalEventEmitter.emit("broadcast-github-activity", {
-    content: `Repository snapshot: ${snapshot.issues.length} open issues, ${openPRs.length} PRs (${draftPRs.length} draft, ${readyPRs.length} ready), ${activeSessionCount} active sessions, checks: ${checkStats.success} success, ${checkStats.failure} failed, ${checkStats.pending} pending`,
+    content: `Repository snapshot: ${visibleIssues.length} open issues, ${openPRs.length} PRs (${draftPRs.length} draft, ${readyPRs.length} ready), ${activeSessionCount} active sessions, checks: ${checkStats.success} success, ${checkStats.failure} failed, ${checkStats.pending} pending`,
     repo: `${owner}/${repo}`,
-    issueCount: snapshot.issues.length,
+    issueCount: visibleIssues.length,
     prCount: openPRs.length,
     draftCount: draftPRs.length,
     readyCount: readyPRs.length,
@@ -253,6 +261,8 @@ export function broadcastReviewComment(
 }
 
 export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?: number): void {
+  if (isManualIssue(issue)) return;
+
   const stateEmoji = issue.state === "open" ? "🔴" : "🟢";
 
   const stateBefore = action === "opened"
