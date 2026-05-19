@@ -163,7 +163,8 @@ async function broadcastBetweenCycleActivity(
     if (snapshotChanged) {
       broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
     }
-    broadcastLifecycleUpdate(snapshot);
+    const { blockedIssueNumbers } = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
+    broadcastLifecycleUpdate(snapshot, new Set(), new Set(), blockedIssueNumbers);
 
     // Broadcast open PRs only when their state has changed since the last poll
     for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
@@ -496,7 +497,7 @@ async function runEngineLoop(
             planningIssueNumbers.add(a.issueNumber);
           }
         }
-        broadcastLifecycleUpdate(snapshot, planningIssueNumbers);
+        broadcastLifecycleUpdate(snapshot, planningIssueNumbers, new Set(), plan.blockedIssueNumbers);
       }
 
       // Find the first unclaimed action
@@ -504,10 +505,10 @@ async function runEngineLoop(
         const key = actionKey(a);
         if (!claimedActions.has(key)) {
           claimedActions.add(key);
-          return { action: a, snapshot };
+          return { action: a, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
         }
       }
-      return { action: null, snapshot };
+      return { action: null, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
     });
 
     // ── Execution phase ───────────────────────────────────────────────────
@@ -572,7 +573,7 @@ async function runEngineLoop(
             for (const n of linked) mergedIssueNumbers.add(n);
           }
           if (mergedIssueNumbers.size > 0) {
-            broadcastLifecycleUpdate(snapshot, new Set(), mergedIssueNumbers);
+            broadcastLifecycleUpdate(snapshot, new Set(), mergedIssueNumbers, planned.blockedIssueNumbers);
           }
         }
       } catch (error) {
