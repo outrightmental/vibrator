@@ -551,6 +551,27 @@ body {
   50%       { box-shadow: 0 0 18px var(--cyl-color, #00ff88), 0 0 30px var(--cyl-color, #00ff88); opacity: 0.8; }
 }
 
+.cylinder-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(var(--cyl-color-rgb, 0, 255, 136), 0.2);
+  border-top-color: var(--cyl-color, #00ff88);
+  border-radius: 50%;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.cylinder-row.active .cylinder-spinner {
+  animation: cylSpin 0.8s linear infinite;
+  opacity: 1;
+}
+
+@keyframes cylSpin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
 .cylinder-info {
   flex: 1;
   min-width: 0;
@@ -561,8 +582,7 @@ body {
   font-weight: 700;
   color: var(--cyl-color, #00ff88);
   text-shadow: 0 0 5px var(--cyl-color, rgba(0, 255, 136, 0.5));
-  text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
 }
 
 .cylinder-status-text {
@@ -961,6 +981,21 @@ function escHtml(text) {
   return d.innerHTML;
 }
 
+function formatModelName(modelId) {
+  if (!modelId) return null;
+  const stripped = modelId.replace(/^claude-/i, '');
+  const parts = stripped.split('-');
+  let nameEnd = parts.length;
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\d/.test(parts[i])) { nameEnd = i; break; }
+  }
+  const nameParts = parts.slice(0, nameEnd).map(p => p.charAt(0).toUpperCase() + p.slice(1));
+  const versionParts = parts.slice(nameEnd);
+  let result = 'Claude ' + nameParts.join(' ');
+  if (versionParts.length > 0) result += ' ' + versionParts.join('.');
+  return result;
+}
+
 class DashboardUI {
   constructor() {
     this.appContainer = document.getElementById('app');
@@ -1001,7 +1036,7 @@ class DashboardUI {
         actionType: null,
         issueNumber: null,
         prNumber: null,
-        iterationNumber: 0,
+        model: null,
       });
     }
   }
@@ -1102,12 +1137,14 @@ class DashboardUI {
         if (isError) statusText = \`✗ \${statusText}\`;
       }
 
+      const modelLabel = formatModelName(cyl.model) || \`CYL \${cyl.index}\`;
       row.innerHTML = \`
         <div class="\${isActive ? 'cylinder-dot pulsing' : 'cylinder-dot'}"></div>
         <div class="cylinder-info">
-          <div class="cylinder-label">CYL \${cyl.index} · \${cyl.colorName} · #\${cyl.iterationNumber}</div>
+          <div class="cylinder-label">\${escHtml(modelLabel)}</div>
           <div class="cylinder-status-text">\${escHtml(statusText)}</div>
         </div>
+        <div class="cylinder-spinner"></div>
       \`;
       list.appendChild(row);
     }
@@ -1376,6 +1413,7 @@ class DashboardUI {
       cyl.actionType = message.data.type || null;
       cyl.issueNumber = message.data.issueNumber ?? null;
       cyl.prNumber = message.data.pullRequestNumber ?? null;
+      cyl.model = message.data.model ?? null;
 
       if (cyl.issueNumber != null) this.cylinderByIssue.set(cyl.issueNumber, idx);
       if (cyl.prNumber != null)    this.cylinderByPR.set(cyl.prNumber, idx);
