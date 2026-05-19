@@ -1253,7 +1253,10 @@ class DashboardUI {
         }
       }
 
-      const modelLabel = formatModelName(cyl.model) || \`CYL \${cyl.index}\`;
+      const isIdle = !isActive && !isDone && !isError && !isShutdown;
+      const modelLabel = isIdle
+        ? 'Idle'
+        : (formatModelName(cyl.model) || \`CYL \${cyl.index}\`);
       const cycleLabel = cyl.iterationNumber > 0 ? \` #\${cyl.iterationNumber}\` : '';
       const thinkingLines = cyl.thinkingLines || [];
       const hasThinking = isActive && thinkingLines.length > 0;
