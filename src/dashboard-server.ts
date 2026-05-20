@@ -2042,20 +2042,21 @@ class DashboardUI {
    *   tier 2: planning (being implemented, no PR yet)
    *   tier 3: absent unblocked
    *   tier 4: absent blocked
-   * Within a tier, rows currently on an engine cylinder sort by cylinder index
-   * (matching the engine panel order); the rest fall back to issue number.
+   * Rows currently on an engine cylinder always sort first, ahead of every
+   * other row regardless of tier, ordered by cylinder index (matching the
+   * engine panel order). The rest sort by tier, then by issue number.
    */
   compareLifecyclePairs(a, b) {
-    const ap = this.lifecycleTier(a);
-    const bp = this.lifecycleTier(b);
-    if (ap !== bp) return ap - bp;
-
     const aCyl = this.cylinderByIssue.get(a.issue.number);
     const bCyl = this.cylinderByIssue.get(b.issue.number);
     const aOnCyl = aCyl !== undefined;
     const bOnCyl = bCyl !== undefined;
     if (aOnCyl && bOnCyl) return aCyl - bCyl;
     if (aOnCyl !== bOnCyl) return aOnCyl ? -1 : 1;
+
+    const ap = this.lifecycleTier(a);
+    const bp = this.lifecycleTier(b);
+    if (ap !== bp) return ap - bp;
 
     return a.issue.number - b.issue.number;
   }
