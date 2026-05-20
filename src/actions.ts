@@ -65,8 +65,18 @@ export interface ActionClaudeAgentClient {
     issueNumber?: number;
     issueTitle?: string;
     issueBody?: string;
-    userComments?: ReadonlyArray<{ author: string; body: string; createdAt: string }>;
-  }): Promise<{ madeChanges: boolean; headSha: string }>;
+    userComments?: ReadonlyArray<{
+      author: string;
+      body: string;
+      createdAt: string;
+      url?: string;
+      kind?: string;
+    }>;
+  }): Promise<{
+    madeChanges: boolean;
+    headSha: string;
+    commentResponses?: ReadonlyArray<{ index: number; response: string }>;
+  }>;
   resolveMergeConflicts(params: {
     owner: string;
     repo: string;
@@ -267,18 +277,25 @@ export async function executeAction(
         : "Reviewed code, no issues found.";
       // Explicitly acknowledge every human comment that was parsed and fed
       // into this self-review, so the human can confirm their feedback was
-      // read. Each comment links back to itself.
+      // read. Each comment links back to itself and carries the agent's
+      // narrative of how it was addressed (when the agent emitted one).
       const commentLines = [reviewSummary];
       if (userComments.length > 0) {
+        const responsesByIndex = new Map(
+          (result.commentResponses ?? []).map((r) => [r.index, r.response]),
+        );
         commentLines.push("");
-        for (const c of userComments) {
+        userComments.forEach((c, i) => {
           const link = c.url ?? `#${pullRequest.number}`;
-          commentLines.push(
-            result.madeChanges
-              ? `I read and addressed the comment from @${c.author}: ${link}`
-              : `I read the comment from @${c.author} and determined no code changes were needed: ${link}`,
-          );
-        }
+          const narrative = responsesByIndex.get(i + 1)?.trim();
+          if (narrative) {
+            commentLines.push(`I read and addressed the comment from @${c.author} (${link}): ${narrative}`);
+          } else {
+            commentLines.push(
+              `I read the comment from @${c.author}: ${link} (no per-comment summary was produced).`,
+            );
+          }
+        });
       }
       await gitHubClient.postComment(pullRequest.number, commentLines.join("\n"));
       return {};

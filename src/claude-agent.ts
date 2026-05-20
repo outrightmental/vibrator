@@ -220,6 +220,19 @@ export interface SelfReviewResult {
   madeChanges: boolean;
   /** SHA of the latest commit on the branch after the review pass. */
   headSha: string;
+  /**
+   * Per-comment narrative emitted by the agent — one entry for each human
+   * comment that was fed into the review, in the order they were presented.
+   * Empty when the PR had no human comments or the agent emitted no payload.
+   */
+  commentResponses: SelfReviewCommentResponse[];
+}
+
+export interface SelfReviewCommentResponse {
+  /** 1-based index matching the order comments were presented to the agent. */
+  index: number;
+  /** How the agent addressed (or chose not to act on) this comment. */
+  response: string;
 }
 
 export interface ResolveMergeConflictsParams {
@@ -278,6 +291,13 @@ export const FINAL_DESCRIPTION_END_MARKER = "<<<VIBRATOR_PR_BODY_END>>>";
  */
 export const IMPLEMENTATION_PAYLOAD_START_MARKER = "<<<VIBRATOR_IMPL_START>>>";
 export const IMPLEMENTATION_PAYLOAD_END_MARKER = "<<<VIBRATOR_IMPL_END>>>";
+
+/**
+ * Sentinel markers wrapping the JSON self-review payload — a per-comment
+ * narrative of how each human comment was addressed.
+ */
+export const SELF_REVIEW_PAYLOAD_START_MARKER = "<<<VIBRATOR_REVIEW_START>>>";
+export const SELF_REVIEW_PAYLOAD_END_MARKER = "<<<VIBRATOR_REVIEW_END>>>";
 
 interface ClaudeAgentClientOptions {
   /** Root directory under which per-PR / per-issue checkouts are created. */
@@ -497,11 +517,41 @@ export function extractImplementationPayload(
   return { pullRequestTitle: obj.title, pullRequestBody: obj.body };
 }
 
+/**
+ * Extracts the per-comment self-review narrative from the agent's raw output.
+ * Returns an empty array when no valid payload is present.
+ */
+export function extractSelfReviewPayload(rawOutput: string): SelfReviewCommentResponse[] {
+  const inner = extractBetweenMarkers(
+    rawOutput,
+    SELF_REVIEW_PAYLOAD_START_MARKER,
+    SELF_REVIEW_PAYLOAD_END_MARKER,
+  );
+  if (!inner) return [];
+  let data: unknown;
+  try {
+    data = JSON.parse(inner);
+  } catch {
+    return [];
+  }
+  if (typeof data !== "object" || data === null) return [];
+  const raw = (data as Record<string, unknown>).commentResponses;
+  if (!Array.isArray(raw)) return [];
+  const responses: SelfReviewCommentResponse[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const obj = entry as Record<string, unknown>;
+    if (typeof obj.index !== "number" || typeof obj.response !== "string") continue;
+    responses.push({ index: obj.index, response: obj.response });
+  }
+  return responses;
+}
+
 export function formatUserCommentsSection(userComments: ReadonlyArray<UserComment> | undefined): string[] {
   if (!userComments || userComments.length === 0) return [];
-  const formatted = userComments.map((c) => {
+  const formatted = userComments.map((c, i) => {
     const meta = [c.createdAt, c.kind, c.url].filter((v) => v).join(" · ");
-    return `**${c.author}** (${meta}):\n${c.body}`;
+    return `[Comment ${i + 1}] **${c.author}** (${meta}):\n${c.body}`;
   });
   return [
     "",
@@ -559,6 +609,28 @@ function buildSelfReviewPrompt(params: SelfReviewParams): string {
         ]
       : [];
 
+  const commentCount = params.userComments?.length ?? 0;
+  const payloadSection =
+    commentCount > 0
+      ? [
+          "",
+          `6. You MUST account for every one of the ${commentCount} human comment(s) shown above. After completing your work, emit a JSON payload — wrapped between the exact sentinel lines below, each on its own line — describing how you addressed each comment.`,
+          "",
+          `${SELF_REVIEW_PAYLOAD_START_MARKER}`,
+          `{`,
+          `  "commentResponses": [`,
+          `    { "index": 1, "response": "<1-2 sentences: what you did in response to Comment 1, or why no change was needed>" }`,
+          `  ]`,
+          `}`,
+          `${SELF_REVIEW_PAYLOAD_END_MARKER}`,
+          "",
+          "Payload requirements:",
+          `- Include exactly one entry per human comment, with \`index\` matching the [Comment N] label shown above (1 through ${commentCount}).`,
+          "- `response` must be specific about what changed (reference files/commits) or, if you made no change, explain why the comment did not require one.",
+          "- The JSON must be valid, appear exactly once, and not be wrapped in code fences.",
+        ]
+      : [];
+
   return [
     `You are performing a self-review of pull request #${params.pullRequestNumber} in ${params.owner}/${params.repo}.`,
     "",
@@ -578,6 +650,7 @@ function buildSelfReviewPrompt(params: SelfReviewParams): string {
     "3. If there are human comments on the PR (shown above), address any requests or concerns raised in them.",
     "4. If you find any problems, fix them directly by editing the files. Commit every change with a clear, descriptive commit message that explains what was changed and why.",
     "5. If you find nothing that needs to change, make no commits and output only a brief 'LGTM' message.",
+    ...payloadSection,
     "",
     "Be honest and thorough — this is your own code and the goal is to ship high-quality work that fully satisfies the issue.",
   ].join("\n");
@@ -927,7 +1000,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     ).trim();
 
     const prompt = buildSelfReviewPrompt(params);
-    await this.runClaude(prompt, repoDir);
+    const stdout = await this.runClaude(prompt, repoDir);
+    const commentResponses = extractSelfReviewPayload(stdout);
 
     // Determine whether Claude actually committed review fixes before the
     // orchestrator merges the latest base branch during push.
@@ -940,7 +1014,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const update = await this.pushAndReportHead(repoDir, params.headRefName, {
       baseBranch: params.baseRefName,
     });
-    return { madeChanges, headSha: update.headSha };
+    return { madeChanges, headSha: update.headSha, commentResponses };
   }
 
   async resolveMergeConflicts(
