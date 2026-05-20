@@ -173,11 +173,27 @@ export interface GitHubClientOptions {
   htmlBaseUrl?: string;
 }
 
+/** Where a human comment on a PR came from. */
+export type PullRequestCommentKind = "conversation" | "review" | "review-thread";
+
 export interface PullRequestComment {
   author: string;
   body: string;
   createdAt: string;
+  /** Web URL of the comment/review, so it can be linked back to. */
+  url: string;
+  /** Whether this is a conversation comment, a review summary, or an inline review-thread comment. */
+  kind: PullRequestCommentKind;
 }
+
+/**
+ * Hidden marker appended to every comment Vibrator posts. Used to tell
+ * Vibrator's own comments apart from human comments by content rather than by
+ * author login — Vibrator may run under the same GitHub account as a human
+ * reviewer, in which case login-based filtering would also discard the
+ * human's comments.
+ */
+export const VIBRATOR_COMMENT_MARKER = "<!-- vibrator:automated-comment -->";
 
 export class GitHubClient {
   private readonly apiBaseUrl: string;
@@ -360,27 +376,96 @@ export class GitHubClient {
   }
 
   /**
-   * Lists comments left on a pull request by humans — i.e. excluding
-   * comments posted by the authenticated vibrator bot account. These are
-   * the regular "conversation" comments (not inline review thread comments)
-   * that users leave via the GitHub website or CLI.
+   * Lists feedback left on a pull request by humans. This spans all three
+   * places GitHub stores PR feedback:
+   *   - issue "conversation" comments (`/issues/{n}/comments`)
+   *   - review summaries, e.g. "Request changes" (`/pulls/{n}/reviews`)
+   *   - inline review-thread comments (`/pulls/{n}/comments`)
+   *
+   * Vibrator's own automated comments are excluded by looking for the hidden
+   * {@link VIBRATOR_COMMENT_MARKER} rather than by author login, because
+   * Vibrator may run under the same GitHub account as a human reviewer.
+   * Comments authored by other bot accounts (e.g. `github-actions[bot]`) are
+   * also excluded.
    */
   async listPullRequestComments(pullRequestNumber: number): Promise<PullRequestComment[]> {
-    const [comments, botLogin] = await Promise.all([
+    const { owner, repo } = this.options;
+    const [issueComments, reviews, reviewThreadComments] = await Promise.all([
       this.getAllPages<{
-        user: { login: string } | null;
+        user: { login: string; type?: string } | null;
         body: string;
         created_at: string;
-      }>(`/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/comments`),
-      this.getAuthenticatedLogin(),
+        html_url: string;
+      }>(`/repos/${owner}/${repo}/issues/${pullRequestNumber}/comments`),
+      this.getAllPages<{
+        user: { login: string; type?: string } | null;
+        body: string | null;
+        submitted_at: string | null;
+        html_url: string;
+      }>(`/repos/${owner}/${repo}/pulls/${pullRequestNumber}/reviews`),
+      this.getAllPages<{
+        user: { login: string; type?: string } | null;
+        body: string;
+        created_at: string;
+        html_url: string;
+      }>(`/repos/${owner}/${repo}/pulls/${pullRequestNumber}/comments`),
     ]);
-    return comments
-      .filter((comment) => comment.user?.login !== botLogin)
-      .map((comment) => ({
+
+    // A comment counts as human feedback unless it was posted by a bot
+    // account or carries one of Vibrator's own markers (the automated-comment
+    // marker for issue comments, or the review marker for posted reviews).
+    const isHumanFeedback = (
+      user: { type?: string } | null,
+      body: string | null,
+    ): boolean => {
+      if (user?.type === "Bot") return false;
+      if (body === null) return true;
+      if (body.includes(VIBRATOR_COMMENT_MARKER)) return false;
+      if (body.includes(VIBRATOR_REVIEW_MARKER)) return false;
+      return true;
+    };
+
+    const result: PullRequestComment[] = [];
+
+    for (const comment of issueComments) {
+      if (!isHumanFeedback(comment.user, comment.body)) continue;
+      result.push({
         author: comment.user?.login ?? "unknown",
         body: comment.body,
         createdAt: comment.created_at,
-      }));
+        url: comment.html_url,
+        kind: "conversation",
+      });
+    }
+
+    for (const review of reviews) {
+      // Skip reviews with no submitted timestamp (pending) and reviews with
+      // an empty body (a bare approve/comment with only inline comments —
+      // those inline comments are fetched separately below).
+      if (review.submitted_at === null) continue;
+      if (review.body === null || review.body.trim() === "") continue;
+      if (!isHumanFeedback(review.user, review.body)) continue;
+      result.push({
+        author: review.user?.login ?? "unknown",
+        body: review.body,
+        createdAt: review.submitted_at,
+        url: review.html_url,
+        kind: "review",
+      });
+    }
+
+    for (const comment of reviewThreadComments) {
+      if (!isHumanFeedback(comment.user, comment.body)) continue;
+      result.push({
+        author: comment.user?.login ?? "unknown",
+        body: comment.body,
+        createdAt: comment.created_at,
+        url: comment.html_url,
+        kind: "review-thread",
+      });
+    }
+
+    return result.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   }
 
   async listOpenIssues(): Promise<Issue[]> {
@@ -850,7 +935,10 @@ export class GitHubClient {
   }
 
   async postComment(pullRequestNumber: number, body: string): Promise<void> {
-    await this.createIssueComment(pullRequestNumber, body);
+    // Append the hidden marker so listPullRequestComments can recognise this
+    // as Vibrator's own comment even when Vibrator runs under a human's
+    // GitHub account.
+    await this.createIssueComment(pullRequestNumber, `${body}\n\n${VIBRATOR_COMMENT_MARKER}`);
   }
 
   async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {

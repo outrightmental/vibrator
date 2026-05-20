@@ -9,11 +9,14 @@ import {
   createClaudeAgentClient,
   extractFinalDescription,
   extractImplementationPayload,
+  extractSelfReviewPayload,
   extractThinkingPreview,
   FINAL_DESCRIPTION_END_MARKER,
   FINAL_DESCRIPTION_START_MARKER,
   IMPLEMENTATION_PAYLOAD_END_MARKER,
   IMPLEMENTATION_PAYLOAD_START_MARKER,
+  SELF_REVIEW_PAYLOAD_END_MARKER,
+  SELF_REVIEW_PAYLOAD_START_MARKER,
   formatUserCommentsSection,
   isRebaseInProgress,
   isClaudeUsageLimitMessage,
@@ -753,4 +756,53 @@ test("formatUserCommentsSection formats comments with author, date, and body", (
   assert.ok(joined.includes("bob"), "should include second comment author");
   assert.ok(joined.includes("Consider edge cases"), "should include second comment body");
   assert.ok(joined.includes("Human comments on this PR"), "should include header text");
+});
+
+test("formatUserCommentsSection numbers each comment so the agent can reference it", () => {
+  const result = formatUserCommentsSection([
+    { author: "alice", body: "First", createdAt: "2024-02-01T10:00:00.000Z" },
+    { author: "bob", body: "Second", createdAt: "2024-02-02T08:00:00.000Z" },
+  ]).join("\n");
+  assert.ok(result.includes("[Comment 1] **alice**"), "first comment is labelled");
+  assert.ok(result.includes("[Comment 2] **bob**"), "second comment is labelled");
+});
+
+test("extractSelfReviewPayload parses per-comment responses", () => {
+  const raw = [
+    "Some transcript noise.",
+    SELF_REVIEW_PAYLOAD_START_MARKER,
+    JSON.stringify({
+      commentResponses: [
+        { index: 1, response: "Added the favicon." },
+        { index: 2, response: "Wrote tests." },
+      ],
+    }),
+    SELF_REVIEW_PAYLOAD_END_MARKER,
+    "More noise.",
+  ].join("\n");
+  const responses = extractSelfReviewPayload(raw);
+  assert.equal(responses.length, 2);
+  assert.deepEqual(responses[0], { index: 1, response: "Added the favicon." });
+  assert.deepEqual(responses[1], { index: 2, response: "Wrote tests." });
+});
+
+test("extractSelfReviewPayload returns an empty array for missing or malformed payloads", () => {
+  assert.deepEqual(extractSelfReviewPayload("no payload here"), []);
+  assert.deepEqual(
+    extractSelfReviewPayload(
+      `${SELF_REVIEW_PAYLOAD_START_MARKER}\nnot json\n${SELF_REVIEW_PAYLOAD_END_MARKER}`,
+    ),
+    [],
+  );
+  // Entries missing required fields are skipped individually.
+  const partial = extractSelfReviewPayload(
+    [
+      SELF_REVIEW_PAYLOAD_START_MARKER,
+      JSON.stringify({
+        commentResponses: [{ index: 1 }, { index: 2, response: "kept" }],
+      }),
+      SELF_REVIEW_PAYLOAD_END_MARKER,
+    ].join("\n"),
+  );
+  assert.deepEqual(partial, [{ index: 2, response: "kept" }]);
 });

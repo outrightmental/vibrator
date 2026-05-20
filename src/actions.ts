@@ -29,7 +29,9 @@ export interface ActionGitHubClient {
   }): Promise<Array<{ name: string; logExcerpt: string }>>;
   cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
   postComment(pullRequestNumber: number, body: string): Promise<void>;
-  listPullRequestComments(pullRequestNumber: number): Promise<Array<{ author: string; body: string; createdAt: string }>>;
+  listPullRequestComments(
+    pullRequestNumber: number,
+  ): Promise<Array<{ author: string; body: string; createdAt: string; url?: string; kind?: string }>>;
   /** Convert a PR from draft to ready-for-review (no-op if already ready). */
   markPullRequestReadyForReview?(pullRequestNumber: number): Promise<void>;
   /** Request review from specific GitHub users. */
@@ -63,8 +65,18 @@ export interface ActionClaudeAgentClient {
     issueNumber?: number;
     issueTitle?: string;
     issueBody?: string;
-    userComments?: ReadonlyArray<{ author: string; body: string; createdAt: string }>;
-  }): Promise<{ madeChanges: boolean; headSha: string }>;
+    userComments?: ReadonlyArray<{
+      author: string;
+      body: string;
+      createdAt: string;
+      url?: string;
+      kind?: string;
+    }>;
+  }): Promise<{
+    madeChanges: boolean;
+    headSha: string;
+    commentResponses?: ReadonlyArray<{ index: number; response: string }>;
+  }>;
   resolveMergeConflicts(params: {
     owner: string;
     repo: string;
@@ -260,10 +272,32 @@ export async function executeAction(
           pullRequestHeadSha: result.headSha,
         },
       });
-      const reviewComment = result.madeChanges
+      const reviewSummary = result.madeChanges
         ? "Reviewed code and pushed fixes."
         : "Reviewed code, no issues found.";
-      await gitHubClient.postComment(pullRequest.number, reviewComment);
+      // Explicitly acknowledge every human comment that was parsed and fed
+      // into this self-review, so the human can confirm their feedback was
+      // read. Each comment links back to itself and carries the agent's
+      // narrative of how it was addressed (when the agent emitted one).
+      const commentLines = [reviewSummary];
+      if (userComments.length > 0) {
+        const responsesByIndex = new Map(
+          (result.commentResponses ?? []).map((r) => [r.index, r.response]),
+        );
+        commentLines.push("");
+        userComments.forEach((c, i) => {
+          const link = c.url ?? `#${pullRequest.number}`;
+          const narrative = responsesByIndex.get(i + 1)?.trim();
+          if (narrative) {
+            commentLines.push(`I read and addressed the comment from @${c.author} (${link}): ${narrative}`);
+          } else {
+            commentLines.push(
+              `I read the comment from @${c.author}: ${link} (no per-comment summary was produced).`,
+            );
+          }
+        });
+      }
+      await gitHubClient.postComment(pullRequest.number, commentLines.join("\n"));
       return {};
     }
 

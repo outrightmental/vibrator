@@ -10,6 +10,7 @@ import {
   GitHubClient,
   isVibratorReview,
   loadSnapshot,
+  VIBRATOR_COMMENT_MARKER,
   VIBRATOR_REVIEW_MARKER,
 } from "../src/github.js";
 import { FileSessionStore } from "../src/session-store.js";
@@ -251,110 +252,149 @@ test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fai
   );
 });
 
-test("listPullRequestComments filters out the authenticated bot's own comments", async (t) => {
+/**
+ * Builds a fetch mock that serves the three GitHub endpoints
+ * listPullRequestComments reads: issue conversation comments, PR reviews, and
+ * inline review-thread comments.
+ */
+function mockPrCommentEndpoints(
+  t: test.TestContext,
+  prNumber: number,
+  data: {
+    issueComments?: unknown[];
+    reviews?: unknown[];
+    reviewThreadComments?: unknown[];
+  },
+): void {
+  const json = (payload: unknown): Response =>
+    new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   const fetchMock = t.mock.method(
     globalThis,
     "fetch",
-    async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    async (_url: string | URL | Request): Promise<Response> => {
       const url = String(_url);
-
-      // GraphQL viewer query for authenticated login
-      if (url.includes("/graphql") && String(init?.body ?? "").includes("viewer")) {
-        return new Response(
-          JSON.stringify({ data: { viewer: { login: "vibrator-bot" } } }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-
-      // REST comments endpoint
-      if (url.includes("/issues/42/comments")) {
-        return new Response(
-          JSON.stringify([
-            {
-              user: { login: "vibrator-bot" },
-              body: "Reviewed code, no issues found.",
-              created_at: "2024-03-01T10:00:00Z",
-            },
-            {
-              user: { login: "alice" },
-              body: "Please add more tests",
-              created_at: "2024-03-02T09:00:00Z",
-            },
-            {
-              user: { login: "bob" },
-              body: "Consider edge cases",
-              created_at: "2024-03-03T08:00:00Z",
-            },
-          ]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-
+      if (url.includes(`/issues/${prNumber}/comments`)) return json(data.issueComments ?? []);
+      if (url.includes(`/pulls/${prNumber}/reviews`)) return json(data.reviews ?? []);
+      if (url.includes(`/pulls/${prNumber}/comments`)) return json(data.reviewThreadComments ?? []);
       throw new Error(`Unexpected fetch call to ${url}`);
     },
   );
-
   t.after(() => {
     fetchMock.mock.restore();
   });
+}
 
-  const client = new GitHubClient({
-    owner: "outrightmental",
-    repo: "testrepo",
-    token: "token",
+test("listPullRequestComments excludes Vibrator's own marked comments but keeps human comments on a shared account", async (t) => {
+  // Vibrator runs under the same account ("charneykaye") as the human
+  // reviewer, so its own comments must be told apart by the hidden marker —
+  // not by author login.
+  mockPrCommentEndpoints(t, 42, {
+    issueComments: [
+      {
+        user: { login: "charneykaye", type: "User" },
+        body: `Reviewed code, no issues found.\n\n${VIBRATOR_COMMENT_MARKER}`,
+        created_at: "2024-03-01T10:00:00Z",
+        html_url: "https://github.com/o/r/pull/42#issuecomment-1",
+      },
+      {
+        user: { login: "charneykaye", type: "User" },
+        body: "Please add more tests",
+        created_at: "2024-03-02T09:00:00Z",
+        html_url: "https://github.com/o/r/pull/42#issuecomment-2",
+      },
+      {
+        user: { login: "github-actions", type: "Bot" },
+        body: "Visit the preview URL for this PR",
+        created_at: "2024-03-02T09:30:00Z",
+        html_url: "https://github.com/o/r/pull/42#issuecomment-3",
+      },
+    ],
   });
 
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
   const comments = await client.listPullRequestComments(42);
 
-  // The bot's own comment is filtered out
-  assert.equal(comments.length, 2);
-  assert.equal(comments[0]?.author, "alice");
+  // Vibrator's own marked comment and the github-actions bot comment are
+  // dropped; the human's comment survives despite sharing the login.
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0]?.author, "charneykaye");
   assert.equal(comments[0]?.body, "Please add more tests");
-  assert.equal(comments[1]?.author, "bob");
-  assert.equal(comments[1]?.body, "Consider edge cases");
+  assert.equal(comments[0]?.kind, "conversation");
+  assert.equal(comments[0]?.url, "https://github.com/o/r/pull/42#issuecomment-2");
 });
 
-test("listPullRequestComments returns empty array when all comments are from the bot", async (t) => {
-  const fetchMock = t.mock.method(
-    globalThis,
-    "fetch",
-    async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const url = String(_url);
+test("listPullRequestComments includes PR reviews and inline review-thread comments", async (t) => {
+  mockPrCommentEndpoints(t, 7, {
+    issueComments: [
+      {
+        user: { login: "alice", type: "User" },
+        body: "Looks promising",
+        created_at: "2024-03-01T08:00:00Z",
+        html_url: "https://github.com/o/r/pull/7#issuecomment-1",
+      },
+    ],
+    reviews: [
+      {
+        user: { login: "alice", type: "User" },
+        body: "You haven't implemented the favicon yet.",
+        submitted_at: "2024-03-02T08:00:00Z",
+        html_url: "https://github.com/o/r/pull/7#pullrequestreview-1",
+      },
+      // Bare review with no body — skipped (its inline comments come separately).
+      {
+        user: { login: "alice", type: "User" },
+        body: "",
+        submitted_at: "2024-03-02T08:05:00Z",
+        html_url: "https://github.com/o/r/pull/7#pullrequestreview-2",
+      },
+      // Vibrator's own posted review — excluded via the review marker.
+      {
+        user: { login: "alice", type: "User" },
+        body: `${VIBRATOR_REVIEW_MARKER}\n\nAutomated review.`,
+        submitted_at: "2024-03-02T08:10:00Z",
+        html_url: "https://github.com/o/r/pull/7#pullrequestreview-3",
+      },
+    ],
+    reviewThreadComments: [
+      {
+        user: { login: "alice", type: "User" },
+        body: "This variable name is unclear",
+        created_at: "2024-03-03T08:00:00Z",
+        html_url: "https://github.com/o/r/pull/7#discussion_r1",
+      },
+    ],
+  });
 
-      if (url.includes("/graphql") && String(init?.body ?? "").includes("viewer")) {
-        return new Response(
-          JSON.stringify({ data: { viewer: { login: "vibrator-bot" } } }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  const comments = await client.listPullRequestComments(7);
 
-      if (url.includes("/issues/10/comments")) {
-        return new Response(
-          JSON.stringify([
-            {
-              user: { login: "vibrator-bot" },
-              body: "Addressed failing CI checks.",
-              created_at: "2024-03-01T10:00:00Z",
-            },
-          ]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-
-      throw new Error(`Unexpected fetch call to ${url}`);
-    },
+  // Conversation comment, review summary, and review-thread comment — sorted
+  // by creation time. The empty review and Vibrator's own review are excluded.
+  assert.equal(comments.length, 3);
+  assert.deepEqual(
+    comments.map((c) => c.kind),
+    ["conversation", "review", "review-thread"],
   );
+  assert.equal(comments[1]?.body, "You haven't implemented the favicon yet.");
+  assert.equal(comments[1]?.kind, "review");
+});
 
-  t.after(() => {
-    fetchMock.mock.restore();
+test("listPullRequestComments returns empty array when there is no human feedback", async (t) => {
+  mockPrCommentEndpoints(t, 10, {
+    issueComments: [
+      {
+        user: { login: "charneykaye", type: "User" },
+        body: `Addressed failing CI checks.\n\n${VIBRATOR_COMMENT_MARKER}`,
+        created_at: "2024-03-01T10:00:00Z",
+        html_url: "https://github.com/o/r/pull/10#issuecomment-1",
+      },
+    ],
   });
 
-  const client = new GitHubClient({
-    owner: "outrightmental",
-    repo: "testrepo",
-    token: "token",
-  });
-
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
   const comments = await client.listPullRequestComments(10);
   assert.equal(comments.length, 0);
 });
