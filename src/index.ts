@@ -503,9 +503,13 @@ async function runEngineLoop(
       const plan = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
 
       if (engineIndex === 0) {
+        // Any issue with a start-implementation action in the plan is shown
+        // "planning" — including one currently being implemented (its action
+        // is claimed). Excluding claimed actions here would drop the in-flight
+        // issue's pulsing right half, leaving a left-half-only pill.
         const planningIssueNumbers = new Set<number>();
         for (const a of plan.actions) {
-          if (a.type === "start-implementation" && !claimedActions.has(actionKey(a))) {
+          if (a.type === "start-implementation") {
             planningIssueNumbers.add(a.issueNumber);
           }
         }
