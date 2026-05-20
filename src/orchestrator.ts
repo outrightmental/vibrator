@@ -473,9 +473,17 @@ export function buildPlan(
     }
   }
 
-  // Milestone gate: only issues from the earliest milestone that has open
-  // issues are eligible to start. Issues without a milestone are unaffected.
-  const earliestMilestoneNumber = selectEarliestMilestoneNumber(issues);
+  // Milestone gate: an issue in milestone N can start only once every issue
+  // in milestones < N has either been completed (closed, so absent from the
+  // open-issues list) or at least started (has an open linked PR or an
+  // active agent session, i.e. is in `unavailableIssueNumbers`). Find the
+  // earliest milestone that still contains an unstarted open issue — that is
+  // the only milestone whose issues are eligible to start now. Issues
+  // without a milestone are unaffected.
+  const unstartedIssues = issues.filter(
+    (issue) => !unavailableIssueNumbers.has(issue.number),
+  );
+  const earliestUnstartedMilestoneNumber = selectEarliestMilestoneNumber(unstartedIssues);
 
   const eligibleIssues = issues.filter((issue) => {
     if (unavailableIssueNumbers.has(issue.number)) {
@@ -497,8 +505,8 @@ export function buildPlan(
       return false;
     }
 
-    if (earliestMilestoneNumber !== undefined && issue.milestone !== undefined) {
-      return issue.milestone.number === earliestMilestoneNumber;
+    if (earliestUnstartedMilestoneNumber !== undefined && issue.milestone !== undefined) {
+      return issue.milestone.number === earliestUnstartedMilestoneNumber;
     }
 
     return true;
