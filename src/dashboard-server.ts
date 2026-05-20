@@ -450,6 +450,11 @@ body {
   overflow: hidden;
 }
 
+/* Orphan PR — left half is empty; the pill still reads as one whole pill. */
+.pill-issue-half.empty {
+  background: rgba(var(--pill-rgb), 0.04);
+}
+
 .pill-pr-half {
   flex: 1;
   display: flex;
@@ -2000,20 +2005,20 @@ class DashboardUI {
     const sorted = [...pairs].sort((a, b) => this.compareLifecyclePairs(a, b));
 
     const existingKeys = new Set(
-      [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber)
+      [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.pairKey)
     );
-    const incomingKeys = new Set(sorted.map(p => String(p.issue.number)));
+    const incomingKeys = new Set(sorted.map(p => this.pairKey(p)));
 
     for (const key of existingKeys) {
       if (!incomingKeys.has(key)) {
-        content.querySelector('[data-issue-number="' + key + '"]')?.remove();
+        content.querySelector('[data-pair-key="' + key + '"]')?.remove();
       }
     }
 
     // Create or update pills without moving existing ones
     for (const pair of sorted) {
-      const key = String(pair.issue.number);
-      let pill = content.querySelector('[data-issue-number="' + key + '"]');
+      const key = this.pairKey(pair);
+      let pill = content.querySelector('[data-pair-key="' + key + '"]');
       if (!pill) {
         pill = this.createPill(pair);
         content.appendChild(pill);
@@ -2023,13 +2028,13 @@ class DashboardUI {
     }
 
     // Reorder pills only when the DOM order doesn't already match the sorted order
-    const domOrder = [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber);
-    const sortedOrder = sorted.map(p => String(p.issue.number));
+    const domOrder = [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.pairKey);
+    const sortedOrder = sorted.map(p => this.pairKey(p));
     const needsReorder = domOrder.length !== sortedOrder.length ||
                          domOrder.some((key, idx) => key !== sortedOrder[idx]);
     if (needsReorder) {
       for (const pair of sorted) {
-        const pill = content.querySelector('[data-issue-number="' + String(pair.issue.number) + '"]');
+        const pill = content.querySelector('[data-pair-key="' + this.pairKey(pair) + '"]');
         if (pill) content.appendChild(pill);
       }
     }
@@ -2047,8 +2052,8 @@ class DashboardUI {
    * engine panel order). The rest sort by tier, then by issue number.
    */
   compareLifecyclePairs(a, b) {
-    const aCyl = this.cylinderByIssue.get(a.issue.number);
-    const bCyl = this.cylinderByIssue.get(b.issue.number);
+    const aCyl = a.issue ? this.cylinderByIssue.get(a.issue.number) : undefined;
+    const bCyl = b.issue ? this.cylinderByIssue.get(b.issue.number) : undefined;
     const aOnCyl = aCyl !== undefined;
     const bOnCyl = bCyl !== undefined;
     if (aOnCyl && bOnCyl) return aCyl - bCyl;
@@ -2058,7 +2063,10 @@ class DashboardUI {
     const bp = this.lifecycleTier(b);
     if (ap !== bp) return ap - bp;
 
-    return a.issue.number - b.issue.number;
+    // Orphan PRs (no issue) sort by PR number within their tier.
+    const aNum = a.issue ? a.issue.number : a.pr.number;
+    const bNum = b.issue ? b.issue.number : b.pr.number;
+    return aNum - bNum;
   }
 
   lifecycleTier(pair) {
@@ -2074,23 +2082,29 @@ class DashboardUI {
     const content = document.getElementById('lifecycle-content');
     if (!content) return;
     const sorted = [...this.lastLifecyclePairs].sort((a, b) => this.compareLifecyclePairs(a, b));
-    const domOrder = [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.issueNumber);
-    const sortedOrder = sorted.map(p => String(p.issue.number));
+    const domOrder = [...content.querySelectorAll('.lifecycle-pill')].map(el => el.dataset.pairKey);
+    const sortedOrder = sorted.map(p => this.pairKey(p));
     const needsReorder = domOrder.length !== sortedOrder.length ||
                          domOrder.some((key, idx) => key !== sortedOrder[idx]);
     if (needsReorder) {
       for (const pair of sorted) {
-        const pill = content.querySelector('[data-issue-number="' + pair.issue.number + '"]');
+        const pill = content.querySelector('[data-pair-key="' + this.pairKey(pair) + '"]');
         if (pill) content.appendChild(pill);
       }
     }
   }
 
+  // Stable DOM key for a pill — issue number when issue-backed, or "pr-<n>"
+  // for an orphan PR (a PR not connected to any issue).
+  pairKey(pair) {
+    return pair.issue ? String(pair.issue.number) : 'pr-' + pair.pr.number;
+  }
+
   createPill(pair) {
-    const color = this.resolvePillColor(pair.issue.number);
+    const color = this.resolvePillColor(pair.issue ? pair.issue.number : null);
     const pill = document.createElement('div');
     pill.className = 'lifecycle-pill';
-    pill.dataset.issueNumber = String(pair.issue.number);
+    pill.dataset.pairKey = this.pairKey(pair);
     pill.style.setProperty('--pill-color', color.hex);
     pill.style.setProperty('--pill-rgb', color.rgb);
     pill.style.setProperty('--pill-glow', \`rgba(\${color.rgb},0.3)\`);
@@ -2099,7 +2113,7 @@ class DashboardUI {
   }
 
   updatePill(pill, pair) {
-    const color = this.resolvePillColor(pair.issue.number);
+    const color = this.resolvePillColor(pair.issue ? pair.issue.number : null);
     pill.style.setProperty('--pill-color', color.hex);
     pill.style.setProperty('--pill-rgb', color.rgb);
     pill.style.setProperty('--pill-glow', \`rgba(\${color.rgb},0.3)\`);
@@ -2128,8 +2142,13 @@ class DashboardUI {
   }
 
   pillHTML(pair) {
-    const issueUrl = GITHUB_BASE_URL + '/issues/' + pair.issue.number;
     const isBlocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
+    const prHalf = \`<div class="pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}\${pair.disabled ? ' disabled' : ''}">\${this.prHalfContent(pair)}</div>\`;
+    // Orphan PR (not connected to an issue) — whole pill, empty left half.
+    if (!pair.issue) {
+      return \`<div class="pill-issue-half empty"></div>\${prHalf}\`;
+    }
+    const issueUrl = GITHUB_BASE_URL + '/issues/' + pair.issue.number;
     return \`
       <div class="pill-issue-half">
         <div class="pill-label">Issue</div>
@@ -2139,7 +2158,7 @@ class DashboardUI {
           <span class="pill-title">\${this.esc(pair.issue.title)}</span>
         </div>
       </div>
-      <div class="pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}\${pair.disabled ? ' disabled' : ''}">\${this.prHalfContent(pair)}</div>
+      \${prHalf}
     \`;
   }
 
@@ -2191,7 +2210,9 @@ class DashboardUI {
     const content = document.getElementById('lifecycle-content');
     if (!content) return;
     for (const pill of content.querySelectorAll('.lifecycle-pill')) {
-      const issueNumber = parseInt(pill.dataset.issueNumber, 10);
+      // Orphan-PR pills key as "pr-<n>" — non-numeric, so they keep their
+      // default colour and are skipped by the isNaN guard below.
+      const issueNumber = parseInt(pill.dataset.pairKey, 10);
       if (isNaN(issueNumber)) continue;
       const color = this.resolvePillColor(issueNumber);
       pill.style.setProperty('--pill-color', color.hex);
