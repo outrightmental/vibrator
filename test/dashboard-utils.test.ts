@@ -486,6 +486,59 @@ test("broadcastLifecycleUpdate: drops PR pair when the linked issue is 'manual'"
   assert.equal(pairs.length, 0);
 });
 
+// orphan PRs — open PRs not connected to any issue appear as a whole pill
+// with a null issue (the dashboard renders an empty left half).
+
+test("broadcastLifecycleUpdate: open PR with no linked issue becomes an orphan pair", async () => {
+  const pr = makePR({ number: 77, closingIssueNumbers: [], linkedIssueNumbers: [] });
+  const snapshot = { issues: [], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{
+    issue: unknown;
+    pr: { number: number } | null;
+    prPhase: string;
+  }>;
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0]!.issue, null);
+  assert.equal(pairs[0]!.pr?.number, 77);
+  assert.equal(pairs[0]!.prPhase, "active");
+});
+
+test("broadcastLifecycleUpdate: closed PR with no linked issue is not shown", async () => {
+  const pr = makePR({ number: 78, state: "closed", closingIssueNumbers: [], linkedIssueNumbers: [] });
+  const snapshot = { issues: [], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<unknown>;
+  assert.equal(pairs.length, 0);
+});
+
+test("broadcastLifecycleUpdate: a PR with a linked issue is never treated as orphan", async () => {
+  const issue = makeIssue({ number: 4 });
+  const pr = makePR({ number: 79, closingIssueNumbers: [], linkedIssueNumbers: [4] });
+  const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } | null }>;
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0]!.issue?.number, 4);
+});
+
+test("broadcastLifecycleUpdate: a manual orphan PR is flagged disabled", async () => {
+  const pr = makePR({ number: 80, closingIssueNumbers: [], linkedIssueNumbers: [], labels: ["manual"] });
+  const snapshot = { issues: [], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: unknown; disabled?: boolean }>;
+  assert.equal(pairs[0]!.issue, null);
+  assert.equal(pairs[0]!.disabled, true);
+});
+
 test("broadcastIssueUpdate: emits nothing when the issue is labelled 'manual'", async () => {
   const issue = makeIssue({ number: 11, labels: ["manual"] });
   let emitted = false;

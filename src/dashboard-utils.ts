@@ -14,7 +14,11 @@ function isManualPullRequest(pr: PullRequest): boolean {
 }
 
 export interface LifecyclePair {
-  issue: { number: number; title: string; state: string };
+  /**
+   * The issue this PR closes, or null for an orphan PR — a PR not connected to
+   * any issue. Orphan-PR pairs render as a whole pill with an empty left half.
+   */
+  issue: { number: number; title: string; state: string } | null;
   pr: { number: number; title: string; state: string; draft: boolean; checksStatus: string } | null;
   /** absent=no PR, planning=implementation in plan, active=PR open, completed=PR closed */
   prPhase: "absent" | "planning" | "active" | "completed";
@@ -77,6 +81,27 @@ export function broadcastLifecycleUpdate(
     }
   }
 
+  // Orphan PRs — open PRs not connected to any issue (no closing or linked
+  // issue numbers). They render as a whole pill with an empty left half and
+  // the PR in the right half.
+  for (const pr of snapshot.pullRequests) {
+    if (pr.state !== "open") continue;
+    if (pr.closingIssueNumbers.length > 0 || pr.linkedIssueNumbers.length > 0) continue;
+    pairs.push({
+      issue: null,
+      pr: {
+        number: pr.number,
+        title: pr.title,
+        state: pr.state,
+        draft: pr.draft,
+        checksStatus: pr.checksStatus,
+      },
+      prPhase: "active",
+      colorIndex: pr.number % 6,
+      ...(isManualPullRequest(pr) && { disabled: true }),
+    });
+  }
+
   // Issues not yet paired get an absent or planning right half
   for (const issue of visibleIssues) {
     if (pairedIssueNumbers.has(issue.number)) continue;
@@ -100,7 +125,10 @@ export function broadcastLifecycleUpdate(
     const aPriority = phaseSortPriority(a.prPhase, aBlocked);
     const bPriority = phaseSortPriority(b.prPhase, bBlocked);
     if (aPriority !== bPriority) return aPriority - bPriority;
-    return a.issue.number - b.issue.number;
+    // Orphan PRs (no issue) sort by PR number within their tier.
+    const aNum = a.issue ? a.issue.number : a.pr!.number;
+    const bNum = b.issue ? b.issue.number : b.pr!.number;
+    return aNum - bNum;
   });
 
   globalEventEmitter.emit("lifecycle-update", { pairs });
