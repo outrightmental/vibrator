@@ -78,6 +78,8 @@ export interface PullRequest {
    * checks that have been pending for too long.
    */
   headCommitPushedAt: string | undefined;
+  /** Label names applied to this PR. */
+  labels: string[];
   /** Issue numbers referenced as closing this PR (Closes/Fixes/Resolves). */
   closingIssueNumbers: number[];
   /** Linked issues (closing references + broader linked keywords). */

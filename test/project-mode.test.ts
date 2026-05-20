@@ -48,6 +48,7 @@ function createPullRequest(
     headCommitPushedAt: overrides.headCommitPushedAt,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
+    labels: overrides.labels ?? [],
     linkedIssueNumbers: overrides.linkedIssueNumbers,
     closingIssueNumbers: overrides.closingIssueNumbers ?? overrides.linkedIssueNumbers,
     ...(overrides.hasNewCommentsSinceLastRead !== undefined
@@ -372,6 +373,7 @@ test("executeAction request-review converts PR to ready, requests review, and re
     headCommitPushedAt: undefined,
     createdAt: "2024-01-01T00:00:00.000Z",
     updatedAt: "2024-01-01T00:00:00.000Z",
+    labels: [],
     linkedIssueNumbers: [1],
     closingIssueNumbers: [1],
   };
@@ -536,6 +538,7 @@ test("executeAction self-review records the latest comment timestamp as last-rea
     headCommitPushedAt: undefined,
     createdAt: "2024-01-01T00:00:00.000Z",
     updatedAt: "2024-01-01T00:00:00.000Z",
+    labels: [],
     linkedIssueNumbers: [1],
     closingIssueNumbers: [1],
   };

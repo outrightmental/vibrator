@@ -7,6 +7,12 @@ function isManualIssue(issue: Issue): boolean {
   return issue.labels.includes("manual");
 }
 
+// PRs labelled "manual" are never worked on automatically. They still appear
+// on the dashboard paired with their (non-manual) issue, but rendered disabled.
+function isManualPullRequest(pr: PullRequest): boolean {
+  return pr.labels.includes("manual");
+}
+
 export interface LifecyclePair {
   issue: { number: number; title: string; state: string };
   pr: { number: number; title: string; state: string; draft: boolean; checksStatus: string } | null;
@@ -16,6 +22,11 @@ export interface LifecyclePair {
   colorIndex: number;
   /** Issue numbers blocking this issue, if any (populated for pre-implementation issues) */
   blockedByIssueNumbers?: number[];
+  /**
+   * True when the PR is labelled "manual" — vibrator will not work on it, so
+   * the PR half is rendered disabled (greyed out, no glow).
+   */
+  disabled?: boolean;
 }
 
 function phaseSortPriority(phase: string, isBlocked: boolean): number {
@@ -61,6 +72,7 @@ export function broadcastLifecycleUpdate(
         ...(blockedIssueNumbers[issue.number] !== undefined && {
           blockedByIssueNumbers: blockedIssueNumbers[issue.number],
         }),
+        ...(isManualPullRequest(pr) && { disabled: true }),
       });
     }
   }
