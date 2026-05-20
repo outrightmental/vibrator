@@ -279,6 +279,38 @@ test("buildPlan (project mode) does nothing while waiting for human review (no r
   assert.deepEqual(plan.actions, []);
 });
 
+test("buildPlan (project mode) does not let PRs awaiting human review starve new issues", () => {
+  // Regression: three issues are implemented and their PRs are parked
+  // awaiting human review (ready-for-review). They produce no orchestrator
+  // action, so they must not count against `maxConcurrency` — otherwise the
+  // engine cylinders sit idle instead of picking up the remaining issues.
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, projectStatus: "In Review" }),
+      createIssue({ number: 2, projectStatus: "In Review" }),
+      createIssue({ number: 3, projectStatus: "In Review" }),
+      createIssue({ number: 4, projectStatus: "Ready" }),
+    ],
+    pullRequests: [
+      createPullRequest({ number: 11, linkedIssueNumbers: [1], draft: false }),
+      createPullRequest({ number: 12, linkedIssueNumbers: [2], draft: false }),
+      createPullRequest({ number: 13, linkedIssueNumbers: [3], draft: false }),
+    ],
+    agentSessions: [
+      createSession({ id: "s1", issueNumber: 1, pullRequestNumber: 11, phase: "request-review" }),
+      createSession({ id: "s2", issueNumber: 2, pullRequestNumber: 12, phase: "request-review" }),
+      createSession({ id: "s3", issueNumber: 3, pullRequestNumber: 13, phase: "request-review" }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3, projectMode);
+
+  // The three parked PRs need no work; issue #4 should still be picked up.
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 4 },
+  ]);
+});
+
 // ─── request-review action execution ─────────────────────────────────────────
 
 test("executeAction request-review converts PR to ready, requests review, and records session", async () => {
