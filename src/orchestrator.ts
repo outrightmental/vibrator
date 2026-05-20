@@ -432,7 +432,20 @@ export function buildPlan(
   );
 
   const actions: OrchestratorAction[] = [];
+  // Count only PRs that still occupy an engine cylinder. A PR with an active
+  // session or a planned orchestrator action is live work; a PR parked
+  // awaiting human review (ready-for-review, post `request-review` with no
+  // re-queue signal) or already squash-merged needs no cylinder time. If
+  // those parked PRs are counted against `maxConcurrency` they starve new
+  // issues of capacity and leave cylinders idle — which is exactly the bug
+  // where three PRs ready-for-review froze all three cylinders.
+  let livePullRequestCount = 0;
   for (const pullRequest of pullRequests) {
+    const hasActiveSession = getRelevantSessions(
+      snapshot.agentSessions,
+      pullRequest.linkedIssueNumbers,
+      pullRequest.number,
+    ).some(isActiveSession);
     const action = planPullRequestAction(
       pullRequest,
       pullRequest.linkedIssueNumbers,
@@ -443,9 +456,11 @@ export function buildPlan(
     if (action) {
       actions.push(action);
     }
+    if (action || hasActiveSession) {
+      livePullRequestCount += 1;
+    }
   }
 
-  const activePullRequestCount = pullRequests.length;
   const implementationSessionsWithoutPullRequests = countImplementationSessionsWithoutPullRequests(
     snapshot.agentSessions,
     openIssueNumbers,
@@ -453,7 +468,7 @@ export function buildPlan(
   );
   const remainingCapacity = Math.max(
     0,
-    maxConcurrency - activePullRequestCount - implementationSessionsWithoutPullRequests,
+    maxConcurrency - livePullRequestCount - implementationSessionsWithoutPullRequests,
   );
 
   if (remainingCapacity === 0) {
