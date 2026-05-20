@@ -187,6 +187,10 @@ export interface UserComment {
   author: string;
   body: string;
   createdAt: string;
+  /** Web URL of the comment, so the review can reference it directly. */
+  url?: string;
+  /** Where the comment came from: "conversation", "review", or "review-thread". */
+  kind?: string;
 }
 
 export interface SelfReviewParams {
@@ -495,10 +499,13 @@ export function extractImplementationPayload(
 
 export function formatUserCommentsSection(userComments: ReadonlyArray<UserComment> | undefined): string[] {
   if (!userComments || userComments.length === 0) return [];
-  const formatted = userComments.map((c) => `**${c.author}** (${c.createdAt}):\n${c.body}`);
+  const formatted = userComments.map((c) => {
+    const meta = [c.createdAt, c.kind, c.url].filter((v) => v).join(" · ");
+    return `**${c.author}** (${meta}):\n${c.body}`;
+  });
   return [
     "",
-    "Human comments on this PR (take these into account when doing your work):",
+    "Human comments on this PR — read every one of them and take it into account when doing your work:",
     "---",
     ...formatted,
     "---",

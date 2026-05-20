@@ -87,7 +87,13 @@ function createHarness(input: {
   };
   failingCheckRuns?: Array<{ name: string; logExcerpt: string }>;
   newPullRequest?: { number: number; headSha: string; created?: boolean };
-  pullRequestComments?: Array<{ author: string; body: string; createdAt: string }>;
+  pullRequestComments?: Array<{
+    author: string;
+    body: string;
+    createdAt: string;
+    url?: string;
+    kind?: string;
+  }>;
 }): Harness {
   const calls: string[] = [];
   const sessions: SessionInput[] = [];
@@ -550,6 +556,56 @@ test("executeAction passes PR comments to selfReview", async () => {
 
   assert.equal(harness.capturedUserComments.length, 1);
   assert.deepEqual(harness.capturedUserComments[0], comments);
+});
+
+test("executeAction's self-review comment acknowledges every parsed human comment", async () => {
+  const pullRequest = createPullRequest({ number: 25, linkedIssueNumbers: [5] });
+  const comments = [
+    {
+      author: "alice",
+      body: "Implement the favicon",
+      createdAt: "2024-02-01T10:00:00.000Z",
+      url: "https://github.com/o/r/pull/25#pullrequestreview-1",
+      kind: "review",
+    },
+    {
+      author: "bob",
+      body: "Add tests",
+      createdAt: "2024-02-02T10:00:00.000Z",
+      url: "https://github.com/o/r/pull/25#issuecomment-2",
+      kind: "conversation",
+    },
+  ];
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    issues: [createIssue({ number: 5 })],
+    pullRequestComments: comments,
+    selfReviewMadeChanges: true,
+  });
+
+  await run(harness, {
+    type: "self-review",
+    issueNumber: 5,
+    pullRequestNumber: 25,
+    pullRequestHeadSha: "sha-25",
+  });
+
+  const postCall = harness.calls.find((c) => c.startsWith("post-comment:25:"));
+  assert.ok(postCall, "should post a review comment");
+  const body = postCall.slice("post-comment:25:".length);
+  assert.ok(body.includes("Reviewed code and pushed fixes."), "includes the review summary");
+  assert.ok(
+    body.includes(
+      "I read and addressed the comment from @alice: https://github.com/o/r/pull/25#pullrequestreview-1",
+    ),
+    "acknowledges alice's review comment with a link",
+  );
+  assert.ok(
+    body.includes(
+      "I read and addressed the comment from @bob: https://github.com/o/r/pull/25#issuecomment-2",
+    ),
+    "acknowledges bob's comment with a link",
+  );
 });
 
 test("executeAction passes PR comments to addressFailingChecks", async () => {

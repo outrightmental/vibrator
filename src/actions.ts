@@ -29,7 +29,9 @@ export interface ActionGitHubClient {
   }): Promise<Array<{ name: string; logExcerpt: string }>>;
   cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
   postComment(pullRequestNumber: number, body: string): Promise<void>;
-  listPullRequestComments(pullRequestNumber: number): Promise<Array<{ author: string; body: string; createdAt: string }>>;
+  listPullRequestComments(
+    pullRequestNumber: number,
+  ): Promise<Array<{ author: string; body: string; createdAt: string; url?: string; kind?: string }>>;
   /** Convert a PR from draft to ready-for-review (no-op if already ready). */
   markPullRequestReadyForReview?(pullRequestNumber: number): Promise<void>;
   /** Request review from specific GitHub users. */
@@ -260,10 +262,25 @@ export async function executeAction(
           pullRequestHeadSha: result.headSha,
         },
       });
-      const reviewComment = result.madeChanges
+      const reviewSummary = result.madeChanges
         ? "Reviewed code and pushed fixes."
         : "Reviewed code, no issues found.";
-      await gitHubClient.postComment(pullRequest.number, reviewComment);
+      // Explicitly acknowledge every human comment that was parsed and fed
+      // into this self-review, so the human can confirm their feedback was
+      // read. Each comment links back to itself.
+      const commentLines = [reviewSummary];
+      if (userComments.length > 0) {
+        commentLines.push("");
+        for (const c of userComments) {
+          const link = c.url ?? `#${pullRequest.number}`;
+          commentLines.push(
+            result.madeChanges
+              ? `I read and addressed the comment from @${c.author}: ${link}`
+              : `I read the comment from @${c.author} and determined no code changes were needed: ${link}`,
+          );
+        }
+      }
+      await gitHubClient.postComment(pullRequest.number, commentLines.join("\n"));
       return {};
     }
 
