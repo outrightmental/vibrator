@@ -192,6 +192,7 @@ export async function executeAction(
         body: pullRequestBody,
         head: implementation.branch,
         base: baseBranch,
+        draft: true,
       });
       if (!created.created) {
         const existingPullRequest = context.pullRequests.find(
@@ -379,6 +380,9 @@ export async function executeAction(
       const mergedBody = buildMergedPullRequestBody(description, action.closingIssueNumbers);
 
       await gitHubClient.updatePullRequestBody(action.pullRequestNumber, mergedBody);
+      if (pullRequest.draft && gitHubClient.markPullRequestReadyForReview) {
+        await gitHubClient.markPullRequestReadyForReview(action.pullRequestNumber);
+      }
       await gitHubClient.squashMergePullRequest(
         action.pullRequestNumber,
         action.pullRequestTitle,

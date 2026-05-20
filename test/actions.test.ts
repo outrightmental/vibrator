@@ -105,7 +105,7 @@ function createHarness(input: {
     },
     async createPullRequest(args): Promise<{ number: number; headSha: string; created: boolean }> {
       calls.push(
-        `create-pr:${args.head}->${args.base}:${args.title}:${args.body.replace(/\n/g, "\\n")}`,
+        `create-pr:${args.head}->${args.base}:draft=${args.draft ?? false}:${args.title}:${args.body.replace(/\n/g, "\\n")}`,
       );
       return newPullRequest;
     },
@@ -114,6 +114,9 @@ function createHarness(input: {
     },
     async squashMergePullRequest(pullRequestNumber, subject, body): Promise<void> {
       calls.push(`squash-merge:${pullRequestNumber}:${subject}:${body}`);
+    },
+    async markPullRequestReadyForReview(pullRequestNumber): Promise<void> {
+      calls.push(`mark-ready:${pullRequestNumber}`);
     },
     async listFailingCheckRuns(args) {
       calls.push(`list-failing:${args.pullRequestNumber}:${args.headSha}`);
@@ -224,7 +227,7 @@ test("executeAction implements an issue, opens a PR, and records the session", a
   assert.deepEqual(harness.calls, [
     "get-default-branch",
     "implement:7:main",
-    "create-pr:vibrator/issue-7-add-widget->main:Add widget:Added widget.\\n\\nCloses #7",
+    "create-pr:vibrator/issue-7-add-widget->main:draft=true:Add widget:Added widget.\\n\\nCloses #7",
   ]);
   assert.deepEqual(harness.sessions, [
     {
@@ -265,7 +268,7 @@ test("executeAction backfills the closing reference when reusing an existing PR"
   assert.deepEqual(harness.calls, [
     "get-default-branch",
     "implement:7:main",
-    "create-pr:vibrator/issue-7-add-widget->main:Add widget:Added widget.\\n\\nCloses #7",
+    "create-pr:vibrator/issue-7-add-widget->main:draft=true:Add widget:Added widget.\\n\\nCloses #7",
     "update-body:100:Added widget.\n\nCloses #7",
   ]);
   assert.deepEqual(harness.sessions, []);
@@ -472,6 +475,38 @@ test("executeAction appends missing closing references to the generated descript
   assert.equal(harness.calls[1], `update-body:16:${expectedBody}`);
   assert.equal(harness.calls[2], `squash-merge:16:Fix:${expectedBody}`);
   assert.equal(harness.calls.length, 3);
+});
+
+test("executeAction marks a draft PR ready-for-review before squash-merging", async () => {
+  const pullRequest = createPullRequest({
+    number: 17,
+    linkedIssueNumbers: [4],
+    closingIssueNumbers: [4],
+    headRefName: "branch-17",
+    draft: true,
+  });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    generatedDescription: "Polished description",
+  });
+
+  await run(harness, {
+    type: "squash-merge",
+    issueNumber: 4,
+    pullRequestNumber: 17,
+    pullRequestTitle: "Add gizmo",
+    pullRequestHeadRefName: "branch-17",
+    closingIssueNumbers: [4],
+    pullRequestBody: "Old body",
+  });
+
+  const expectedBody = "Polished description\n\nCloses #4";
+  assert.deepEqual(harness.calls, [
+    "generate-desc:17",
+    `update-body:17:${expectedBody}`,
+    "mark-ready:17",
+    `squash-merge:17:Add gizmo:${expectedBody}`,
+  ]);
 });
 
 test("executeAction is a no-op when dry-run is enabled", async () => {
