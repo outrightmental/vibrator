@@ -39,6 +39,18 @@ const LINKED_ISSUE_PATTERN = new RegExp(
 
 const ACTIVE_STATUSES = new Set(["in_progress"]);
 
+/** The label that opts an issue or PR out of automated work. */
+const MANUAL_LABEL = "manual";
+
+/**
+ * PRs labelled "manual" are never worked on automatically: no self-review,
+ * no merge, no conflict resolution. They sit parked, exactly like an issue
+ * labelled "manual" is never picked up.
+ */
+function isManualPullRequest(pullRequest: PullRequest): boolean {
+  return pullRequest.labels.includes(MANUAL_LABEL);
+}
+
 function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((left, right) => left - right);
 }
@@ -441,6 +453,12 @@ export function buildPlan(
   // where three PRs ready-for-review froze all three cylinders.
   let livePullRequestCount = 0;
   for (const pullRequest of pullRequests) {
+    // PRs labelled "manual" are parked: vibrator plans no action for them and
+    // does not count them against concurrency. Their linked issues are still
+    // marked unavailable below, so the issue is not re-implemented.
+    if (isManualPullRequest(pullRequest)) {
+      continue;
+    }
     const hasActiveSession = getRelevantSessions(
       snapshot.agentSessions,
       pullRequest.linkedIssueNumbers,

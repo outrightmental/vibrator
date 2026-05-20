@@ -544,6 +544,16 @@ body {
   opacity: 0.75;
 }
 
+/* A "manual"-labelled PR: parked, never worked on automatically. */
+.pill-pr-half.disabled {
+  border: 2px dashed rgba(150, 150, 160, 0.4);
+  background: rgba(150, 150, 160, 0.06);
+  box-shadow: none;
+  opacity: 0.45;
+  filter: grayscale(1);
+  animation: none;
+}
+
 /* ── Panel A: Cylinder rows ── */
 .cylinder-row {
   display: flex;
@@ -2096,7 +2106,7 @@ class DashboardUI {
     const prHalf = pill.querySelector('.pill-pr-half');
     if (prHalf) {
       const isBlocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
-      const newClass = \`pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}\`;
+      const newClass = \`pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}\${pair.disabled ? ' disabled' : ''}\`;
       if (prHalf.className !== newClass) prHalf.className = newClass;
       const newContent = this.prHalfContent(pair);
       if (prHalf.innerHTML !== newContent) prHalf.innerHTML = newContent;
@@ -2128,7 +2138,7 @@ class DashboardUI {
           <span class="pill-title">\${this.esc(pair.issue.title)}</span>
         </div>
       </div>
-      <div class="pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}">\${this.prHalfContent(pair)}</div>
+      <div class="pill-pr-half \${pair.prPhase}\${isBlocked ? ' blocked' : ''}\${pair.disabled ? ' disabled' : ''}">\${this.prHalfContent(pair)}</div>
     \`;
   }
 
@@ -2147,6 +2157,7 @@ class DashboardUI {
     }
     const prUrl = GITHUB_BASE_URL + '/pull/' + pair.pr.number;
     const badges = [];
+    if (pair.disabled) badges.push('MANUAL');
     if (pair.pr.draft) badges.push('DRAFT');
     if (pair.prPhase === 'completed') badges.push('MERGED');
     const checksIcon = pair.pr.checksStatus === 'success' ? '✓' :

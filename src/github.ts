@@ -116,6 +116,7 @@ interface GitHubPullRequestResponse {
   draft: boolean;
   created_at: string;
   updated_at: string;
+  labels?: Array<{ name: string }>;
 }
 
 interface GitHubPullRequestReviewResponse {
@@ -511,6 +512,7 @@ export class GitHubClient {
         headCommitPushedAt: graphQLData?.headCommitPushedAt,
         createdAt: pullRequest.created_at,
         updatedAt: pullRequest.updated_at,
+        labels: (pullRequest.labels ?? []).map((label) => label.name),
         linkedIssueNumbers,
         closingIssueNumbers,
       };

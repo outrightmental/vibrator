@@ -45,6 +45,7 @@ function makePR(overrides: Partial<PullRequest> = {}): PullRequest {
     checksStatus: "success",
     headCommitPushedAt: undefined,
     closingIssueNumbers: [],
+    labels: [],
     linkedIssueNumbers: [],
     ...overrides,
   };
@@ -443,6 +444,35 @@ test("broadcastLifecycleUpdate: excludes issues labelled 'manual'", async () => 
   const data = await dataPromise;
   const pairs = data.pairs as Array<{ issue: { number: number } }>;
   assert.deepEqual(pairs.map((p) => p.issue.number), [2]);
+});
+
+test("broadcastLifecycleUpdate: marks the pair disabled when the PR is labelled 'manual'", async () => {
+  const issue = makeIssue({ number: 5 });
+  const pr = makePR({ number: 50, closingIssueNumbers: [5], labels: ["manual"] });
+  const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{
+    prPhase: string;
+    disabled?: boolean;
+    pr: { number: number } | null;
+  }>;
+  // The pair still appears, paired with its issue, but flagged disabled.
+  assert.equal(pairs[0]!.pr?.number, 50);
+  assert.equal(pairs[0]!.prPhase, "active");
+  assert.equal(pairs[0]!.disabled, true);
+});
+
+test("broadcastLifecycleUpdate: a non-manual PR has no disabled flag", async () => {
+  const issue = makeIssue({ number: 6 });
+  const pr = makePR({ number: 60, closingIssueNumbers: [6] });
+  const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ disabled?: boolean }>;
+  assert.equal(pairs[0]!.disabled, undefined);
 });
 
 test("broadcastLifecycleUpdate: drops PR pair when the linked issue is 'manual'", async () => {

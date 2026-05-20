@@ -45,6 +45,7 @@ function createPullRequest(
     headCommitPushedAt: overrides.headCommitPushedAt,
     createdAt: overrides.createdAt ?? "2024-01-01T00:00:00.000Z",
     updatedAt: overrides.updatedAt ?? "2024-01-01T00:00:00.000Z",
+    labels: overrides.labels ?? [],
     linkedIssueNumbers: overrides.linkedIssueNumbers,
     closingIssueNumbers: overrides.closingIssueNumbers ?? overrides.linkedIssueNumbers,
   };
@@ -86,6 +87,40 @@ test("buildPlan skips issues with the 'manual' label", () => {
   const plan = buildPlan(snapshot, 3);
 
   assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 2 }]);
+});
+
+test("buildPlan plans no action for a PR labelled 'manual'", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 3 })],
+    pullRequests: [
+      createPullRequest({ number: 10, linkedIssueNumbers: [3], labels: ["manual"] }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  // No self-review/merge for the manual PR, and issue #3 is not re-implemented
+  // because it already has a linked PR.
+  assert.deepEqual(plan.actions, []);
+});
+
+test("buildPlan: a 'manual' PR does not consume concurrency capacity", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 3, createdAt: "2024-01-01T00:00:00.000Z" }),
+      createIssue({ number: 4, createdAt: "2024-01-02T00:00:00.000Z" }),
+    ],
+    pullRequests: [
+      createPullRequest({ number: 10, linkedIssueNumbers: [3], labels: ["manual"] }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 1);
+
+  // With maxConcurrency 1, the parked manual PR must not starve issue #4.
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 4 }]);
 });
 
 test("buildPlan chooses the oldest unblocked issues up to available capacity", () => {
