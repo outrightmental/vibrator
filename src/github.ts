@@ -177,6 +177,12 @@ export interface GitHubClientOptions {
 export type PullRequestCommentKind = "conversation" | "review" | "review-thread";
 
 export interface PullRequestComment {
+  /**
+   * GitHub's numeric id for the comment (the issue-comment id, review id, or
+   * review-thread-comment id depending on `kind`). Used both to skip
+   * Vibrator's own comments and to attach reaction emoji.
+   */
+  id: number;
   author: string;
   body: string;
   createdAt: string;
@@ -382,28 +388,36 @@ export class GitHubClient {
    *   - review summaries, e.g. "Request changes" (`/pulls/{n}/reviews`)
    *   - inline review-thread comments (`/pulls/{n}/comments`)
    *
-   * Vibrator's own automated comments are excluded by looking for the hidden
-   * {@link VIBRATOR_COMMENT_MARKER} rather than by author login, because
-   * Vibrator may run under the same GitHub account as a human reviewer.
-   * Comments authored by other bot accounts (e.g. `github-actions[bot]`) are
-   * also excluded.
+   * Vibrator's own automated comments are excluded two ways: by looking for
+   * the hidden {@link VIBRATOR_COMMENT_MARKER} (login can't be used because
+   * Vibrator may run under the same GitHub account as a human reviewer), and
+   * by skipping any comment id in `options.excludeCommentIds` — the persisted
+   * set of ids Vibrator has posted. Comments authored by other bot accounts
+   * (e.g. `github-actions[bot]`) are also excluded.
    */
-  async listPullRequestComments(pullRequestNumber: number): Promise<PullRequestComment[]> {
+  async listPullRequestComments(
+    pullRequestNumber: number,
+    options?: { excludeCommentIds?: ReadonlySet<number> },
+  ): Promise<PullRequestComment[]> {
     const { owner, repo } = this.options;
+    const excluded = options?.excludeCommentIds ?? new Set<number>();
     const [issueComments, reviews, reviewThreadComments] = await Promise.all([
       this.getAllPages<{
+        id: number;
         user: { login: string; type?: string } | null;
         body: string;
         created_at: string;
         html_url: string;
       }>(`/repos/${owner}/${repo}/issues/${pullRequestNumber}/comments`),
       this.getAllPages<{
+        id: number;
         user: { login: string; type?: string } | null;
         body: string | null;
         submitted_at: string | null;
         html_url: string;
       }>(`/repos/${owner}/${repo}/pulls/${pullRequestNumber}/reviews`),
       this.getAllPages<{
+        id: number;
         user: { login: string; type?: string } | null;
         body: string;
         created_at: string;
@@ -412,12 +426,15 @@ export class GitHubClient {
     ]);
 
     // A comment counts as human feedback unless it was posted by a bot
-    // account or carries one of Vibrator's own markers (the automated-comment
-    // marker for issue comments, or the review marker for posted reviews).
+    // account, carries one of Vibrator's own markers (the automated-comment
+    // marker for issue comments, or the review marker for posted reviews), or
+    // its id is in the persisted set of comments Vibrator has posted.
     const isHumanFeedback = (
+      id: number,
       user: { type?: string } | null,
       body: string | null,
     ): boolean => {
+      if (excluded.has(id)) return false;
       if (user?.type === "Bot") return false;
       if (body === null) return true;
       if (body.includes(VIBRATOR_COMMENT_MARKER)) return false;
@@ -428,8 +445,9 @@ export class GitHubClient {
     const result: PullRequestComment[] = [];
 
     for (const comment of issueComments) {
-      if (!isHumanFeedback(comment.user, comment.body)) continue;
+      if (!isHumanFeedback(comment.id, comment.user, comment.body)) continue;
       result.push({
+        id: comment.id,
         author: comment.user?.login ?? "unknown",
         body: comment.body,
         createdAt: comment.created_at,
@@ -444,8 +462,9 @@ export class GitHubClient {
       // those inline comments are fetched separately below).
       if (review.submitted_at === null) continue;
       if (review.body === null || review.body.trim() === "") continue;
-      if (!isHumanFeedback(review.user, review.body)) continue;
+      if (!isHumanFeedback(review.id, review.user, review.body)) continue;
       result.push({
+        id: review.id,
         author: review.user?.login ?? "unknown",
         body: review.body,
         createdAt: review.submitted_at,
@@ -455,8 +474,9 @@ export class GitHubClient {
     }
 
     for (const comment of reviewThreadComments) {
-      if (!isHumanFeedback(comment.user, comment.body)) continue;
+      if (!isHumanFeedback(comment.id, comment.user, comment.body)) continue;
       result.push({
+        id: comment.id,
         author: comment.user?.login ?? "unknown",
         body: comment.body,
         createdAt: comment.created_at,
@@ -466,6 +486,37 @@ export class GitHubClient {
     }
 
     return result.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  }
+
+  /**
+   * Adds the 👀 ("eyes") reaction to a PR comment, marking it as read by
+   * Vibrator. Conversation comments and inline review-thread comments support
+   * reactions; PR review summaries do not have a reactions endpoint, so those
+   * are silently skipped. Failures are swallowed — a missing reaction must
+   * never abort the surrounding action.
+   */
+  async addEyesReaction(comment: PullRequestComment): Promise<void> {
+    const { owner, repo } = this.options;
+    let path: string | undefined;
+    if (comment.kind === "conversation") {
+      path = `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions`;
+    } else if (comment.kind === "review-thread") {
+      path = `/repos/${owner}/${repo}/pulls/comments/${comment.id}/reactions`;
+    }
+    if (path === undefined) {
+      return;
+    }
+    try {
+      await this.request(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "eyes" }),
+      });
+    } catch (error) {
+      console.warn(
+        `[vibrator] Could not add 👀 reaction to comment ${comment.id} on PR: ${String(error)}`,
+      );
+    }
   }
 
   async listOpenIssues(): Promise<Issue[]> {
@@ -934,11 +985,19 @@ export class GitHubClient {
     return { id: response.id };
   }
 
-  async postComment(pullRequestNumber: number, body: string): Promise<void> {
+  /**
+   * Posts a comment on a PR and returns its numeric id, so the caller can
+   * persist it and skip re-reading Vibrator's own comment later.
+   */
+  async postComment(pullRequestNumber: number, body: string): Promise<number> {
     // Append the hidden marker so listPullRequestComments can recognise this
     // as Vibrator's own comment even when Vibrator runs under a human's
     // GitHub account.
-    await this.createIssueComment(pullRequestNumber, `${body}\n\n${VIBRATOR_COMMENT_MARKER}`);
+    const { id } = await this.createIssueComment(
+      pullRequestNumber,
+      `${body}\n\n${VIBRATOR_COMMENT_MARKER}`,
+    );
+    return id;
   }
 
   async updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void> {
@@ -1703,7 +1762,10 @@ export async function loadSnapshot(
       }
 
       try {
-        const comments = await gitHubClient.listPullRequestComments(pr.number);
+        const excludeCommentIds = new Set(await sessionStore.getPostedCommentIds(pr.number));
+        const comments = await gitHubClient.listPullRequestComments(pr.number, {
+          excludeCommentIds,
+        });
         const hasNew = comments.some((c) => Date.parse(c.createdAt) > Date.parse(lastReadAt));
         return hasNew ? { ...pr, hasNewCommentsSinceLastRead: true } : pr;
       } catch {

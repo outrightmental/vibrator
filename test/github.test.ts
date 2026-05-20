@@ -399,6 +399,71 @@ test("listPullRequestComments returns empty array when there is no human feedbac
   assert.equal(comments.length, 0);
 });
 
+test("listPullRequestComments excludes comment ids passed in excludeCommentIds", async (t) => {
+  mockPrCommentEndpoints(t, 50, {
+    issueComments: [
+      {
+        id: 7001,
+        user: { login: "charneykaye", type: "User" },
+        body: "Vibrator's own comment (marker stripped by a quote)",
+        created_at: "2024-03-01T10:00:00Z",
+        html_url: "https://github.com/o/r/pull/50#issuecomment-1",
+      },
+      {
+        id: 7002,
+        user: { login: "charneykaye", type: "User" },
+        body: "Genuine human feedback",
+        created_at: "2024-03-02T10:00:00Z",
+        html_url: "https://github.com/o/r/pull/50#issuecomment-2",
+      },
+    ],
+  });
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  const comments = await client.listPullRequestComments(50, {
+    excludeCommentIds: new Set([7001]),
+  });
+
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0]?.id, 7002);
+  assert.equal(comments[0]?.body, "Genuine human feedback");
+});
+
+test("addEyesReaction posts to the correct endpoint per comment kind", async (t) => {
+  const reactionCalls: string[] = [];
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = String(_url);
+      if (url.includes("/reactions")) {
+        reactionCalls.push(`${url} ${String(init?.body ?? "")}`);
+        return new Response(JSON.stringify({ id: 1 }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+  t.after(() => {
+    fetchMock.mock.restore();
+  });
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  const base = { author: "alice", body: "x", createdAt: "2024-03-01T10:00:00Z", url: "u" } as const;
+
+  await client.addEyesReaction({ ...base, id: 11, kind: "conversation" });
+  await client.addEyesReaction({ ...base, id: 22, kind: "review-thread" });
+  // PR reviews have no reactions endpoint — this must be a silent no-op.
+  await client.addEyesReaction({ ...base, id: 33, kind: "review" });
+
+  assert.equal(reactionCalls.length, 2);
+  assert.ok(reactionCalls[0]?.includes("/issues/comments/11/reactions"), "conversation endpoint");
+  assert.ok(reactionCalls[1]?.includes("/pulls/comments/22/reactions"), "review-thread endpoint");
+  assert.ok(reactionCalls.every((c) => c.includes('"eyes"')), "sends the eyes reaction");
+});
+
 // ─── loadSnapshot project-mode: hasNewCommentsSinceLastRead detection ─────────
 
 function makePr(overrides: Partial<{ updatedAt: string; draft: boolean }> = {}) {

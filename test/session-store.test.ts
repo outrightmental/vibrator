@@ -145,6 +145,24 @@ test("FileSessionStore setLastReadCommentAt persists and getLastReadCommentAt re
   });
 });
 
+test("FileSessionStore getPostedCommentIds returns an empty array when nothing recorded", async () => {
+  await withTempStore(async (store) => {
+    assert.deepEqual(await store.getPostedCommentIds(42), []);
+  });
+});
+
+test("FileSessionStore recordPostedCommentId persists ids per PR without duplicates", async () => {
+  await withTempStore(async (store) => {
+    await store.recordPostedCommentId(10, 1001);
+    await store.recordPostedCommentId(10, 1002);
+    await store.recordPostedCommentId(10, 1001); // duplicate — ignored
+    await store.recordPostedCommentId(11, 2001);
+
+    assert.deepEqual(await store.getPostedCommentIds(10), [1001, 1002]);
+    assert.deepEqual(await store.getPostedCommentIds(11), [2001]);
+  });
+});
+
 test("FileSessionStore setLastReadCommentAt preserves existing sessions when updating", async () => {
   await withTempStore(async (store) => {
     await store.createSession({ issueNumber: 1, phase: "implementation", status: "completed" });

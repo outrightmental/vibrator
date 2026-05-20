@@ -29,6 +29,8 @@ interface Harness {
   calls: string[];
   sessions: SessionInput[];
   capturedUserComments: Array<Array<{ author: string; body: string; createdAt: string }>>;
+  /** Comment ids vibrator persisted via recordPostedCommentId, keyed by PR. */
+  postedCommentIds: Map<number, number[]>;
   gitHubClient: ActionGitHubClient;
   sessionStore: ActionSessionStore;
   claudeAgentClient: ActionClaudeAgentClient;
@@ -89,6 +91,7 @@ function createHarness(input: {
   failingCheckRuns?: Array<{ name: string; logExcerpt: string }>;
   newPullRequest?: { number: number; headSha: string; created?: boolean };
   pullRequestComments?: Array<{
+    id?: number;
     author: string;
     body: string;
     createdAt: string;
@@ -99,6 +102,8 @@ function createHarness(input: {
   const calls: string[] = [];
   const sessions: SessionInput[] = [];
   const capturedUserComments: Array<Array<{ author: string; body: string; createdAt: string }>> = [];
+  const postedCommentIds = new Map<number, number[]>();
+  let nextCommentId = 1000;
   const newPullRequest: { number: number; headSha: string; created: boolean } = {
     ...input.newPullRequest,
     number: input.newPullRequest?.number ?? 999,
@@ -136,9 +141,16 @@ function createHarness(input: {
     },
     async postComment(pullRequestNumber, body) {
       calls.push(`post-comment:${pullRequestNumber}:${body}`);
+      return (nextCommentId += 1);
     },
-    async listPullRequestComments(_pullRequestNumber) {
-      return input.pullRequestComments ?? [];
+    async listPullRequestComments(_pullRequestNumber, options) {
+      const excluded = options?.excludeCommentIds ?? new Set<number>();
+      return (input.pullRequestComments ?? [])
+        .map((c, i) => ({ id: c.id ?? i + 1, ...c }))
+        .filter((c) => !excluded.has(c.id));
+    },
+    async addEyesReaction(comment) {
+      calls.push(`react-eyes:${comment.id}`);
     },
   };
 
@@ -146,6 +158,13 @@ function createHarness(input: {
     async createSession(session: SessionInput): Promise<unknown> {
       sessions.push(session);
       return session;
+    },
+    async getPostedCommentIds(pullRequestNumber: number): Promise<number[]> {
+      return postedCommentIds.get(pullRequestNumber) ?? [];
+    },
+    async recordPostedCommentId(pullRequestNumber: number, commentId: number): Promise<void> {
+      const existing = postedCommentIds.get(pullRequestNumber) ?? [];
+      postedCommentIds.set(pullRequestNumber, [...existing, commentId]);
     },
   };
 
@@ -194,6 +213,7 @@ function createHarness(input: {
     calls,
     sessions,
     capturedUserComments,
+    postedCommentIds,
     gitHubClient,
     sessionStore,
     claudeAgentClient,
@@ -543,7 +563,7 @@ test("executeAction throws when start-implementation cannot find the issue in th
 test("executeAction passes PR comments to selfReview", async () => {
   const pullRequest = createPullRequest({ number: 20, linkedIssueNumbers: [5] });
   const comments = [
-    { author: "alice", body: "Please add more tests", createdAt: "2024-02-01T10:00:00.000Z" },
+    { id: 1, author: "alice", body: "Please add more tests", createdAt: "2024-02-01T10:00:00.000Z" },
   ];
   const harness = createHarness({
     pullRequests: [pullRequest],
@@ -654,6 +674,56 @@ test("executeAction's self-review comment falls back gracefully when the agent e
   );
 });
 
+test("executeAction marks read comments with 👀 and records its own posted comment id", async () => {
+  const pullRequest = createPullRequest({ number: 30, linkedIssueNumbers: [5] });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    issues: [createIssue({ number: 5 })],
+    pullRequestComments: [
+      { id: 101, author: "alice", body: "Fix it", createdAt: "2024-02-01T10:00:00.000Z" },
+      { id: 102, author: "bob", body: "And this", createdAt: "2024-02-02T10:00:00.000Z" },
+    ],
+  });
+
+  await run(harness, {
+    type: "self-review",
+    issueNumber: 5,
+    pullRequestNumber: 30,
+    pullRequestHeadSha: "sha-30",
+  });
+
+  assert.ok(harness.calls.includes("react-eyes:101"), "reacts to the first comment");
+  assert.ok(harness.calls.includes("react-eyes:102"), "reacts to the second comment");
+  // The summary comment vibrator posted was recorded so it is never re-read.
+  assert.equal(harness.postedCommentIds.get(30)?.length, 1);
+});
+
+test("executeAction never re-reads or reacts to a comment vibrator previously posted", async () => {
+  const pullRequest = createPullRequest({ number: 31, linkedIssueNumbers: [5] });
+  const harness = createHarness({
+    pullRequests: [pullRequest],
+    issues: [createIssue({ number: 5 })],
+    pullRequestComments: [
+      { id: 999, author: "vibrator", body: "Reviewed code.", createdAt: "2024-02-01T10:00:00.000Z" },
+      { id: 200, author: "alice", body: "Real feedback", createdAt: "2024-02-02T10:00:00.000Z" },
+    ],
+  });
+  // Vibrator already posted comment id 999 on this PR.
+  harness.postedCommentIds.set(31, [999]);
+
+  await run(harness, {
+    type: "self-review",
+    issueNumber: 5,
+    pullRequestNumber: 31,
+    pullRequestHeadSha: "sha-31",
+  });
+
+  assert.equal(harness.capturedUserComments[0]?.length, 1, "only the human comment is read");
+  assert.equal(harness.capturedUserComments[0]?.[0]?.author, "alice");
+  assert.ok(!harness.calls.includes("react-eyes:999"), "does not react to its own comment");
+  assert.ok(harness.calls.includes("react-eyes:200"), "reacts to the human comment");
+});
+
 test("executeAction passes PR comments to addressFailingChecks", async () => {
   const pullRequest = createPullRequest({
     number: 21,
@@ -661,7 +731,7 @@ test("executeAction passes PR comments to addressFailingChecks", async () => {
     checksStatus: "failure",
   });
   const comments = [
-    { author: "bob", body: "The lint step is misconfigured", createdAt: "2024-02-02T08:00:00.000Z" },
+    { id: 1, author: "bob", body: "The lint step is misconfigured", createdAt: "2024-02-02T08:00:00.000Z" },
   ];
   const harness = createHarness({
     pullRequests: [pullRequest],
@@ -686,7 +756,7 @@ test("executeAction passes PR comments to resolveMergeConflicts", async () => {
     hasMergeConflicts: true,
   });
   const comments = [
-    { author: "carol", body: "Keep the new API signature", createdAt: "2024-02-03T09:00:00.000Z" },
+    { id: 1, author: "carol", body: "Keep the new API signature", createdAt: "2024-02-03T09:00:00.000Z" },
   ];
   const harness = createHarness({
     pullRequests: [pullRequest],

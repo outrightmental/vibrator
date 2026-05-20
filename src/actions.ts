@@ -28,10 +28,16 @@ export interface ActionGitHubClient {
     headSha: string;
   }): Promise<Array<{ name: string; logExcerpt: string }>>;
   cancelInProgressWorkflowRunsForHeadSha(headSha: string): Promise<number>;
-  postComment(pullRequestNumber: number, body: string): Promise<void>;
+  /** Posts a comment on a PR and returns its numeric id. */
+  postComment(pullRequestNumber: number, body: string): Promise<number>;
   listPullRequestComments(
     pullRequestNumber: number,
-  ): Promise<Array<{ author: string; body: string; createdAt: string; url?: string; kind?: string }>>;
+    options?: { excludeCommentIds?: ReadonlySet<number> },
+  ): Promise<
+    Array<{ id: number; author: string; body: string; createdAt: string; url?: string; kind?: string }>
+  >;
+  /** Adds the 👀 reaction to a PR comment, marking it as read. */
+  addEyesReaction(comment: { id: number; kind?: string }): Promise<void>;
   /** Convert a PR from draft to ready-for-review (no-op if already ready). */
   markPullRequestReadyForReview?(pullRequestNumber: number): Promise<void>;
   /** Request review from specific GitHub users. */
@@ -116,6 +122,10 @@ export interface ActionSessionStore {
   }): Promise<unknown>;
   /** Record the ISO timestamp of the most recent PR comment vibrator has read. */
   setLastReadCommentAt?(pullRequestNumber: number, createdAt: string): Promise<void>;
+  /** Returns the ids of comments vibrator has already posted on a PR. */
+  getPostedCommentIds?(pullRequestNumber: number): Promise<number[]>;
+  /** Persist the id of a comment vibrator just posted on a PR. */
+  recordPostedCommentId?(pullRequestNumber: number, commentId: number): Promise<void>;
 }
 
 export interface ExecuteActionContext {
@@ -151,6 +161,45 @@ function findPullRequest(
     throw new Error(`Pull request #${pullRequestNumber} not found in the current snapshot.`);
   }
   return pullRequest;
+}
+
+/**
+ * Fetches the human comments on a PR, excluding any comment vibrator has
+ * itself posted (tracked by persisted comment id).
+ */
+async function fetchHumanComments(
+  gitHubClient: ActionGitHubClient,
+  sessionStore: ActionSessionStore,
+  pullRequestNumber: number,
+): Promise<Array<{ id: number; author: string; body: string; createdAt: string; url?: string; kind?: string }>> {
+  const postedIds = (await sessionStore.getPostedCommentIds?.(pullRequestNumber)) ?? [];
+  return gitHubClient.listPullRequestComments(pullRequestNumber, {
+    excludeCommentIds: new Set(postedIds),
+  });
+}
+
+/**
+ * Posts a comment on a PR and persists its id so vibrator never re-reads its
+ * own comment.
+ */
+async function postAndRecordComment(
+  gitHubClient: ActionGitHubClient,
+  sessionStore: ActionSessionStore,
+  pullRequestNumber: number,
+  body: string,
+): Promise<void> {
+  const commentId = await gitHubClient.postComment(pullRequestNumber, body);
+  await sessionStore.recordPostedCommentId?.(pullRequestNumber, commentId);
+}
+
+/** Adds the 👀 reaction to each comment, marking it as read by vibrator. */
+async function markCommentsAsRead(
+  gitHubClient: ActionGitHubClient,
+  comments: ReadonlyArray<{ id: number; kind?: string }>,
+): Promise<void> {
+  for (const comment of comments) {
+    await gitHubClient.addEyesReaction(comment);
+  }
 }
 
 export interface ExecuteActionResult {
@@ -236,7 +285,11 @@ export async function executeAction(
         action.issueNumber !== undefined
           ? context.issues.find((i) => i.number === action.issueNumber)
           : undefined;
-      const userComments = await gitHubClient.listPullRequestComments(pullRequest.number);
+      const userComments = await fetchHumanComments(
+        gitHubClient,
+        sessionStore,
+        pullRequest.number,
+      );
 
       // Record the last-read comment timestamp so re-queue detection works.
       const latestCommentAt = userComments.reduce<string | undefined>(
@@ -262,6 +315,8 @@ export async function executeAction(
         }),
         userComments,
       });
+      // The self-review succeeded — mark every comment it consumed as read.
+      await markCommentsAsRead(gitHubClient, userComments);
       await sessionStore.createSession({
         issueNumber: action.issueNumber,
         pullRequestNumber: pullRequest.number,
@@ -297,7 +352,12 @@ export async function executeAction(
           }
         });
       }
-      await gitHubClient.postComment(pullRequest.number, commentLines.join("\n"));
+      await postAndRecordComment(
+        gitHubClient,
+        sessionStore,
+        pullRequest.number,
+        commentLines.join("\n"),
+      );
       return {};
     }
 
@@ -331,7 +391,7 @@ export async function executeAction(
           pullRequestNumber: pullRequest.number,
           headSha: pullRequest.headSha,
         }),
-        gitHubClient.listPullRequestComments(pullRequest.number),
+        fetchHumanComments(gitHubClient, sessionStore, pullRequest.number),
       ]);
       const update = await claudeAgentClient.addressFailingChecks({
         owner: context.owner,
@@ -342,6 +402,8 @@ export async function executeAction(
         failingChecks,
         userComments,
       });
+      // The agent consumed the comments — mark them as read.
+      await markCommentsAsRead(gitHubClient, userComments);
       const checksNoCommits = update.headSha === pullRequest.headSha;
       if (checksNoCommits) {
         console.warn(
@@ -361,13 +423,17 @@ export async function executeAction(
       const checksComment = checksNoCommits
         ? "Investigated failing CI checks; no code changes were needed."
         : `Addressed failing CI checks and pushed a fix (${failingChecks.map((c) => c.name).join(", ") || "unknown checks"}).`;
-      await gitHubClient.postComment(pullRequest.number, checksComment);
+      await postAndRecordComment(gitHubClient, sessionStore, pullRequest.number, checksComment);
       return { noCommitsPushed: checksNoCommits };
     }
 
     case "resolve-conflicts": {
       const pullRequest = findPullRequest(context, action.pullRequestNumber);
-      const userComments = await gitHubClient.listPullRequestComments(pullRequest.number);
+      const userComments = await fetchHumanComments(
+        gitHubClient,
+        sessionStore,
+        pullRequest.number,
+      );
       const update = await claudeAgentClient.resolveMergeConflicts({
         owner: context.owner,
         repo: context.repo,
@@ -376,6 +442,8 @@ export async function executeAction(
         baseRefName: pullRequest.baseRefName,
         userComments,
       });
+      // The agent consumed the comments — mark them as read.
+      await markCommentsAsRead(gitHubClient, userComments);
       const conflictsNoCommits = update.headSha === pullRequest.headSha;
       if (conflictsNoCommits) {
         console.warn(
@@ -394,7 +462,7 @@ export async function executeAction(
       const conflictsComment = conflictsNoCommits
         ? "Investigated merge conflicts; no changes were needed."
         : "Resolved merge conflicts and pushed updated branch.";
-      await gitHubClient.postComment(pullRequest.number, conflictsComment);
+      await postAndRecordComment(gitHubClient, sessionStore, pullRequest.number, conflictsComment);
       return { noCommitsPushed: conflictsNoCommits };
     }
 
@@ -438,7 +506,11 @@ export async function executeAction(
 
       // Capture the latest human comment timestamp before requesting review,
       // so we can detect new comments that arrive after this point.
-      const userComments = await gitHubClient.listPullRequestComments(pullRequest.number);
+      const userComments = await fetchHumanComments(
+        gitHubClient,
+        sessionStore,
+        pullRequest.number,
+      );
       const latestCommentAt = userComments.reduce<string | undefined>(
         (latest, c) => (!latest || c.createdAt > latest ? c.createdAt : latest),
         undefined,
@@ -484,7 +556,9 @@ export async function executeAction(
         action.reviewers.length > 0
           ? ` from ${action.reviewers.map((r) => `@${r}`).join(", ")}`
           : "";
-      await gitHubClient.postComment(
+      await postAndRecordComment(
+        gitHubClient,
+        sessionStore,
         pullRequest.number,
         `Automated self-review passed. Requesting human review${reviewersText}.`,
       );

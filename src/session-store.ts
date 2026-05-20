@@ -17,6 +17,11 @@ interface SessionState {
    * new comments that should trigger a re-queue.
    */
   lastReadPrComments?: Record<number, string>;
+  /**
+   * Maps pull request number → numeric ids of comments vibrator has posted on
+   * that PR. Persisted so vibrator never reads or parses its own comments.
+   */
+  vibratorCommentIds?: Record<number, number[]>;
 }
 
 const MAX_PERSISTED_TERMINAL_SESSIONS = 200;
@@ -107,6 +112,9 @@ export class FileSessionStore {
       if (parsed.lastReadPrComments && Object.keys(parsed.lastReadPrComments).length > 0) {
         state.lastReadPrComments = parsed.lastReadPrComments;
       }
+      if (parsed.vibratorCommentIds && Object.keys(parsed.vibratorCommentIds).length > 0) {
+        state.vibratorCommentIds = parsed.vibratorCommentIds;
+      }
       return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -124,6 +132,9 @@ export class FileSessionStore {
       sessions: pruneSessions(state.sessions),
       ...(state.lastReadPrComments && Object.keys(state.lastReadPrComments).length > 0
         ? { lastReadPrComments: state.lastReadPrComments }
+        : {}),
+      ...(state.vibratorCommentIds && Object.keys(state.vibratorCommentIds).length > 0
+        ? { vibratorCommentIds: state.vibratorCommentIds }
         : {}),
     };
     await writeFile(tempFilePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -203,6 +214,28 @@ export class FileSessionStore {
       lastReadPrComments: {
         ...(state.lastReadPrComments ?? {}),
         [pullRequestNumber]: createdAt,
+      },
+    });
+  }
+
+  /** Returns the ids of comments vibrator has posted on the given PR. */
+  async getPostedCommentIds(pullRequestNumber: number): Promise<number[]> {
+    const state = await this.loadState();
+    return state.vibratorCommentIds?.[pullRequestNumber] ?? [];
+  }
+
+  /** Records a comment id vibrator has posted on the given PR. */
+  async recordPostedCommentId(pullRequestNumber: number, commentId: number): Promise<void> {
+    const state = await this.loadState();
+    const existing = state.vibratorCommentIds?.[pullRequestNumber] ?? [];
+    if (existing.includes(commentId)) {
+      return;
+    }
+    await this.writeState({
+      ...state,
+      vibratorCommentIds: {
+        ...(state.vibratorCommentIds ?? {}),
+        [pullRequestNumber]: [...existing, commentId],
       },
     });
   }
