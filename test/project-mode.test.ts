@@ -328,10 +328,14 @@ test("executeAction request-review converts PR to ready, requests review, and re
     cancelInProgressWorkflowRunsForHeadSha: async () => 0,
     postComment: async (prNumber, body) => {
       calls.push(`postComment:${prNumber}:${body}`);
+      return 9000;
     },
     listPullRequestComments: async () => [
-      { author: "alice", body: "Looks good!", createdAt: "2024-01-02T00:00:00.000Z" },
+      { id: 1, author: "alice", body: "Looks good!", createdAt: "2024-01-02T00:00:00.000Z" },
     ],
+    addEyesReaction: async (comment) => {
+      calls.push(`reactEyes:${comment.id}`);
+    },
     markPullRequestReadyForReview: async (prNumber) => {
       calls.push(`markReady:${prNumber}`);
     },
@@ -429,8 +433,9 @@ test("executeAction start-implementation moves issue to In Progress in project m
     squashMergePullRequest: async () => {},
     listFailingCheckRuns: async () => [],
     cancelInProgressWorkflowRunsForHeadSha: async () => 0,
-    postComment: async () => {},
+    postComment: async () => 9001,
     listPullRequestComments: async () => [],
+    addEyesReaction: async () => {},
     moveIssueToProjectStatus: async (projectNumber, issueNumber, status) => {
       calls.push(`moveStatus:${projectNumber}:${issueNumber}:${status}`);
     },
@@ -500,11 +505,12 @@ test("executeAction self-review records the latest comment timestamp as last-rea
     squashMergePullRequest: async () => {},
     listFailingCheckRuns: async () => [],
     cancelInProgressWorkflowRunsForHeadSha: async () => 0,
-    postComment: async () => {},
+    postComment: async () => 9002,
     listPullRequestComments: async () => [
-      { author: "bob", body: "Please fix X", createdAt: "2024-01-01T00:01:00.000Z" },
-      { author: "carol", body: "Also Y", createdAt: "2024-01-01T00:02:00.000Z" },
+      { id: 1, author: "bob", body: "Please fix X", createdAt: "2024-01-01T00:01:00.000Z" },
+      { id: 2, author: "carol", body: "Also Y", createdAt: "2024-01-01T00:02:00.000Z" },
     ],
+    addEyesReaction: async () => {},
   };
 
   const sessionStore: ActionSessionStore = {
