@@ -933,6 +933,77 @@ test("buildPlan allows issues without a milestone to start alongside the earlies
   ]);
 });
 
+test("buildPlan advances to next milestone once earlier-milestone issues are all started (PR open)", () => {
+  // Milestone 1 issue is still open but has an open linked PR — it has been
+  // "begun". Milestone 2 issues should now be eligible.
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z", milestone: { number: 1, title: "v1.0" } }),
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z", milestone: { number: 2, title: "v2.0" } }),
+    ],
+    pullRequests: [
+      createPullRequest({ number: 10, linkedIssueNumbers: [1] }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.ok(
+    plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 2),
+    "Issue 2 (milestone 2) must start because milestone 1's only open issue already has a PR",
+  );
+});
+
+test("buildPlan advances to next milestone once earlier-milestone issues are all started (active session)", () => {
+  // Milestone 1 issue is still open but has an in-progress implementation
+  // session — it has been "begun". Milestone 2 issues should now be eligible.
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z", milestone: { number: 1, title: "v1.0" } }),
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z", milestone: { number: 2, title: "v2.0" } }),
+    ],
+    pullRequests: [],
+    agentSessions: [
+      createSession({ id: "s1", issueNumber: 1, phase: "implementation", status: "in_progress" }),
+    ],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.ok(
+    plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 2),
+    "Issue 2 (milestone 2) must start because milestone 1's only open issue has an active session",
+  );
+});
+
+test("buildPlan keeps later-milestone issues gated when an earlier-milestone issue is unstarted", () => {
+  // Milestone 1 has two issues: one started (PR open), one still unstarted.
+  // Milestone 2 must still wait because milestone 1 has unfinished, unstarted work.
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z", milestone: { number: 1, title: "v1.0" } }),
+      createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z", milestone: { number: 1, title: "v1.0" } }),
+      createIssue({ number: 3, createdAt: "2024-01-03T00:00:00.000Z", milestone: { number: 2, title: "v2.0" } }),
+    ],
+    pullRequests: [
+      createPullRequest({ number: 10, linkedIssueNumbers: [1] }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.ok(
+    plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 2),
+    "Issue 2 (the unstarted milestone-1 issue) must start",
+  );
+  assert.ok(
+    !plan.actions.some((a) => a.type === "start-implementation" && a.issueNumber === 3),
+    "Issue 3 (milestone 2) must not start while milestone 1 has an unstarted issue",
+  );
+});
+
 test("buildPlan does not start later-milestone issues even when earlier-milestone issues are blocked", () => {
   // milestone 1 issue is blocked; milestone 2 issue is unblocked — milestone 2 must still wait
   const snapshot: RepositorySnapshot = {
