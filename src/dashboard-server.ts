@@ -59,7 +59,15 @@ export class DashboardServer {
     this.repo = config.repo;
     this.dashboardTitle = config.dashboardTitle ?? "Vibrator";
 
-    this.server = http.createServer((req, res) => this.handleRequest(req, res));
+    this.server = http.createServer((req, res) => {
+      this.handleRequest(req, res).catch((err: Error) => {
+        console.error("[Dashboard] Unhandled request error:", err);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "internal_server_error" }));
+        }
+      });
+    });
 
     // Gate WebSocket upgrades to /api/ws only
     this.wss = new WebSocketServer({ noServer: true });
