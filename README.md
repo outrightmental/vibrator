@@ -87,7 +87,7 @@ In Simple SDLC mode — the default when `GITHUB_PROJECT_NUMBER` is not set — 
 
 1. Any open, unblocked, non-`manual` issue is eligible to start.
 2. Issues are prioritized bugs-first, then by milestone, then by creation time.
-3. Claude implements, the PR opens as a draft, Claude self-reviews twice (with CI gates in between), and Vibrator squash-merges — no human action required.
+3. Claude implements, the PR opens as a draft, Claude self-reviews twice (CI gates apply after any code-changing pass; two consecutive clean passes trigger the merge), and Vibrator squash-merges — no human action required.
 4. Merge conflicts and CI failures are handled quietly in the background.
 
 This mode is ideal for personal projects, greenfield work, and any context where CI and branch protections serve as the safety net.
