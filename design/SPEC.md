@@ -83,7 +83,7 @@ Agentic coding gets interesting when a repository can keep moving after a human 
 - `src/claude-account-manager.ts` manages rotating between multiple Claude Code accounts when rate limits are hit.
 - `src/dashboard-server.ts` serves the real-time **Dashboard** at `http://localhost:3000`. Includes the Issue → PR Lifecycle pane, live orchestrator logs, and a GitHub activity feed.
 - `src/dashboard-utils.ts` provides event-emission helpers used by `index.ts` to push orchestrator state to Dashboard clients over WebSocket.
-- `src/event-emitter.ts` is the global event system (24 event types) used for Dashboard communication.
+- `src/event-emitter.ts` is the global event system (23 event types) used for Dashboard communication.
 
 ## Data model
 
