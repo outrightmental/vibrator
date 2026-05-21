@@ -22,6 +22,12 @@ interface DashboardServerConfig {
   dashboardTitle?: string;
 }
 
+let APP_VERSION = "unknown";
+try {
+  const pkgText = fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8");
+  APP_VERSION = (JSON.parse(pkgText) as { version: string }).version;
+} catch { /* ignore */ }
+
 const ROOT_DIR = process.cwd();
 const STATIC_INDEX = path.join(ROOT_DIR, "src", "dashboard", "index.html");
 const STATIC_BUNDLE_JS = path.join(ROOT_DIR, "dist", "dashboard", "bundle.js");
@@ -126,7 +132,7 @@ export class DashboardServer {
     }
 
     if (pathname === "/api/health") {
-      jsonResponse(res, 200, { ok: true, owner: this.owner, repo: this.repo });
+      jsonResponse(res, 200, { ok: true, version: APP_VERSION, owner: this.owner, repo: this.repo });
       return;
     }
 

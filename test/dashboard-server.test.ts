@@ -88,8 +88,9 @@ test("GET /api/health returns 200 with ok:true", async (t) => {
 
   const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 1}/api/health`);
   assert.equal(res.status, 200);
-  const data = JSON.parse(res.body) as { ok: boolean };
+  const data = JSON.parse(res.body) as { ok: boolean; version: string };
   assert.equal(data.ok, true);
+  assert.ok(typeof data.version === "string" && data.version.length > 0, "version should be a non-empty string");
 });
 
 // ── GET / ─────────────────────────────────────────────────────────────────────
@@ -329,9 +330,50 @@ test("DashboardServer caches action-start with startedAt for accurate elapsed-ti
   assert.equal(actionMsg?.data["startedAt"], startedAt, "startedAt should be preserved");
 });
 
-test("DashboardServer clears cached github-rate-limit on github-rate-limit-cleared", async (t) => {
+function fetchHtml(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    http.get(url, (res) => {
+      let data = "";
+      res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+      res.on("end", () => resolve(data));
+    }).on("error", reject);
+  });
+}
+
+test("DashboardServer injects custom dashboardTitle into served HTML", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 12,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+    dashboardTitle: "My Custom Title",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 12}/`);
+  assert.ok(html.includes("My Custom Title"), "HTML should contain the custom dashboard title");
+});
+
+test("DashboardServer defaults to 'Vibrator' when no dashboardTitle is provided", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 13,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 13}/`);
+  assert.ok(html.includes("Vibrator"), "HTML should contain the default title 'Vibrator'");
+});
+
+test("DashboardServer clears cached github-rate-limit on github-rate-limit-cleared", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 14,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -350,7 +392,7 @@ test("DashboardServer clears cached github-rate-limit on github-rate-limit-clear
   });
   globalEventEmitter.emit("github-rate-limit-cleared", {});
 
-  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 12}/api/state`);
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 14}/api/state`);
   const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
   const rateLimitMsg = data.cachedEvents.find((m) => m.type === "github-rate-limit");
   assert.equal(rateLimitMsg, undefined, "cleared cache should not replay stale github-rate-limit event");
@@ -379,7 +421,7 @@ test("DashboardServer caches and replays shutdown-requested and app-shutdown via
 
 test("DashboardServer broadcasts cylinder-cancel when a client sends cylinder-cancel-request", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 10,
+    port: TEST_PORT + 15,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -389,7 +431,7 @@ test("DashboardServer broadcasts cylinder-cancel when a client sends cylinder-ca
   t.after(() => server.close());
 
   // Observer client: receives broadcasts
-  const observer = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 10}`);
+  const observer = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 15}/api/ws`);
   const received: DashboardEvent[] = [];
   observer.on("message", (data: Buffer) => {
     received.push(JSON.parse(data.toString()) as DashboardEvent);
@@ -397,7 +439,7 @@ test("DashboardServer broadcasts cylinder-cancel when a client sends cylinder-ca
   await new Promise<void>((resolve) => observer.once("open", resolve));
 
   // Sender client: sends a cancel request for engine 1
-  const sender = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 10}`);
+  const sender = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 15}/api/ws`);
   await new Promise<void>((resolve) => sender.once("open", resolve));
   sender.send(JSON.stringify({ type: "cylinder-cancel-request", engineIndex: 1 }));
 
