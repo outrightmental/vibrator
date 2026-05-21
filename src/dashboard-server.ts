@@ -8,6 +8,7 @@ interface DashboardServerConfig {
   host?: string;
   owner: string;
   repo: string;
+  dashboardTitle?: string;
 }
 
 export class DashboardServer {
@@ -15,6 +16,7 @@ export class DashboardServer {
   private host: string;
   private owner: string;
   private repo: string;
+  private dashboardTitle: string;
   private server: http.Server;
   private wss: WebSocketServer;
   private htmlContent: string = "";
@@ -26,6 +28,7 @@ export class DashboardServer {
     this.host = config.host ?? "localhost";
     this.owner = config.owner;
     this.repo = config.repo;
+    this.dashboardTitle = config.dashboardTitle ?? "Vibrator";
 
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
     this.wss = new WebSocketServer({ server: this.server });
@@ -113,7 +116,7 @@ export class DashboardServer {
 
   private async generateHTML(): Promise<string> {
     const css = await this.generateCSS();
-    const js = this.generateJS(this.owner, this.repo);
+    const js = this.generateJS(this.owner, this.repo, this.dashboardTitle);
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1079,9 +1082,11 @@ a.gh-link:hover {
 `;
   }
 
-  private generateJS(owner: string, repo: string): string {
+  private generateJS(owner: string, repo: string, dashboardTitle: string): string {
+    const safeTitle = dashboardTitle.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     return `
 const GITHUB_BASE_URL = 'https://github.com/${owner}/${repo}';
+const DASHBOARD_TITLE = '${safeTitle}';
 
 // Per-cylinder stable neon identity (issue #21: CYL-1=Cyan, CYL-2=Magenta, CYL-3=Gold)
 const CYLINDER_COLORS      = ['#00ffff', '#ff00ff', '#ffd700', '#0088ff', '#ff6600', '#aa00ff'];
@@ -1168,7 +1173,7 @@ class DashboardUI {
     this.appContainer.innerHTML = \`
       <div class="header">
         <div>
-          <div class="header-title"><a class="gh-link" href="\${GITHUB_BASE_URL}" target="_blank" rel="noopener noreferrer">⚡ VIBRATOR</a> <span>AI SDLC BROADCAST</span></div>
+          <div class="header-title"><a class="gh-link" href="\${GITHUB_BASE_URL}" target="_blank" rel="noopener noreferrer">⚡ \${DASHBOARD_TITLE}</a> <span>AI SDLC BROADCAST</span></div>
         </div>
       </div>
       <div class="main-content">

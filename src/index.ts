@@ -284,6 +284,7 @@ interface Config {
   maxConcurrency: number;
   cycleMinimumMs: number;
   dashboardPort: number;
+  dashboardTitle: string;
   once: boolean;
   dryRun: boolean;
   noBrowser: boolean;
@@ -327,6 +328,7 @@ function parseArgs(argv: string[]): Config {
   const noBrowser = argv.includes("--no-browser");
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
+  const dashboardTitle = process.env.DASHBOARD_TITLE ?? "Vibrator";
   const claudeModel = process.env.CLAUDE_MODEL;
   const claudeCommitModel = process.env.CLAUDE_COMMIT_MODEL;
   const claudeAccountDirs = process.env.CLAUDE_ACCOUNTS
@@ -356,6 +358,7 @@ function parseArgs(argv: string[]): Config {
     maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
     cycleMinimumMs: Number.isNaN(cycleMinimumSeconds) ? 60000 : Math.round(cycleMinimumSeconds * 1000),
     dashboardPort: Number.isNaN(dashboardPort) ? 3000 : dashboardPort,
+    dashboardTitle,
     once,
     dryRun,
     noBrowser,
@@ -682,7 +685,7 @@ async function main(): Promise<void> {
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
 
   // Start the Dashboard server
-  const dashboard = new DashboardServer({ port: config.dashboardPort, owner: config.owner, repo: config.repo });
+  const dashboard = new DashboardServer({ port: config.dashboardPort, owner: config.owner, repo: config.repo, dashboardTitle: config.dashboardTitle });
   let dashboardReady = false;
   try {
     await dashboard.initialize();
