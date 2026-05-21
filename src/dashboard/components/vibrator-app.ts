@@ -5,6 +5,7 @@ import './vibrator-header.js';
 import './cylinder-engine.js';
 import './lifecycle-list.js';
 import './broadcast-feed.js';
+import './event-stream.js';
 import './status-bar.js';
 
 export class VibratorApp extends LitElement {
@@ -44,9 +45,21 @@ export class VibratorApp extends LitElement {
     if (!s) return html``;
 
     const baseUrl = `https://github.com/${s.owner}/${s.repo}`;
+    const latestIteration = s.cylinders.reduce((max, c) => Math.max(max, c.iterationNumber), 0);
+    const nextCycleAtMs = s.cylinders.reduce<number | null>((min, c) => {
+      if (c.status === 'idle' && c.nextCycleAtMs !== null && (min === null || c.nextCycleAtMs < min)) {
+        return c.nextCycleAtMs;
+      }
+      return min;
+    }, null);
 
     return html`
-      <vibrator-header .owner=${s.owner} .repo=${s.repo}></vibrator-header>
+      <vibrator-header
+        .owner=${s.owner}
+        .repo=${s.repo}
+        .iteration=${latestIteration}
+        .nextCycleAtMs=${nextCycleAtMs}
+      ></vibrator-header>
       <div class="main-content">
         <cylinder-engine
           .cylinders=${s.cylinders}
@@ -68,6 +81,14 @@ export class VibratorApp extends LitElement {
           .events=${s.broadcastVisible}
           .baseUrl=${baseUrl}
         ></broadcast-feed>
+      </div>
+      <div class="event-log-section">
+        <div class="panel panel-d">
+          <div class="panel-header">📋 EVENT LOG</div>
+          <div class="panel-body">
+            <event-stream .events=${s.eventStream}></event-stream>
+          </div>
+        </div>
       </div>
       <status-bar
         .connection=${s.connection}

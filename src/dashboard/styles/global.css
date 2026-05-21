@@ -51,6 +51,7 @@ vibrator-header { display: contents; }
 cylinder-engine { display: contents; }
 lifecycle-list  { display: contents; }
 broadcast-feed  { display: contents; }
+event-stream    { display: contents; }
 status-bar      { display: contents; }
 
 /* ── Header ── */
@@ -261,6 +262,18 @@ status-bar      { display: contents; }
   letter-spacing: 1px;
   align-self: center;
   padding: 10px 0;
+}
+
+/* ── Event log section ── */
+.event-log-section {
+  padding: 0 20px 8px 20px;
+  height: 140px;
+  flex-shrink: 0;
+}
+
+.panel-d {
+  height: 100%;
+  border-color: rgba(0, 255, 136, 0.2);
 }
 
 /* ── Status bar ── */
