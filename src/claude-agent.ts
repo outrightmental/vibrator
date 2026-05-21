@@ -494,11 +494,8 @@ export function extractFinalDescription(rawOutput: string): string {
   return inner ?? rawOutput.trim();
 }
 
-// Strips conventional-commit prefixes (e.g. "feat:", "fix(#42):") and
-// ensures the first word is capitalized.
 export function sanitizePullRequestTitle(title: string): string {
   const trimmedInput = title.trim();
-  // Remove prefixes like "feat:", "fix(scope):", "chore(#123):" etc.
   const stripped = trimmedInput.replace(/^[a-z]+(\([^)]*\))?:\s*/, "");
   const trimmed = stripped.trim();
   if (!trimmed) return trimmedInput;
