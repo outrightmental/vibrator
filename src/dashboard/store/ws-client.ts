@@ -26,7 +26,6 @@ export class WsClient {
 
   connect(): void {
     this._intentionallyClosed = false;
-    this._onConnectionChange?.(false);
 
     const ws = new WebSocket(this._url);
     this._ws = ws;
