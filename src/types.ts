@@ -6,7 +6,7 @@ export interface Commit {
 }
 
 export interface Milestone {
-  /** GitHub milestone number, used to determine ordering across milestones. */
+  /** GitHub milestone number, used to order the work queue across milestones. */
   number: number;
   title: string;
 }
@@ -29,9 +29,9 @@ export interface Issue {
    */
   parentNumber?: number;
   /**
-   * The milestone this issue belongs to, if any. When milestones are present,
-   * the orchestrator only selects issues from the earliest-numbered milestone
-   * that still has open issues.
+   * The milestone this issue belongs to, if any. Milestones order the work
+   * queue — issues from earlier-numbered milestones are picked first — but do
+   * not gate it: an issue from any milestone is eligible to start.
    */
   milestone?: Milestone;
   /** Label names applied to this issue. */

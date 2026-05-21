@@ -394,6 +394,13 @@ export class GitHubClient {
    * by skipping any comment id in `options.excludeCommentIds` — the persisted
    * set of ids Vibrator has posted. Comments authored by other bot accounts
    * (e.g. `github-actions[bot]`) are also excluded.
+   *
+   * Comments that already carry a 👀 ("eyes") reaction are also excluded:
+   * Vibrator reacts 👀 to every comment it consumes (see {@link addEyesReaction}),
+   * so the reaction marks a comment as already read and prevents it from being
+   * fed into — and addressed by — the same review again on every cycle. (PR
+   * review summaries have no reactions endpoint, so this filter does not apply
+   * to `kind: "review"`.)
    */
   async listPullRequestComments(
     pullRequestNumber: number,
@@ -408,6 +415,7 @@ export class GitHubClient {
         body: string;
         created_at: string;
         html_url: string;
+        reactions?: { eyes?: number };
       }>(`/repos/${owner}/${repo}/issues/${pullRequestNumber}/comments`),
       this.getAllPages<{
         id: number;
@@ -422,8 +430,13 @@ export class GitHubClient {
         body: string;
         created_at: string;
         html_url: string;
+        reactions?: { eyes?: number };
       }>(`/repos/${owner}/${repo}/pulls/${pullRequestNumber}/comments`),
     ]);
+
+    // True when a comment already carries a 👀 reaction — Vibrator has read it.
+    const alreadyRead = (reactions?: { eyes?: number }): boolean =>
+      (reactions?.eyes ?? 0) > 0;
 
     // A comment counts as human feedback unless it was posted by a bot
     // account, carries one of Vibrator's own markers (the automated-comment
@@ -446,6 +459,7 @@ export class GitHubClient {
 
     for (const comment of issueComments) {
       if (!isHumanFeedback(comment.id, comment.user, comment.body)) continue;
+      if (alreadyRead(comment.reactions)) continue;
       result.push({
         id: comment.id,
         author: comment.user?.login ?? "unknown",
@@ -475,6 +489,7 @@ export class GitHubClient {
 
     for (const comment of reviewThreadComments) {
       if (!isHumanFeedback(comment.id, comment.user, comment.body)) continue;
+      if (alreadyRead(comment.reactions)) continue;
       result.push({
         id: comment.id,
         author: comment.user?.login ?? "unknown",
