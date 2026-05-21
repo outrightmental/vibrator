@@ -373,7 +373,7 @@ test("DashboardServer defaults to 'Vibrator' when no dashboardTitle is provided"
 
 test("DashboardServer clears cached github-rate-limit on github-rate-limit-cleared", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 14,
+    port: TEST_PORT + 16,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -392,7 +392,7 @@ test("DashboardServer clears cached github-rate-limit on github-rate-limit-clear
   });
   globalEventEmitter.emit("github-rate-limit-cleared", {});
 
-  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 14}/api/state`);
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 16}/api/state`);
   const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
   const rateLimitMsg = data.cachedEvents.find((m) => m.type === "github-rate-limit");
   assert.equal(rateLimitMsg, undefined, "cleared cache should not replay stale github-rate-limit event");
@@ -417,6 +417,41 @@ test("DashboardServer caches and replays shutdown-requested and app-shutdown via
   const types = data.cachedEvents.map((e) => e.type);
   assert.ok(types.includes("shutdown-requested"), "should cache shutdown-requested");
   assert.ok(types.includes("app-shutdown"), "should cache app-shutdown");
+});
+
+// ── GET /assets/bundle.js ─────────────────────────────────────────────────────
+
+test("GET /assets/bundle.js returns 200 with application/javascript", async (t) => {
+  const bundleDir = path.join(process.cwd(), "dist", "dashboard");
+  const bundlePath = path.join(bundleDir, "bundle.js");
+  const alreadyExists = fs.existsSync(bundlePath);
+
+  if (!alreadyExists) {
+    await fs.promises.mkdir(bundleDir, { recursive: true });
+    await fs.promises.writeFile(bundlePath, "/* test fixture */");
+  }
+
+  const server = new DashboardServer({
+    port: TEST_PORT + 14,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(async () => {
+    server.close();
+    if (!alreadyExists) {
+      await fs.promises.unlink(bundlePath).catch(() => { /* already gone */ });
+    }
+  });
+
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 14}/assets/bundle.js`);
+  assert.equal(res.status, 200);
+  assert.ok(
+    res.headers["content-type"]?.includes("application/javascript"),
+    "should be application/javascript",
+  );
 });
 
 test("DashboardServer broadcasts cylinder-cancel when a client sends cylinder-cancel-request", async (t) => {
