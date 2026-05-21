@@ -494,6 +494,16 @@ export function extractFinalDescription(rawOutput: string): string {
   return inner ?? rawOutput.trim();
 }
 
+// Strips conventional-commit prefixes (e.g. "feat:", "fix(#42):") and
+// ensures the first word is capitalized.
+export function sanitizePullRequestTitle(title: string): string {
+  // Remove prefixes like "feat:", "fix(scope):", "chore(#123):" etc.
+  const stripped = title.replace(/^[a-z]+(\([^)]*\))?:\s*/i, "");
+  const trimmed = stripped.trim();
+  if (!trimmed) return title.trim();
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
 export function extractImplementationPayload(
   rawOutput: string,
 ): { pullRequestTitle: string; pullRequestBody: string } | undefined {
@@ -514,7 +524,10 @@ export function extractImplementationPayload(
   if (typeof obj.title !== "string" || typeof obj.body !== "string") {
     return undefined;
   }
-  return { pullRequestTitle: obj.title, pullRequestBody: obj.body };
+  return {
+    pullRequestTitle: sanitizePullRequestTitle(obj.title),
+    pullRequestBody: obj.body,
+  };
 }
 
 /**
@@ -592,6 +605,7 @@ function buildImplementationPrompt(params: ImplementIssueParams, branch: string)
     "- The JSON object must be valid and appear exactly once, between the sentinel markers on their own lines.",
     "- Do not wrap the JSON in code fences.",
     "- Anything written outside the sentinels is treated as transcript and discarded.",
+    "- The title must be a plain sentence: begin with a capitalized word, state the change directly, and include no prefixes such as 'feat:', 'fix:', 'chore:', or similar conventional-commit annotations.",
   ].join("\n");
 }
 
