@@ -21,6 +21,9 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     type: overrides.type ?? null,
     labels: overrides.labels ?? [],
     ...(overrides.parentNumber !== undefined ? { parentNumber: overrides.parentNumber } : {}),
+    ...(overrides.blockedByIssueNumbers !== undefined
+      ? { blockedByIssueNumbers: overrides.blockedByIssueNumbers }
+      : {}),
     ...(overrides.milestone !== undefined ? { milestone: overrides.milestone } : {}),
   };
 }
@@ -766,6 +769,100 @@ test("buildPlan blockedIssueNumbers includes parent entries from child relations
   const plan = buildPlan(snapshot, 3);
 
   assert.deepEqual(plan.blockedIssueNumbers[10], [1]);
+});
+
+// ---------------------------------------------------------------------------
+// GitHub-native Issue Dependencies (blockedByIssueNumbers field)
+// ---------------------------------------------------------------------------
+
+test("buildBlockedIssueIndex incorporates GitHub-native blockedByIssueNumbers", () => {
+  // Mirrors a real bug: issues #336/#327 had blockers configured via GitHub's
+  // Issue Dependencies UI, with no body text and no parent/child link.
+  const issues = [
+    createIssue({ number: 325 }),
+    createIssue({ number: 327, blockedByIssueNumbers: [325] }),
+    createIssue({ number: 329 }),
+    createIssue({ number: 336, blockedByIssueNumbers: [327, 329] }),
+  ];
+
+  const index = buildBlockedIssueIndex(issues);
+
+  assert.deepEqual(index[327], [325]);
+  assert.deepEqual(index[336], [327, 329]);
+});
+
+test("buildPlan does not start an issue blocked via GitHub-native dependencies", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 325, createdAt: "2024-01-01T00:00:00.000Z" }),
+      createIssue({
+        number: 327,
+        createdAt: "2024-01-02T00:00:00.000Z",
+        blockedByIssueNumbers: [325],
+      }),
+      createIssue({
+        number: 336,
+        createdAt: "2024-01-03T00:00:00.000Z",
+        blockedByIssueNumbers: [327, 329],
+      }),
+      createIssue({ number: 329, createdAt: "2024-01-04T00:00:00.000Z" }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+  const started = plan.actions
+    .filter((a) => a.type === "start-implementation")
+    .map((a) => (a as { issueNumber: number }).issueNumber)
+    .sort((l, r) => l - r);
+
+  assert.deepEqual(
+    started,
+    [325, 329],
+    "Only the unblocked roots (#325, #329) should start; #327 and #336 must wait.",
+  );
+  assert.deepEqual(plan.blockedIssueNumbers[327], [325]);
+  assert.deepEqual(plan.blockedIssueNumbers[336], [327, 329]);
+});
+
+test("buildPlan ignores GitHub-native blockers that are already closed", () => {
+  // #325 (the blocker) is closed → absent from the snapshot.
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({
+        number: 327,
+        createdAt: "2024-01-02T00:00:00.000Z",
+        blockedByIssueNumbers: [325],
+      }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 327 }]);
+  assert.equal(plan.blockedIssueNumbers[327], undefined);
+});
+
+test("buildBlockedIssueIndex unions GitHub-native, text, and parent blockers", () => {
+  // Issue #5 is blocked three ways: native dependency on #2, body text
+  // "blocked by #3", and a sub-issue child #4. All three open blockers
+  // must appear in the merged blocker list.
+  const issues = [
+    createIssue({ number: 2 }),
+    createIssue({ number: 3 }),
+    createIssue({ number: 4, parentNumber: 5 }),
+    createIssue({
+      number: 5,
+      body: "blocked by #3",
+      blockedByIssueNumbers: [2],
+    }),
+  ];
+
+  const index = buildBlockedIssueIndex(issues);
+  assert.deepEqual(index[5], [2, 3, 4]);
 });
 
 test("buildPlan blockedIssueNumbers omits closed blockers from text-based dependencies", () => {

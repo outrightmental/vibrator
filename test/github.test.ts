@@ -173,6 +173,155 @@ test("squashMergePullRequest does not retry unrelated gh merge failures", async 
   assert.match(stderr.output(), /network failure/);
 });
 
+test("listOpenIssues attaches GitHub-native blocked_by dependencies to issues", async (t) => {
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+      const url = String(_url);
+
+      // REST issue list: two open issues, #336 and #327.
+      if (url.includes("/issues?") && !url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 336,
+              title: "Blocked issue",
+              body: "no blocker mentions in body",
+              state: "open",
+              created_at: "2024-01-01T00:00:00Z",
+              updated_at: "2024-01-01T00:00:00Z",
+            },
+            {
+              number: 327,
+              title: "Blocker (also blocked by another)",
+              body: "no blocker mentions in body",
+              state: "open",
+              created_at: "2024-01-02T00:00:00Z",
+              updated_at: "2024-01-02T00:00:00Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // GraphQL parent-numbers query: no sub-issues in this repo.
+      if (url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { repository: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // Issue-dependencies REST endpoint.
+      if (url.endsWith("/issues/336/dependencies/blocked_by")) {
+        return new Response(
+          JSON.stringify([
+            { number: 327, state: "open" },
+            // A closed blocker that must be filtered out.
+            { number: 325, state: "closed" },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/issues/327/dependencies/blocked_by")) {
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+
+  t.after(() => {
+    fetchMock.mock.restore();
+  });
+
+  const client = new GitHubClient({
+    owner: "outrightmental",
+    repo: "readtheroom",
+    token: "token",
+  });
+
+  const issues = await client.listOpenIssues();
+  const blocked = issues.find((i) => i.number === 336);
+  const blocker = issues.find((i) => i.number === 327);
+
+  assert.deepEqual(blocked?.blockedByIssueNumbers, [327]);
+  assert.equal(
+    blocker?.blockedByIssueNumbers,
+    undefined,
+    "Issues with an empty blocked_by list must not carry the field at all.",
+  );
+});
+
+test("listOpenIssues falls back gracefully when Issue Dependencies endpoint is unavailable", async (t) => {
+  const warnOutput: string[] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    warnOutput.push(args.map(String).join(" "));
+  });
+
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request): Promise<Response> => {
+      const url = String(_url);
+
+      if (url.includes("/issues?") && !url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 5,
+              title: "Issue five",
+              body: "body",
+              state: "open",
+              created_at: "2024-01-01T00:00:00Z",
+              updated_at: "2024-01-01T00:00:00Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { repository: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (url.includes("/dependencies/blocked_by")) {
+        return new Response(JSON.stringify({ message: "Not Found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+
+  t.after(() => {
+    fetchMock.mock.restore();
+  });
+
+  const client = new GitHubClient({
+    owner: "outrightmental",
+    repo: "testrepo",
+    token: "token",
+  });
+
+  const issues = await client.listOpenIssues();
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0]?.blockedByIssueNumbers, undefined);
+  assert.ok(
+    warnOutput.some((line) => line.includes("Issue Dependencies feature")),
+    "Expected a warning explaining the dependency-endpoint degradation",
+  );
+});
+
 test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fails", async (t) => {
   const warnOutput: string[] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => {
@@ -220,6 +369,14 @@ test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fai
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
+      }
+
+      // Issue-dependencies endpoint: no dependencies in this repo.
+      if (url.includes("/dependencies/blocked_by")) {
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
       throw new Error(`Unexpected fetch call to ${url}`);
