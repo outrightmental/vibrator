@@ -20,8 +20,8 @@ export interface LifecyclePair {
    */
   issue: { number: number; title: string; state: string } | null;
   pr: { number: number; title: string; state: string; draft: boolean; checksStatus: string } | null;
-  /** absent=no PR, planning=implementation in plan, active=PR open, completed=PR closed */
-  prPhase: "absent" | "planning" | "active" | "completed";
+  /** absent=no PR, planning=implementation in plan, active=draft PR open, review=non-draft PR open, completed=PR closed */
+  prPhase: "absent" | "planning" | "active" | "review" | "completed";
   /** Stable color slot index (issue.number % palette length) */
   colorIndex: number;
   /** Issue numbers blocking this issue, if any (populated for pre-implementation issues) */
@@ -34,13 +34,14 @@ export interface LifecyclePair {
 }
 
 function phaseSortPriority(phase: string, isBlocked: boolean): number {
-  // PR-bearing rows on top (active, then completed), then planning,
-  // then unblocked-absent, then blocked-absent.
-  if (phase === "active") return 0;
-  if (phase === "completed") return 1;
-  if (phase === "planning") return 2;
-  if (phase === "absent" && !isBlocked) return 3;
-  return 4; // absent && blocked
+  // review (needs human attention) first, then draft active, then completed,
+  // then planning, then unblocked-absent, then blocked-absent.
+  if (phase === "review") return 0;
+  if (phase === "active") return 1;
+  if (phase === "completed") return 2;
+  if (phase === "planning") return 3;
+  if (phase === "absent" && !isBlocked) return 4;
+  return 5; // absent && blocked
 }
 
 export function broadcastLifecycleUpdate(
@@ -71,7 +72,7 @@ export function broadcastLifecycleUpdate(
           draft: pr.draft,
           checksStatus: pr.checksStatus,
         },
-        prPhase: completedIssueNumbers.has(issueNumber) ? "completed" : "active",
+        prPhase: completedIssueNumbers.has(issueNumber) ? "completed" : pr.draft ? "active" : "review",
         colorIndex: issue.number % 6,
         ...(blockedIssueNumbers[issue.number] !== undefined && {
           blockedByIssueNumbers: blockedIssueNumbers[issue.number],
@@ -96,7 +97,7 @@ export function broadcastLifecycleUpdate(
         draft: pr.draft,
         checksStatus: pr.checksStatus,
       },
-      prPhase: "active",
+      prPhase: pr.draft ? "active" : "review",
       colorIndex: pr.number % 6,
       ...(isManualPullRequest(pr) && { disabled: true }),
     });
