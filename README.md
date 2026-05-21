@@ -98,7 +98,7 @@ Enable Project SDLC by setting `GITHUB_PROJECT_NUMBER` to a GitHub Projects v2 b
 
 1. Only issues in **Ready** status on the project board are picked up.
 2. When work starts on a Ready issue, it moves to **In Progress**.
-3. After two consecutive clean self-reviews, Vibrator marks the PR ready-for-review, requests human review, and moves the issue to **In Review** — it never auto-merges.
+3. After one clean self-review, Vibrator marks the PR ready-for-review, requests human review, and moves the issue to **In Review** — it never auto-merges.
 4. Vibrator resumes work automatically if:
    - A human converts the PR back to a draft (wants more changes).
    - A new review comment arrives on the PR.
