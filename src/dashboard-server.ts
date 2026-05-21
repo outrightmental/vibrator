@@ -100,7 +100,7 @@ export class DashboardServer {
     if (pathname === "/" || pathname === "/index.html") {
       try {
         let html = await fs.promises.readFile(STATIC_INDEX, "utf-8");
-        html = html.replace(/(<title>)Vibrator([:< ])/, `$1${this.dashboardTitle}$2`);
+        html = html.replace(/(<title>)Vibrator([:< ])/, (_, p1: string, p2: string) => `${p1}${this.dashboardTitle}${p2}`);
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(html);
       } catch {
