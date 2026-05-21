@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as http from "node:http";
 import WebSocket from "ws";
 import { DashboardServer } from "../src/dashboard-server.js";
 import { globalEventEmitter } from "../src/event-emitter.js";
@@ -244,6 +245,48 @@ test("DashboardServer caches action-start with startedAt for accurate elapsed-ti
   const actionMsg = messages.find((m) => m.type === "action-start");
   assert.ok(actionMsg !== undefined, "should replay action-start");
   assert.equal(actionMsg?.data.startedAt, startedAt, "startedAt should be preserved in cache for accurate elapsed-time display");
+});
+
+function fetchHtml(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      let data = "";
+      res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+      res.on("end", () => resolve(data));
+    });
+    req.on("error", reject);
+  });
+}
+
+test("DashboardServer uses custom dashboardTitle in generated HTML", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 8,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+    dashboardTitle: "My Custom Title",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 8}/`);
+  assert.ok(html.includes("My Custom Title"), "HTML should contain the custom dashboard title");
+});
+
+test("DashboardServer defaults to 'Vibrator' when no dashboardTitle is provided", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 9,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 9}/`);
+  assert.ok(html.includes("Vibrator"), "HTML should contain the default title 'Vibrator'");
 });
 
 test("DashboardServer caches and replays shutdown-requested and app-shutdown", async (t) => {
