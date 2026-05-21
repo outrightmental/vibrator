@@ -211,7 +211,7 @@ export class DashboardServer {
   }
 
   async initialize(): Promise<void> {
-    // No-op: HTML generation removed. Static files are served from disk.
+    // No-op: HTML generation removed. Static files are served from src/dashboard/ via serveStatic().
   }
 
   async start(): Promise<void> {
