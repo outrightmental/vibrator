@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import WebSocket from "ws";
 import { DashboardServer } from "../src/dashboard-server.js";
 import { globalEventEmitter } from "../src/event-emitter.js";
@@ -389,4 +391,39 @@ test("DashboardServer caches and replays shutdown-requested and app-shutdown", a
   const types = data.cachedEvents.map((e) => e.type);
   assert.ok(types.includes("shutdown-requested"), "should cache shutdown-requested");
   assert.ok(types.includes("app-shutdown"), "should cache app-shutdown");
+});
+
+// ── GET /assets/bundle.js ─────────────────────────────────────────────────────
+
+test("GET /assets/bundle.js returns 200 with application/javascript", async (t) => {
+  const bundleDir = path.join(process.cwd(), "dist", "dashboard");
+  const bundlePath = path.join(bundleDir, "bundle.js");
+  const alreadyExists = fs.existsSync(bundlePath);
+
+  if (!alreadyExists) {
+    await fs.promises.mkdir(bundleDir, { recursive: true });
+    await fs.promises.writeFile(bundlePath, "/* test fixture */");
+  }
+
+  const server = new DashboardServer({
+    port: TEST_PORT + 14,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(async () => {
+    server.close();
+    if (!alreadyExists) {
+      await fs.promises.unlink(bundlePath).catch(() => { /* already gone */ });
+    }
+  });
+
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 14}/assets/bundle.js`);
+  assert.equal(res.status, 200);
+  assert.ok(
+    res.headers["content-type"]?.includes("application/javascript"),
+    "should be application/javascript",
+  );
 });
