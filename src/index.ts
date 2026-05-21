@@ -542,33 +542,37 @@ async function runEngineLoop(
       // moved on to reviewing it. Any engine planning under the mutex sees a
       // fresh snapshot, so the freshest planner's view always wins.
       //
-      // Any issue with a start-implementation action in the plan is shown
-      // "planning" — including one currently being implemented (its action
-      // is claimed). Excluding claimed actions here would drop the in-flight
-      // issue's pulsing right half, leaving a left-half-only pill.
-      // Start with the planner's own start-implementation targets, then merge
-      // in any issue already claimed by an executing engine. The merge matters
-      // in project mode: once an engine moves its claimed issue to "In
-      // Progress" (outside the planning mutex), the next planner filters that
-      // issue out of `eligibleIssues`, so `plan.actions` drops it — but a
-      // cylinder is still implementing it, so the lifecycle pill must keep
-      // pulsing "implementing…" instead of falling back to absent.
-      const planningIssueNumbers = claimedImplementationIssueNumbers(claimedActions);
-      for (const a of plan.actions) {
-        if (a.type === "start-implementation") {
-          planningIssueNumbers.add(a.issueNumber);
-        }
-      }
-      broadcastLifecycleUpdate(snapshot, planningIssueNumbers, new Set(), plan.blockedIssueNumbers);
-
-      // Find the first unclaimed action
+      // Find the first unclaimed action and claim it BEFORE broadcasting, so
+      // the new claim is reflected in `claimedImplementationIssueNumbers`.
+      //
+      // The lifecycle "planning" state (the pulsing dashed right half) must
+      // coincide 1:1 with a cylinder actively working on the issue. We derive
+      // it exclusively from `claimedActions` — every claimed start-impl is
+      // about to fire (or has already fired) an `action-start` that maps the
+      // issue to a cylinder on the client. Future-plan entries (the planner's
+      // next-up start-impl targets, not yet picked by any engine) deliberately
+      // do NOT pulse: they have no cylinder mapping, so showing them as
+      // "implementing…" would render a pulsing row over a subdued/inactive
+      // pill — the bug this guards against.
       for (const a of plan.actions) {
         const key = actionKey(a);
         if (!claimedActions.has(key)) {
           claimedActions.add(key);
+          broadcastLifecycleUpdate(
+            snapshot,
+            claimedImplementationIssueNumbers(claimedActions),
+            new Set(),
+            plan.blockedIssueNumbers,
+          );
           return { action: a, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
         }
       }
+      broadcastLifecycleUpdate(
+        snapshot,
+        claimedImplementationIssueNumbers(claimedActions),
+        new Set(),
+        plan.blockedIssueNumbers,
+      );
       return { action: null, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
     });
 
