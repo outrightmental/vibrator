@@ -1,4 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 import "dotenv/config";
 
@@ -705,6 +707,13 @@ async function main(): Promise<void> {
   write(`repo: ${config.owner}/${config.repo} (${repositoryUrl})`);
   if (dashboardReady) {
     write(`dashboard: ${dashboard.getUrl()}${config.noBrowser ? " (browser launch suppressed)" : ""}`);
+    const bundlePath = path.join(process.cwd(), "dist", "dashboard", "bundle.js");
+    if (!fs.existsSync(bundlePath)) {
+      console.warn(
+        `[Dashboard] WARNING: dist/dashboard/bundle.js not found — the dashboard UI will not load.\n` +
+        `Run: npm run build:dashboard`,
+      );
+    }
   } else {
     write(`dashboard: failed to start (check if port ${config.dashboardPort} is available)`);
   }
