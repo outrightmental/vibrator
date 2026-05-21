@@ -29,6 +29,14 @@ export interface Issue {
    */
   parentNumber?: number;
   /**
+   * Issue numbers blocking this issue, sourced from GitHub's native
+   * Issue Dependencies feature (the "blocked by" relationship configured
+   * via the GitHub UI / API, distinct from body-text mentions and from
+   * sub-issue parent/child links). Empty or undefined when the feature
+   * is unused, unavailable, or returned an empty list.
+   */
+  blockedByIssueNumbers?: number[];
+  /**
    * The milestone this issue belongs to, if any. Milestones order the work
    * queue — issues from earlier-numbered milestones are picked first — but do
    * not gate it: an issue from any milestone is eligible to start.

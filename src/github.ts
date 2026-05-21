@@ -541,10 +541,17 @@ export class GitHubClient {
       ),
       this.fetchOpenIssueParentNumbers(),
     ]);
+    const openIssueNumbers = new Set(
+      issues
+        .filter((issue) => !issue.pull_request)
+        .map((issue) => issue.number),
+    );
+    const blockedByNumbers = await this.fetchOpenIssueBlockedByNumbers(openIssueNumbers);
     return issues
       .filter((issue) => !issue.pull_request)
       .map((issue) => {
         const parentNumber = parentNumbers.get(issue.number);
+        const blockedBy = blockedByNumbers.get(issue.number);
         return {
           number: issue.number,
           title: issue.title,
@@ -555,6 +562,9 @@ export class GitHubClient {
           type: issue.type?.name ?? null,
           labels: (issue.labels ?? []).map((label) => label.name),
           ...(parentNumber !== undefined ? { parentNumber } : {}),
+          ...(blockedBy && blockedBy.length > 0
+            ? { blockedByIssueNumbers: blockedBy }
+            : {}),
           ...(issue.milestone
             ? { milestone: { number: issue.milestone.number, title: issue.milestone.title } }
             : {}),
@@ -628,6 +638,71 @@ export class GitHubClient {
       );
     }
 
+    return result;
+  }
+
+  /**
+   * Returns a map of open issue number → list of open issue numbers that
+   * block it, sourced from GitHub's native Issue Dependencies feature
+   * (REST `/issues/{n}/dependencies/blocked_by`).
+   *
+   * This is distinct from sub-issue parent/child links and from body-text
+   * "blocked by #N" mentions. Without this call, blockers configured
+   * through the GitHub UI's Dependencies panel are invisible to the
+   * orchestrator and blocked issues are picked up anyway.
+   *
+   * Closed blockers are filtered out — they cannot block anything. Issues
+   * blocked only by closed (or otherwise non-open) blockers are omitted
+   * from the result map entirely.
+   *
+   * Issue Dependencies is a rolling-out GitHub feature. If the endpoint
+   * is unavailable on a given repository the call returns 404 (or some
+   * other error); the failure is logged once and the orchestrator
+   * continues to work without dependency-based blocking.
+   */
+  private async fetchOpenIssueBlockedByNumbers(
+    openIssueNumbers: ReadonlySet<number>,
+  ): Promise<Map<number, number[]>> {
+    const result = new Map<number, number[]>();
+    let featureUnavailable = false;
+
+    const lookups = [...openIssueNumbers].map(async (issueNumber) => {
+      if (featureUnavailable) return;
+      try {
+        const blockers = await this.request<Array<{ number: number; state: string }>>(
+          `/repos/${this.options.owner}/${this.options.repo}/issues/${issueNumber}/dependencies/blocked_by`,
+        );
+        const openBlockers = blockers
+          .filter((blocker) => blocker.state === "open" && openIssueNumbers.has(blocker.number))
+          .map((blocker) => blocker.number)
+          .sort((left, right) => left - right);
+        if (openBlockers.length > 0) {
+          result.set(issueNumber, openBlockers);
+        }
+      } catch (error) {
+        const statusCode = (error as { statusCode?: number }).statusCode;
+        if (statusCode === 404 || statusCode === 410) {
+          // Feature not available on this repo — stop trying and let the
+          // orchestrator proceed without dependency-based blocking.
+          if (!featureUnavailable) {
+            featureUnavailable = true;
+            console.warn(
+              `[vibrator] Could not fetch issue dependencies — the Issue Dependencies feature ` +
+              `may not be enabled on this repository (${statusCode}). ` +
+              `GitHub-native "blocked by" relationships will be skipped.`,
+            );
+          }
+          return;
+        }
+        // Transient or unexpected failure on a single issue: log and keep
+        // going so one bad call doesn't poison the whole list.
+        console.warn(
+          `[vibrator] Could not fetch dependencies for issue #${issueNumber}: ${String(error)}.`,
+        );
+      }
+    });
+
+    await Promise.all(lookups);
     return result;
   }
 
