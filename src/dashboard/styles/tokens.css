@@ -1,0 +1,13 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap');
+
+:root {
+  --color-green: #00ff88;
+  --color-magenta: #ff00ff;
+  --color-blue: #0088ff;
+  --color-yellow: #ffcc00;
+  --color-orange: #ff6600;
+  --color-red: #ff0055;
+  --bg-dark: #0a0e27;
+  --bg-dark-alt: #1a0a3e;
+  --bg-panel: rgba(20, 10, 50, 0.6);
+}
