@@ -201,6 +201,72 @@ test("reducer: events increment eventCount", () => {
   assert.equal(s.eventStream.length, 2);
 });
 
+// ── phase-update ──────────────────────────────────────────────────────────────
+
+test("reducer: phase-update adds to eventStream", () => {
+  const s = dashboardReducer(initialState(), makeEvent("phase-update", { phase: "planning" }));
+  assert.equal(s.eventCount, 1);
+  assert.ok(s.eventStream[0]?.text.includes("planning"), "event text should include phase name");
+});
+
+// ── default handler (cycle-start, plan-update, iteration-complete) ────────────
+
+test("reducer: unknown/default event type adds to eventStream", () => {
+  const s = dashboardReducer(initialState(), makeEvent("cycle-start", {}));
+  assert.equal(s.eventCount, 1);
+  assert.ok(s.eventStream[0]?.text.includes("cycle-start"), "should include event type in text");
+});
+
+// ── broadcast-ci-status ───────────────────────────────────────────────────────
+
+test("reducer: broadcast-ci-status adds to broadcastQueue with ci category", () => {
+  const s = dashboardReducer(initialState(), makeEvent("broadcast-ci-status", {
+    stateBefore: "failing",
+    changeHow: "fixed tests",
+    stateAfter: "passing",
+  }));
+  assert.equal(s.broadcastQueue.length, 1);
+  assert.equal(s.broadcastQueue[0]?.category, "ci");
+  assert.equal(s.broadcastQueue[0]?.label, "CI STATUS");
+});
+
+// ── broadcast-review-comment ──────────────────────────────────────────────────
+
+test("reducer: broadcast-review-comment adds to broadcastQueue", () => {
+  const s = dashboardReducer(initialState(), makeEvent("broadcast-review-comment", {
+    stateBefore: "pending review",
+    changeHow: "reviewer approved",
+    stateAfter: "approved",
+  }));
+  assert.equal(s.broadcastQueue.length, 1);
+  assert.equal(s.broadcastQueue[0]?.label, "REVIEW COMMENT");
+});
+
+// ── broadcast-issue-update ────────────────────────────────────────────────────
+
+test("reducer: broadcast-issue-update adds to broadcastQueue with issue category", () => {
+  const s = dashboardReducer(initialState(), makeEvent("broadcast-issue-update", {
+    stateBefore: "open",
+    changeHow: "closed by PR",
+    stateAfter: "closed",
+  }));
+  assert.equal(s.broadcastQueue.length, 1);
+  assert.equal(s.broadcastQueue[0]?.category, "issue");
+  assert.equal(s.broadcastQueue[0]?.label, "ISSUE UPDATE");
+});
+
+// ── broadcast-github-activity ─────────────────────────────────────────────────
+
+test("reducer: broadcast-github-activity adds to broadcastQueue", () => {
+  const s = dashboardReducer(initialState(), makeEvent("broadcast-github-activity", {
+    stateBefore: "quiet",
+    changeHow: "push happened",
+    stateAfter: "active",
+  }));
+  assert.equal(s.broadcastQueue.length, 1);
+  assert.equal(s.broadcastQueue[0]?.label, "GITHUB ACTIVITY");
+});
+
 // ── full replay sequence ──────────────────────────────────────────────────────
 
 test("reducer: applying a sequence of cached events produces consistent state", () => {
