@@ -24,6 +24,7 @@ import {
   isNonFastForwardPushError,
   parseOriginHeadBranch,
   parseUsageResetTimeMs,
+  sanitizePullRequestTitle,
 } from "../src/claude-agent.js";
 
 function runOrThrow(
@@ -92,6 +93,60 @@ test("extractImplementationPayload returns undefined when markers are missing", 
 test("extractImplementationPayload returns undefined for malformed JSON", () => {
   const stdout = `${IMPLEMENTATION_PAYLOAD_START_MARKER}\nnot json\n${IMPLEMENTATION_PAYLOAD_END_MARKER}`;
   assert.equal(extractImplementationPayload(stdout), undefined);
+});
+
+test("extractImplementationPayload strips conventional-commit prefix from title", () => {
+  const json = JSON.stringify({ title: "feat: add widget support", body: "Closes #1" });
+  const stdout = [IMPLEMENTATION_PAYLOAD_START_MARKER, json, IMPLEMENTATION_PAYLOAD_END_MARKER].join("\n");
+  const result = extractImplementationPayload(stdout);
+  assert.equal(result?.pullRequestTitle, "Add widget support");
+});
+
+test("extractImplementationPayload capitalizes first letter of title", () => {
+  const json = JSON.stringify({ title: "update the thing", body: "Closes #2" });
+  const stdout = [IMPLEMENTATION_PAYLOAD_START_MARKER, json, IMPLEMENTATION_PAYLOAD_END_MARKER].join("\n");
+  const result = extractImplementationPayload(stdout);
+  assert.equal(result?.pullRequestTitle, "Update the thing");
+});
+
+test("sanitizePullRequestTitle removes simple type prefix", () => {
+  assert.equal(sanitizePullRequestTitle("feat: add login"), "Add login");
+});
+
+test("sanitizePullRequestTitle removes scoped prefix with issue number", () => {
+  assert.equal(sanitizePullRequestTitle("feat(#301): support dark mode"), "Support dark mode");
+});
+
+test("sanitizePullRequestTitle removes scoped prefix with text scope", () => {
+  assert.equal(sanitizePullRequestTitle("fix(auth): handle expired tokens"), "Handle expired tokens");
+});
+
+test("sanitizePullRequestTitle capitalizes first letter when no prefix present", () => {
+  assert.equal(sanitizePullRequestTitle("add dark mode toggle"), "Add dark mode toggle");
+});
+
+test("sanitizePullRequestTitle leaves already-correct titles unchanged", () => {
+  assert.equal(sanitizePullRequestTitle("Add dark mode toggle"), "Add dark mode toggle");
+});
+
+test("sanitizePullRequestTitle handles chore prefix", () => {
+  assert.equal(sanitizePullRequestTitle("chore: bump dependencies"), "Bump dependencies");
+});
+
+test("sanitizePullRequestTitle strips prefix when title has leading whitespace", () => {
+  assert.equal(sanitizePullRequestTitle("  feat: add login"), "Add login");
+});
+
+test("sanitizePullRequestTitle does not strip capitalized word followed by colon", () => {
+  assert.equal(sanitizePullRequestTitle("HTTP: standardize client headers"), "HTTP: standardize client headers");
+});
+
+test("sanitizePullRequestTitle removes breaking-change prefix (type!:)", () => {
+  assert.equal(sanitizePullRequestTitle("feat!: drop legacy API"), "Drop legacy API");
+});
+
+test("sanitizePullRequestTitle removes breaking-change prefix with scope (type(scope)!:)", () => {
+  assert.equal(sanitizePullRequestTitle("feat(auth)!: require MFA"), "Require MFA");
 });
 
 test("extractThinkingPreview returns all non-empty lines joined with newlines", () => {
