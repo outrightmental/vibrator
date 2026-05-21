@@ -112,18 +112,6 @@ export class BroadcastEventCard extends LitElement {
       100% { transform: translateX(0) scale(1); filter: brightness(1); }
     }
 
-    :host(.exiting) .broadcast-event {
-      animation: broadcastEventExit 0.6s ease-in forwards;
-      overflow: hidden;
-      pointer-events: none;
-    }
-
-    @keyframes broadcastEventExit {
-      0% { opacity: 1; transform: scale(1); max-height: 200px; margin: 8px 0; padding: 12px 14px; border-width: 3px; }
-      40% { opacity: 0.3; transform: translateX(30px) scale(0.93); }
-      100% { opacity: 0; transform: translateX(60px) scale(0.87); max-height: 0; margin: 0; padding: 0; border-width: 0; }
-    }
-
     a.gh-link { color: inherit; text-decoration: none; cursor: pointer; }
     a.gh-link:hover { text-decoration: underline; filter: brightness(1.4); }
   `;
