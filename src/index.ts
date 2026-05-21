@@ -503,19 +503,24 @@ async function runEngineLoop(
 
       const plan = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
 
-      if (engineIndex === 0) {
-        // Any issue with a start-implementation action in the plan is shown
-        // "planning" — including one currently being implemented (its action
-        // is claimed). Excluding claimed actions here would drop the in-flight
-        // issue's pulsing right half, leaving a left-half-only pill.
-        const planningIssueNumbers = new Set<number>();
-        for (const a of plan.actions) {
-          if (a.type === "start-implementation") {
-            planningIssueNumbers.add(a.issueNumber);
-          }
+      // Refresh the lifecycle pane on every engine's planning pass, not just
+      // engine 0's. Gating it to engine 0 froze the pane while engine 0 was
+      // busy executing a long action — leaving pills stale, e.g. stuck on
+      // "implementing…" after the PR already existed and another cylinder had
+      // moved on to reviewing it. Any engine planning under the mutex sees a
+      // fresh snapshot, so the freshest planner's view always wins.
+      //
+      // Any issue with a start-implementation action in the plan is shown
+      // "planning" — including one currently being implemented (its action
+      // is claimed). Excluding claimed actions here would drop the in-flight
+      // issue's pulsing right half, leaving a left-half-only pill.
+      const planningIssueNumbers = new Set<number>();
+      for (const a of plan.actions) {
+        if (a.type === "start-implementation") {
+          planningIssueNumbers.add(a.issueNumber);
         }
-        broadcastLifecycleUpdate(snapshot, planningIssueNumbers, new Set(), plan.blockedIssueNumbers);
       }
+      broadcastLifecycleUpdate(snapshot, planningIssueNumbers, new Set(), plan.blockedIssueNumbers);
 
       // Find the first unclaimed action
       for (const a of plan.actions) {
