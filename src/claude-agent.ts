@@ -499,7 +499,7 @@ export function extractFinalDescription(rawOutput: string): string {
 export function sanitizePullRequestTitle(title: string): string {
   const trimmedInput = title.trim();
   // Remove prefixes like "feat:", "fix(scope):", "chore(#123):" etc.
-  const stripped = trimmedInput.replace(/^[a-z]+(\([^)]*\))?:\s*/i, "");
+  const stripped = trimmedInput.replace(/^[a-z]+(\([^)]*\))?:\s*/, "");
   const trimmed = stripped.trim();
   if (!trimmed) return trimmedInput;
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);

@@ -137,6 +137,10 @@ test("sanitizePullRequestTitle strips prefix when title has leading whitespace",
   assert.equal(sanitizePullRequestTitle("  feat: add login"), "Add login");
 });
 
+test("sanitizePullRequestTitle does not strip capitalized word followed by colon", () => {
+  assert.equal(sanitizePullRequestTitle("HTTP: standardize client headers"), "HTTP: standardize client headers");
+});
+
 test("extractThinkingPreview returns all non-empty lines joined with newlines", () => {
   const chunk = "Reading file\nAnalyzing code\nFound the issue";
   assert.equal(extractThinkingPreview(chunk), "Reading file\nAnalyzing code\nFound the issue");
