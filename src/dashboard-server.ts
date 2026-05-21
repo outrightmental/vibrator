@@ -490,6 +490,13 @@ body {
   background: rgba(var(--pill-rgb), 0.14);
 }
 
+.pill-pr-half.review {
+  border: 2px solid var(--pill-color);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--pill-rgb), 0.25);
+  box-shadow: 0 0 10px rgba(var(--pill-rgb), 0.35);
+}
+
 .pill-pr-half.completed {
   border: 2px solid var(--pill-color);
   border-left: 1px solid rgba(255, 255, 255, 0.12);
@@ -2042,11 +2049,12 @@ class DashboardUI {
 
   /**
    * Pair sort order — matches phaseSortPriority on the server:
-   *   tier 0: active   (has PR, in progress)
-   *   tier 1: completed (has PR, merged)
-   *   tier 2: planning (being implemented, no PR yet)
-   *   tier 3: absent unblocked
-   *   tier 4: absent blocked
+   *   tier 0: review   (non-draft PR: needs human review)
+   *   tier 1: active   (draft PR: bot still working)
+   *   tier 2: completed (has PR, merged)
+   *   tier 3: planning (being implemented, no PR yet)
+   *   tier 4: absent unblocked
+   *   tier 5: absent blocked
    * Rows currently on an engine cylinder always sort first, ahead of every
    * other row regardless of tier, ordered by cylinder index (matching the
    * engine panel order). The rest sort by tier, then by issue number.
@@ -2070,11 +2078,12 @@ class DashboardUI {
   }
 
   lifecycleTier(pair) {
-    if (pair.prPhase === 'active') return 0;
-    if (pair.prPhase === 'completed') return 1;
-    if (pair.prPhase === 'planning') return 2;
+    if (pair.prPhase === 'review') return 0;
+    if (pair.prPhase === 'active') return 1;
+    if (pair.prPhase === 'completed') return 2;
+    if (pair.prPhase === 'planning') return 3;
     const blocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
-    return blocked ? 4 : 3;
+    return blocked ? 5 : 4;
   }
 
   resortLifecyclePills() {
@@ -2179,6 +2188,7 @@ class DashboardUI {
     const badges = [];
     if (pair.disabled) badges.push('MANUAL');
     if (pair.pr.draft) badges.push('DRAFT');
+    if (pair.prPhase === 'review') badges.push('READY');
     if (pair.prPhase === 'completed') badges.push('MERGED');
     const checksIcon = pair.pr.checksStatus === 'success' ? '✓' :
                        pair.pr.checksStatus === 'failure' ? '✗' :

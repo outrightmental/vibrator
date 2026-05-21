@@ -315,9 +315,9 @@ test("broadcastLifecycleUpdate: planning when issue is in planningIssueNumbers",
   assert.equal(pairs[0]!.prPhase, "planning");
 });
 
-test("broadcastLifecycleUpdate: active when issue has a linked open PR", async () => {
+test("broadcastLifecycleUpdate: active when issue has a linked open draft PR", async () => {
   const issue = makeIssue({ number: 10 });
-  const pr = makePR({ number: 20, closingIssueNumbers: [10] });
+  const pr = makePR({ number: 20, closingIssueNumbers: [10], draft: true });
   const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
   const dataPromise = captureNextEvent("lifecycle-update");
   broadcastLifecycleUpdate(snapshot);
@@ -325,6 +325,18 @@ test("broadcastLifecycleUpdate: active when issue has a linked open PR", async (
   const pairs = data.pairs as Array<{ prPhase: string; pr: { number: number } | null }>;
   assert.equal(pairs[0]!.prPhase, "active");
   assert.equal(pairs[0]!.pr?.number, 20);
+});
+
+test("broadcastLifecycleUpdate: review when issue has a linked open non-draft PR", async () => {
+  const issue = makeIssue({ number: 11 });
+  const pr = makePR({ number: 21, closingIssueNumbers: [11], draft: false });
+  const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ prPhase: string; pr: { number: number } | null }>;
+  assert.equal(pairs[0]!.prPhase, "review");
+  assert.equal(pairs[0]!.pr?.number, 21);
 });
 
 test("broadcastLifecycleUpdate: completed when issue is in completedIssueNumbers", async () => {
@@ -340,13 +352,13 @@ test("broadcastLifecycleUpdate: completed when issue is in completedIssueNumbers
 
 test("broadcastLifecycleUpdate: falls back to linkedIssueNumbers when closingIssueNumbers is empty", async () => {
   const issue = makeIssue({ number: 4 });
-  const pr = makePR({ number: 9, closingIssueNumbers: [], linkedIssueNumbers: [4] });
+  const pr = makePR({ number: 9, closingIssueNumbers: [], linkedIssueNumbers: [4], draft: false });
   const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
   const dataPromise = captureNextEvent("lifecycle-update");
   broadcastLifecycleUpdate(snapshot);
   const data = await dataPromise;
   const pairs = data.pairs as Array<{ prPhase: string; pr: { number: number } | null }>;
-  assert.equal(pairs[0]!.prPhase, "active");
+  assert.equal(pairs[0]!.prPhase, "review");
   assert.equal(pairs[0]!.pr?.number, 9);
 });
 
@@ -360,17 +372,19 @@ test("broadcastLifecycleUpdate: pairs are sorted in ascending issue-number order
   assert.deepEqual(pairs.map((p) => p.issue.number), [5, 17, 30]);
 });
 
-test("broadcastLifecycleUpdate: pairs are sorted active→completed→planning→unblocked→blocked", async () => {
+test("broadcastLifecycleUpdate: pairs are sorted review→active→completed→planning→unblocked→blocked", async () => {
   const issues = [
     makeIssue({ number: 1 }), // blocked absent
     makeIssue({ number: 2 }), // unblocked absent
-    makeIssue({ number: 3 }), // active (has open PR)
+    makeIssue({ number: 3 }), // active (has open draft PR)
     makeIssue({ number: 4 }), // planning
     makeIssue({ number: 5 }), // completed
+    makeIssue({ number: 6 }), // review (has open non-draft PR)
   ];
-  const pr3 = makePR({ number: 103, closingIssueNumbers: [3] });
+  const pr3 = makePR({ number: 103, closingIssueNumbers: [3], draft: true });
   const pr5 = makePR({ number: 105, closingIssueNumbers: [5] });
-  const snapshot = { issues, pullRequests: [pr3, pr5], agentSessions: [] };
+  const pr6 = makePR({ number: 106, closingIssueNumbers: [6], draft: false });
+  const snapshot = { issues, pullRequests: [pr3, pr5, pr6], agentSessions: [] };
   const dataPromise = captureNextEvent("lifecycle-update");
   broadcastLifecycleUpdate(
     snapshot,
@@ -382,8 +396,8 @@ test("broadcastLifecycleUpdate: pairs are sorted active→completed→planning�
   const pairs = data.pairs as Array<{ issue: { number: number }; prPhase: string }>;
   assert.deepEqual(
     pairs.map((p) => p.issue.number),
-    [3, 5, 4, 2, 1],
-    "order: active, completed, planning, unblocked absent, blocked absent",
+    [6, 3, 5, 4, 2, 1],
+    "order: review, active, completed, planning, unblocked absent, blocked absent",
   );
 });
 
@@ -448,7 +462,7 @@ test("broadcastLifecycleUpdate: excludes issues labelled 'manual'", async () => 
 
 test("broadcastLifecycleUpdate: marks the pair disabled when the PR is labelled 'manual'", async () => {
   const issue = makeIssue({ number: 5 });
-  const pr = makePR({ number: 50, closingIssueNumbers: [5], labels: ["manual"] });
+  const pr = makePR({ number: 50, closingIssueNumbers: [5], labels: ["manual"], draft: false });
   const snapshot = { issues: [issue], pullRequests: [pr], agentSessions: [] };
   const dataPromise = captureNextEvent("lifecycle-update");
   broadcastLifecycleUpdate(snapshot);
@@ -460,7 +474,7 @@ test("broadcastLifecycleUpdate: marks the pair disabled when the PR is labelled 
   }>;
   // The pair still appears, paired with its issue, but flagged disabled.
   assert.equal(pairs[0]!.pr?.number, 50);
-  assert.equal(pairs[0]!.prPhase, "active");
+  assert.equal(pairs[0]!.prPhase, "review");
   assert.equal(pairs[0]!.disabled, true);
 });
 
@@ -489,8 +503,8 @@ test("broadcastLifecycleUpdate: drops PR pair when the linked issue is 'manual'"
 // orphan PRs — open PRs not connected to any issue appear as a whole pill
 // with a null issue (the dashboard renders an empty left half).
 
-test("broadcastLifecycleUpdate: open PR with no linked issue becomes an orphan pair", async () => {
-  const pr = makePR({ number: 77, closingIssueNumbers: [], linkedIssueNumbers: [] });
+test("broadcastLifecycleUpdate: open non-draft PR with no linked issue becomes an orphan pair with review phase", async () => {
+  const pr = makePR({ number: 77, closingIssueNumbers: [], linkedIssueNumbers: [], draft: false });
   const snapshot = { issues: [], pullRequests: [pr], agentSessions: [] };
   const dataPromise = captureNextEvent("lifecycle-update");
   broadcastLifecycleUpdate(snapshot);
@@ -503,6 +517,23 @@ test("broadcastLifecycleUpdate: open PR with no linked issue becomes an orphan p
   assert.equal(pairs.length, 1);
   assert.equal(pairs[0]!.issue, null);
   assert.equal(pairs[0]!.pr?.number, 77);
+  assert.equal(pairs[0]!.prPhase, "review");
+});
+
+test("broadcastLifecycleUpdate: open draft PR with no linked issue becomes an orphan pair with active phase", async () => {
+  const pr = makePR({ number: 78, closingIssueNumbers: [], linkedIssueNumbers: [], draft: true });
+  const snapshot = { issues: [], pullRequests: [pr], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{
+    issue: unknown;
+    pr: { number: number } | null;
+    prPhase: string;
+  }>;
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0]!.issue, null);
+  assert.equal(pairs[0]!.pr?.number, 78);
   assert.equal(pairs[0]!.prPhase, "active");
 });
 
