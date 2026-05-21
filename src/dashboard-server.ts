@@ -83,7 +83,15 @@ export class DashboardServer {
     const pathname = url.pathname;
 
     if (pathname === "/" || pathname === "/index.html") {
-      await serveStatic(res, STATIC_INDEX, "text/html");
+      try {
+        let html = await fs.promises.readFile(STATIC_INDEX, "utf-8");
+        html = html.replace(/(<title>)Vibrator([:< ])/, `$1${this.dashboardTitle}$2`);
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(html);
+      } catch {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "not_found" }));
+      }
       return;
     }
 
