@@ -233,7 +233,7 @@ test("selfReview does not report changes when only merging latest base advances 
   await mkdir(binDir, { recursive: true });
 
   try {
-    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
     runOrThrow("git", ["clone", remoteDir, seedDir], root);
     runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
     runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
@@ -357,7 +357,7 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
   await mkdir(binDir, { recursive: true });
 
   try {
-    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
     runOrThrow("git", ["clone", remoteDir, seedDir], root);
     runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
     runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
@@ -477,7 +477,7 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
   await mkdir(binDir, { recursive: true });
 
   try {
-    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
     runOrThrow("git", ["clone", remoteDir, seedDir], root);
     runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
     runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
@@ -606,7 +606,7 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
   await mkdir(binDir, { recursive: true });
 
   try {
-    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
     runOrThrow("git", ["clone", remoteDir, seedDir], root);
     runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
     runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
@@ -747,7 +747,7 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI", async ()
   await mkdir(binDir, { recursive: true });
 
   try {
-    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
     runOrThrow("git", ["clone", remoteDir, seedDir], root);
     runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
     runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
