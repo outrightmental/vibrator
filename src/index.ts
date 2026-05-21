@@ -138,6 +138,25 @@ function actionKey(action: OrchestratorAction): string {
   return `pr:${action.pullRequestNumber}`;
 }
 
+/**
+ * Extract the set of issue numbers that have a currently-claimed
+ * `start-implementation` action (key form `issue:NUM`). Used to ensure
+ * in-flight implementations always render as "planning" in the lifecycle
+ * pane, even when the planner has dropped the issue from `plan.actions`
+ * (e.g. in project mode after `moveIssueToProjectStatus(..., "In Progress")`
+ * runs, the next planner sees status≠Ready and excludes the issue).
+ */
+function claimedImplementationIssueNumbers(claimedActions: ReadonlySet<string>): Set<number> {
+  const issueNumbers = new Set<number>();
+  for (const key of claimedActions) {
+    if (key.startsWith("issue:")) {
+      const n = Number.parseInt(key.slice(6), 10);
+      if (!Number.isNaN(n)) issueNumbers.add(n);
+    }
+  }
+  return issueNumbers;
+}
+
 interface PollingState {
   lastPolledAt: number;
   lastSnapshot: RepositorySnapshot | null;
@@ -148,6 +167,7 @@ async function broadcastBetweenCycleActivity(
   config: Config,
   lastSnapshot: RepositorySnapshot | null,
   seenCommitHashes: Set<string>,
+  claimedActions: ReadonlySet<string>,
 ): Promise<{ snapshot: RepositorySnapshot; seenCommitHashes: Set<string> }> {
   try {
     const gitHubClient = new GitHubClient({
@@ -172,7 +192,16 @@ async function broadcastBetweenCycleActivity(
       broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
     }
     const { blockedIssueNumbers } = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
-    broadcastLifecycleUpdate(snapshot, new Set(), new Set(), blockedIssueNumbers);
+    // Include in-flight implementations (claimed but not yet completed) so
+    // their pills keep pulsing "implementing…" between cycles instead of
+    // dropping back to absent. See `claimedImplementationIssueNumbers` for
+    // why the planner's own output is not enough on its own.
+    broadcastLifecycleUpdate(
+      snapshot,
+      claimedImplementationIssueNumbers(claimedActions),
+      new Set(),
+      blockedIssueNumbers,
+    );
 
     // Broadcast open PRs only when their state has changed since the last poll
     for (const pr of snapshot.pullRequests.filter((p) => p.state === "open")) {
@@ -519,7 +548,14 @@ async function runEngineLoop(
       // "planning" — including one currently being implemented (its action
       // is claimed). Excluding claimed actions here would drop the in-flight
       // issue's pulsing right half, leaving a left-half-only pill.
-      const planningIssueNumbers = new Set<number>();
+      // Start with the planner's own start-implementation targets, then merge
+      // in any issue already claimed by an executing engine. The merge matters
+      // in project mode: once an engine moves its claimed issue to "In
+      // Progress" (outside the planning mutex), the next planner filters that
+      // issue out of `eligibleIssues`, so `plan.actions` drops it — but a
+      // cylinder is still implementing it, so the lifecycle pill must keep
+      // pulsing "implementing…" instead of falling back to absent.
+      const planningIssueNumbers = claimedImplementationIssueNumbers(claimedActions);
       for (const a of plan.actions) {
         if (a.type === "start-implementation") {
           planningIssueNumbers.add(a.issueNumber);
@@ -675,6 +711,7 @@ async function runEngineLoop(
               config,
               pollingState.lastSnapshot,
               pollingState.seenCommitHashes,
+              claimedActions,
             ));
         }
       }
