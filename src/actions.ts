@@ -238,25 +238,49 @@ export async function executeAction(
         );
       }
 
-      const baseBranch = await gitHubClient.getDefaultBranch();
-      const implementation = await claudeAgentClient.implementIssue({
-        owner: context.owner,
-        repo: context.repo,
-        issueNumber: issue.number,
-        issueTitle: issue.title,
-        issueBody: issue.body,
-        baseBranch,
-      });
-      const pullRequestBody = buildMergedPullRequestBody(implementation.pullRequestBody, [
-        issue.number,
-      ]);
-      const created = await gitHubClient.createPullRequest({
-        title: implementation.pullRequestTitle,
-        body: pullRequestBody,
-        head: implementation.branch,
-        base: baseBranch,
-        draft: true,
-      });
+      let implementation: Awaited<ReturnType<typeof claudeAgentClient.implementIssue>>;
+      let pullRequestBody: string;
+      let created: { number: number; headSha: string; created: boolean };
+      try {
+        const baseBranch = await gitHubClient.getDefaultBranch();
+        implementation = await claudeAgentClient.implementIssue({
+          owner: context.owner,
+          repo: context.repo,
+          issueNumber: issue.number,
+          issueTitle: issue.title,
+          issueBody: issue.body,
+          baseBranch,
+        });
+        pullRequestBody = buildMergedPullRequestBody(implementation.pullRequestBody, [
+          issue.number,
+        ]);
+        created = await gitHubClient.createPullRequest({
+          title: implementation.pullRequestTitle,
+          body: pullRequestBody,
+          head: implementation.branch,
+          base: baseBranch,
+          draft: true,
+        });
+      } catch (error) {
+        // Implementation (or PR open) failed after we already moved the issue
+        // to "In Progress". Without this revert the issue would be stuck:
+        // the planner only picks up "Ready" issues, so it would never be
+        // retried on a future cycle.
+        if (context.projectMode && gitHubClient.moveIssueToProjectStatus) {
+          try {
+            await gitHubClient.moveIssueToProjectStatus(
+              context.projectMode.projectNumber,
+              issue.number,
+              "Ready",
+            );
+          } catch (revertError) {
+            console.warn(
+              `[vibrator] Failed to revert issue #${issue.number} to "Ready" after implementation error: ${String(revertError)}`,
+            );
+          }
+        }
+        throw error;
+      }
       if (!created.created) {
         const existingPullRequest = context.pullRequests.find(
           (pullRequest) => pullRequest.headRefName === implementation.branch,

@@ -493,6 +493,111 @@ test("executeAction start-implementation moves issue to In Progress in project m
   );
 });
 
+test("executeAction start-implementation reverts issue to Ready when implementation fails", async () => {
+  // Mirrors the production bug where a failed `git checkout -B` left
+  // an issue stuck in "In Progress" because the planner only re-queues
+  // issues that are in "Ready".
+  const calls: string[] = [];
+
+  const gitHubClient: ActionGitHubClient = {
+    getDefaultBranch: async () => "main",
+    createPullRequest: async () => ({ number: 10, headSha: "sha", created: true }),
+    updatePullRequestBody: async () => {},
+    squashMergePullRequest: async () => {},
+    listFailingCheckRuns: async () => [],
+    cancelInProgressWorkflowRunsForHeadSha: async () => 0,
+    postComment: async () => 9001,
+    listPullRequestComments: async () => [],
+    addEyesReaction: async () => {},
+    moveIssueToProjectStatus: async (projectNumber, issueNumber, status) => {
+      calls.push(`moveStatus:${projectNumber}:${issueNumber}:${status}`);
+    },
+  };
+
+  const sessionStore: ActionSessionStore = {
+    createSession: async () => {},
+  };
+
+  const claudeAgentClient: ActionClaudeAgentClient = {
+    implementIssue: async () => {
+      throw new Error("git checkout -B failed: local changes would be overwritten");
+    },
+    selfReview: async () => ({ madeChanges: false, headSha: "sha" }),
+    resolveMergeConflicts: async () => ({ headSha: "sha" }),
+    addressFailingChecks: async () => ({ headSha: "sha" }),
+    generateFinalDescription: async () => "description",
+  };
+
+  const action: OrchestratorAction = {
+    type: "start-implementation",
+    issueNumber: 1,
+  };
+
+  const issue: Issue = createIssue({ number: 1, title: "My Issue", body: "body" });
+
+  const context: ExecuteActionContext = {
+    owner: "owner",
+    repo: "repo",
+    issues: [issue],
+    pullRequests: [],
+    projectMode: { projectNumber: 42, reviewers: [] },
+  };
+
+  await assert.rejects(
+    () => executeAction(gitHubClient, sessionStore, claudeAgentClient, action, false, context),
+    /git checkout -B failed/,
+  );
+
+  // Both transitions must have happened: forward to In Progress, then back to Ready.
+  assert.deepEqual(calls, ["moveStatus:42:1:In Progress", "moveStatus:42:1:Ready"]);
+});
+
+test("executeAction start-implementation does not revert status outside of project mode", async () => {
+  const calls: string[] = [];
+
+  const gitHubClient: ActionGitHubClient = {
+    getDefaultBranch: async () => "main",
+    createPullRequest: async () => ({ number: 10, headSha: "sha", created: true }),
+    updatePullRequestBody: async () => {},
+    squashMergePullRequest: async () => {},
+    listFailingCheckRuns: async () => [],
+    cancelInProgressWorkflowRunsForHeadSha: async () => 0,
+    postComment: async () => 9001,
+    listPullRequestComments: async () => [],
+    addEyesReaction: async () => {},
+    moveIssueToProjectStatus: async (projectNumber, issueNumber, status) => {
+      calls.push(`moveStatus:${projectNumber}:${issueNumber}:${status}`);
+    },
+  };
+
+  const sessionStore: ActionSessionStore = { createSession: async () => {} };
+
+  const claudeAgentClient: ActionClaudeAgentClient = {
+    implementIssue: async () => {
+      throw new Error("boom");
+    },
+    selfReview: async () => ({ madeChanges: false, headSha: "sha" }),
+    resolveMergeConflicts: async () => ({ headSha: "sha" }),
+    addressFailingChecks: async () => ({ headSha: "sha" }),
+    generateFinalDescription: async () => "description",
+  };
+
+  const action: OrchestratorAction = { type: "start-implementation", issueNumber: 1 };
+  const issue: Issue = createIssue({ number: 1, title: "My Issue", body: "body" });
+  const context: ExecuteActionContext = {
+    owner: "owner",
+    repo: "repo",
+    issues: [issue],
+    pullRequests: [],
+  };
+
+  await assert.rejects(
+    () => executeAction(gitHubClient, sessionStore, claudeAgentClient, action, false, context),
+    /boom/,
+  );
+  assert.deepEqual(calls, []);
+});
+
 // ─── last-read comment persistence ───────────────────────────────────────────
 
 test("executeAction self-review records the latest comment timestamp as last-read", async () => {
