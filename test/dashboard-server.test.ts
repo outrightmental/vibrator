@@ -86,8 +86,9 @@ test("GET /api/health returns 200 with ok:true", async (t) => {
 
   const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 1}/api/health`);
   assert.equal(res.status, 200);
-  const data = JSON.parse(res.body) as { ok: boolean };
+  const data = JSON.parse(res.body) as { ok: boolean; version: string };
   assert.equal(data.ok, true);
+  assert.ok(typeof data.version === "string" && data.version.length > 0, "version should be a non-empty string");
 });
 
 // ── GET / ─────────────────────────────────────────────────────────────────────
@@ -340,7 +341,7 @@ function fetchHtml(url: string): Promise<string> {
 
 test("DashboardServer uses custom dashboardTitle in generated HTML", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 8,
+    port: TEST_PORT + 12,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -350,13 +351,13 @@ test("DashboardServer uses custom dashboardTitle in generated HTML", async (t) =
   await server.start();
   t.after(() => server.close());
 
-  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 8}/`);
+  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 12}/`);
   assert.ok(html.includes("My Custom Title"), "HTML should contain the custom dashboard title");
 });
 
 test("DashboardServer defaults to 'Vibrator' when no dashboardTitle is provided", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 9,
+    port: TEST_PORT + 13,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -365,7 +366,7 @@ test("DashboardServer defaults to 'Vibrator' when no dashboardTitle is provided"
   await server.start();
   t.after(() => server.close());
 
-  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 9}/`);
+  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 13}/`);
   assert.ok(html.includes("Vibrator"), "HTML should contain the default title 'Vibrator'");
 });
 
