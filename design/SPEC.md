@@ -115,11 +115,11 @@ This keeps the system conservative: existing work is shepherded before new work 
 
 ## Action model
 
-The six orchestrator action types map directly to the phases recorded in the local session store:
+The six orchestrator action types each record a session in the local store. The session phase name matches the action name except for `start-implementation`, which is stored as `implementation`:
 
 | Action | Description |
 | --- | --- |
-| `start-implementation` | Claude implements the issue in a local checkout and Vibrator opens a draft PR. In project mode, the issue moves to "In Progress". |
+| `start-implementation` (session: `implementation`) | Claude implements the issue in a local checkout and Vibrator opens a draft PR. In project mode, the issue moves to "In Progress". |
 | `self-review` | Claude reviews the PR diff on the current head, optionally addresses human PR comments, and either pushes fixes or confirms clean. Vibrator posts a summary comment. |
 | `address-failing-checks` | Vibrator fetches failing CI log excerpts; Claude reads them and pushes a fix. Stuck pending checks (> 10 min) are cancelled first. |
 | `resolve-conflicts` | Claude rebases the PR branch on the base branch and resolves any merge conflicts. |

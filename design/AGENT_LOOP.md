@@ -143,11 +143,11 @@ Before merge, missing closing references are appended to the final PR body so Gi
 
 ## Action model
 
-The six orchestrator action types correspond directly to sessions recorded in the local store:
+The six orchestrator action types each record a session in the local store. The session phase name matches the action name except for `start-implementation`, which is stored as `implementation`:
 
 | Action | What happens |
 | --- | --- |
-| `start-implementation` | Claude implements the issue in a fresh checkout and pushes a branch. Vibrator opens a draft PR. In project mode, the issue moves to "In Progress". |
+| `start-implementation` (session: `implementation`) | Claude implements the issue in a fresh checkout and pushes a branch. Vibrator opens a draft PR. In project mode, the issue moves to "In Progress". |
 | `self-review` | Claude checks out the PR branch, reviews the diff against the base, and either pushes fixes or confirms the code is clean. Human PR comments are included as context. Vibrator posts a summary comment on the PR. |
 | `address-failing-checks` | Vibrator fetches failing CI log excerpts. Claude reads them, pushes a fix, and Vibrator posts a comment. Stuck pending checks (> 10 min) are cancelled before Claude reads logs. |
 | `resolve-conflicts` | Claude rebases the PR branch on the base branch and resolves conflicts. Vibrator posts a comment. |

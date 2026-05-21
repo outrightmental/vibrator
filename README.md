@@ -220,7 +220,7 @@ Authentication is handled entirely by the `gh` and `claude` CLI tools. No API ke
 | `DASHBOARD_PORT` | `3000` | HTTP port for the Dashboard server. |
 | `DASHBOARD_TITLE` | `Vibrator` | Title displayed in the Dashboard header. |
 | `VIBRATOR_SESSION_STORE_PATH` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
-| `CLAUDE_ACCOUNTS` | — | Comma-separated paths to Claude config directories for multi-account rotation. See [Multi-account rotation](#multi-account-rotation). |
+| `CLAUDE_ACCOUNTS` | — | Comma- or newline-separated paths to Claude config directories for multi-account rotation. See [Multi-account rotation](#multi-account-rotation). |
 | `CLAUDE_ACCOUNTS_STORE_PATH` | `~/.vibrator/claude-accounts.json` | Path for persisted Claude account rate-limit state. |
 | `GITHUB_PROJECT_NUMBER` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop). |
 | `VIBRATOR_REVIEWERS` | — | Comma-separated GitHub logins to request review from (Project SDLC only). |
@@ -266,7 +266,7 @@ GitHub sub-issues are understood natively. A parent issue is automatically block
 
 ## Multi-account rotation
 
-If you hit Claude Code rate limits with a single account, set `CLAUDE_ACCOUNTS` to a comma-separated list of paths to Claude config directories:
+If you hit Claude Code rate limits with a single account, set `CLAUDE_ACCOUNTS` to a comma- or newline-separated list of paths to Claude config directories:
 
 ```bash
 CLAUDE_ACCOUNTS=/home/user/.claude-account1,/home/user/.claude-account2
