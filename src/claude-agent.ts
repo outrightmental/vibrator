@@ -1132,7 +1132,27 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       { cwd: repoDir },
     );
     await runCommand("git", ["fetch", "origin", "--prune"], { cwd: repoDir });
+    // A previous run may have been interrupted after Claude edited files but
+    // before they were committed or pushed. Discard any leftover state so the
+    // subsequent `git checkout -B` can switch branches cleanly.
+    await this.resetWorkingTreeToClean(repoDir);
     return repoDir;
+  }
+
+  private async resetWorkingTreeToClean(repoDir: string): Promise<void> {
+    if (
+      (await pathExists(join(repoDir, ".git", "rebase-merge"))) ||
+      (await pathExists(join(repoDir, ".git", "rebase-apply")))
+    ) {
+      await runCommand("git", ["rebase", "--abort"], { cwd: repoDir });
+    }
+    if (await pathExists(join(repoDir, ".git", "MERGE_HEAD"))) {
+      await runCommand("git", ["merge", "--abort"], { cwd: repoDir });
+    }
+    await runCommand("git", ["reset", "--hard", "HEAD"], { cwd: repoDir });
+    // Drop untracked files (e.g. new files Claude created but never committed)
+    // while preserving gitignored artifacts like node_modules.
+    await runCommand("git", ["clean", "-fd"], { cwd: repoDir });
   }
 
   private async checkoutPullRequest(params: {

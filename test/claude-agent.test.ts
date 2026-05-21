@@ -341,6 +341,126 @@ test("selfReview does not report changes when only merging latest base advances 
   }
 });
 
+test("implementIssue cleans stale uncommitted state left by a prior interrupted run", async () => {
+  const root = await mkdtemp(join(tmpdir(), "vibrator-stale-checkout-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const verifyDir = join(root, "verify");
+  const ghStubPath = join(binDir, "gh-stub.sh");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const issueNumber = 298;
+  const issueTitle = "Affiliate Program Enhancements";
+  const branch = "vibrator/issue-298-affiliate-program-enhancements";
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    await writeFile(join(seedDir, "tracked.txt"), "original contents\n", "utf8");
+    runOrThrow("git", ["add", "README.md", "tracked.txt"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    await writeFile(
+      ghStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
+        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
+        "  exit 0",
+        "fi",
+        "echo \"unsupported gh args: $*\" >&2",
+        "exit 2",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(ghStubPath, 0o755);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"fresh implementation\" >> implementation.txt",
+        "git add implementation.txt",
+        "git commit -m \"agent implementation commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Affiliate Program Enhancements\",\"body\":\"Closes #298\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    // Simulate a prior interrupted run: the per-issue checkout dir exists
+    // with leftover uncommitted modifications and untracked files that
+    // would otherwise make `git checkout -B` abort with
+    // "Your local changes ... would be overwritten by checkout".
+    const issueCheckoutDir = join(checkoutRootDir, "example-repo", `issue-${issueNumber}`);
+    await mkdir(issueCheckoutDir, { recursive: true });
+    runOrThrow("git", ["clone", remoteDir, issueCheckoutDir], root);
+    runOrThrow("git", ["config", "user.name", "Prior Run"], issueCheckoutDir);
+    runOrThrow("git", ["config", "user.email", "prior@example.com"], issueCheckoutDir);
+    // Put the dir on a stale feature branch with uncommitted changes,
+    // matching the real-world failure where the prior run had switched
+    // to vibrator/issue-N-... and left modifications.
+    runOrThrow("git", ["checkout", "-b", branch], issueCheckoutDir);
+    await writeFile(join(issueCheckoutDir, "tracked.txt"), "PRIOR INTERRUPTED EDIT\n", "utf8");
+    await writeFile(join(issueCheckoutDir, "stale-untracked.txt"), "leftover\n", "utf8");
+
+    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
+    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
+
+    try {
+      const client = createClaudeAgentClient({
+        checkoutRootDir,
+        ghCommand: ghStubPath,
+        claudeCommand: claudeStubPath,
+        claudeTimeoutMs: 120000,
+      });
+
+      const result = await client.implementIssue({
+        owner: "example",
+        repo: "repo",
+        issueNumber,
+        issueTitle,
+        issueBody: "Improve affiliate program.",
+        baseBranch: "main",
+      });
+
+      assert.equal(result.branch, branch);
+
+      runOrThrow("git", ["clone", remoteDir, verifyDir], root);
+      runOrThrow("git", ["checkout", branch], verifyDir);
+      const history = runOrThrow("git", ["log", "--format=%s", "-n", "20"], verifyDir);
+      assert.match(history, /agent implementation commit/);
+      // The prior interrupted edits must NOT have made it into the pushed branch.
+      assert.doesNotMatch(history, /PRIOR INTERRUPTED EDIT/);
+    } finally {
+      if (previousRemote === undefined) {
+        delete process.env.VIBRATOR_TEST_REMOTE;
+      } else {
+        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("implementIssue retries push by merging remote branch on non-fast-forward", async () => {
   const root = await mkdtemp(join(tmpdir(), "vibrator-nff-test-"));
   const remoteDir = join(root, "remote.git");
