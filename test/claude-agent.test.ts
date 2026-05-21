@@ -141,6 +141,14 @@ test("sanitizePullRequestTitle does not strip capitalized word followed by colon
   assert.equal(sanitizePullRequestTitle("HTTP: standardize client headers"), "HTTP: standardize client headers");
 });
 
+test("sanitizePullRequestTitle removes breaking-change prefix (type!:)", () => {
+  assert.equal(sanitizePullRequestTitle("feat!: drop legacy API"), "Drop legacy API");
+});
+
+test("sanitizePullRequestTitle removes breaking-change prefix with scope (type(scope)!:)", () => {
+  assert.equal(sanitizePullRequestTitle("feat(auth)!: require MFA"), "Require MFA");
+});
+
 test("extractThinkingPreview returns all non-empty lines joined with newlines", () => {
   const chunk = "Reading file\nAnalyzing code\nFound the issue";
   assert.equal(extractThinkingPreview(chunk), "Reading file\nAnalyzing code\nFound the issue");

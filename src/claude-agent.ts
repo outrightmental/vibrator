@@ -496,7 +496,7 @@ export function extractFinalDescription(rawOutput: string): string {
 
 export function sanitizePullRequestTitle(title: string): string {
   const trimmedInput = title.trim();
-  const stripped = trimmedInput.replace(/^[a-z]+(\([^)]*\))?:\s*/, "");
+  const stripped = trimmedInput.replace(/^[a-z]+(\([^)]*\))?!?:\s*/, "");
   const trimmed = stripped.trim();
   if (!trimmed) return trimmedInput;
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
