@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as http from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import WebSocket from "ws";
 import { DashboardServer } from "../src/dashboard-server.js";
 import { globalEventEmitter } from "../src/event-emitter.js";
@@ -7,7 +10,17 @@ import type { DashboardEvent } from "../src/event-emitter.js";
 
 const TEST_PORT = 19_876;
 
-function collectMessages(ws: WebSocket, afterOpenMs: number): Promise<DashboardEvent[]> {
+function httpGet(url: string): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    http.get(url, (res) => {
+      let body = "";
+      res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers }));
+    }).on("error", reject);
+  });
+}
+
+function collectWsMessages(ws: WebSocket, afterOpenMs: number): Promise<DashboardEvent[]> {
   const received: DashboardEvent[] = [];
   ws.on("message", (data: Buffer) => {
     received.push(JSON.parse(data.toString()) as DashboardEvent);
@@ -18,7 +31,9 @@ function collectMessages(ws: WebSocket, afterOpenMs: number): Promise<DashboardE
   });
 }
 
-test("DashboardServer replays cached state to a newly connected client", async (t) => {
+// ── GET /api/state ────────────────────────────────────────────────────────────
+
+test("GET /api/state returns cached events as JSON after emissions", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT,
     host: "127.0.0.1",
@@ -47,18 +62,20 @@ test("DashboardServer replays cached state to a newly connected client", async (
     description: "implementing #7",
   });
 
-  // Attach message listener before the connection opens so nothing is missed
-  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT}`);
-  const messages = await collectMessages(ws, 150);
-  ws.close();
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT}/api/state`);
+  assert.equal(res.status, 200);
+  assert.ok(res.headers["content-type"]?.includes("application/json"), "should be JSON");
 
-  const types = messages.map((m) => m.type);
-  assert.ok(types.includes("lifecycle-update"), "should replay lifecycle-update");
-  assert.ok(types.includes("snapshot-update"), "should replay snapshot-update");
-  assert.ok(types.includes("action-start"), "should replay action-start");
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const types = data.cachedEvents.map((e) => e.type);
+  assert.ok(types.includes("lifecycle-update"), "should include lifecycle-update");
+  assert.ok(types.includes("snapshot-update"), "should include snapshot-update");
+  assert.ok(types.includes("action-start"), "should include action-start");
 });
 
-test("DashboardServer replaces cylinder cache on iteration-start", async (t) => {
+// ── GET /api/health ───────────────────────────────────────────────────────────
+
+test("GET /api/health returns 200 with ok:true", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 1,
     host: "127.0.0.1",
@@ -69,7 +86,95 @@ test("DashboardServer replaces cylinder cache on iteration-start", async (t) => 
   await server.start();
   t.after(() => server.close());
 
-  // action-start for cylinder 0, then iteration-start supersedes it in the cache
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 1}/api/health`);
+  assert.equal(res.status, 200);
+  const data = JSON.parse(res.body) as { ok: boolean };
+  assert.equal(data.ok, true);
+});
+
+// ── GET / ─────────────────────────────────────────────────────────────────────
+
+test("GET / serves index.html containing bundle script tag", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 2,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 2}/`);
+  assert.equal(res.status, 200);
+  assert.ok(res.body.includes('/assets/bundle.js'), "index.html should reference /assets/bundle.js");
+});
+
+// ── WS /api/ws ────────────────────────────────────────────────────────────────
+
+test("WS /api/ws delivers emitted events as JSON", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 3,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 3}/api/ws`);
+  const messagesPromise = collectWsMessages(ws, 100);
+
+  await new Promise<void>((resolve) => ws.once("open", resolve));
+  globalEventEmitter.emit("lifecycle-update", { pairs: [] });
+  globalEventEmitter.emit("snapshot-update", { issueCount: 0, prCount: 0, sessionCount: 1, issues: [], pullRequests: [] });
+
+  const messages = await messagesPromise;
+  ws.close();
+
+  const types = messages.map((m) => m.type);
+  assert.ok(types.includes("lifecycle-update"), "should receive lifecycle-update live");
+  assert.ok(types.includes("snapshot-update"), "should receive snapshot-update live");
+});
+
+test("WS upgrade to non-/api/ws path is rejected", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 8,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  await assert.rejects(
+    async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 8}/wrong-path`);
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", resolve);
+        ws.once("error", reject);
+        ws.once("close", () => reject(new Error("closed")));
+      });
+    },
+    "upgrade to wrong path should be rejected"
+  );
+});
+
+// ── Cache replacement tests (via /api/state) ──────────────────────────────────
+
+test("DashboardServer replaces cylinder cache on iteration-start", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 4,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
   globalEventEmitter.emit("action-start", {
     actionIndex: 1,
     totalActions: 2,
@@ -83,26 +188,18 @@ test("DashboardServer replaces cylinder cache on iteration-start", async (t) => 
     maxConcurrency: 2,
   });
 
-  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 1}`);
-  const messages = await collectMessages(ws, 150);
-  ws.close();
-
-  const cylinderMessages = messages.filter(
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 4}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const cylinderMessages = data.cachedEvents.filter(
     (m) => m.type === "action-start" || m.type === "iteration-start",
   );
   assert.equal(cylinderMessages.length, 1, "only one cylinder-0 event should be cached");
-  const cylinderMsg = cylinderMessages[0];
-  assert.ok(cylinderMsg !== undefined, "expected a cylinder message");
-  assert.equal(
-    cylinderMsg.type,
-    "iteration-start",
-    "iteration-start should replace action-start in cache",
-  );
+  assert.equal(cylinderMessages[0]?.type, "iteration-start", "iteration-start should replace action-start");
 });
 
 test("DashboardServer replaces cylinder cache on engine-shutdown", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 2,
+    port: TEST_PORT + 5,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -111,7 +208,6 @@ test("DashboardServer replaces cylinder cache on engine-shutdown", async (t) => 
   await server.start();
   t.after(() => server.close());
 
-  // iteration-start for cylinder 1, then engine-shutdown supersedes it in the cache
   globalEventEmitter.emit("iteration-start", {
     engineIndex: 1,
     iterationNumber: 2,
@@ -119,20 +215,18 @@ test("DashboardServer replaces cylinder cache on engine-shutdown", async (t) => 
   });
   globalEventEmitter.emit("engine-shutdown", { engineIndex: 1 });
 
-  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 2}`);
-  const messages = await collectMessages(ws, 150);
-  ws.close();
-
-  const cylinderMessages = messages.filter(
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 5}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const cylinderMessages = data.cachedEvents.filter(
     (m) => m.type === "iteration-start" || m.type === "engine-shutdown",
   );
   assert.equal(cylinderMessages.length, 1, "only one cylinder-1 event should be cached");
-  assert.equal(cylinderMessages[0]?.type, "engine-shutdown", "engine-shutdown should replace iteration-start in cache");
+  assert.equal(cylinderMessages[0]?.type, "engine-shutdown", "engine-shutdown should replace iteration-start");
 });
 
 test("DashboardServer replaces cylinder cache on engine-idle", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 4,
+    port: TEST_PORT + 6,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -153,18 +247,16 @@ test("DashboardServer replaces cylinder cache on engine-idle", async (t) => {
     reason: "nothing to do this cycle",
   });
 
-  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 4}`);
-  const messages = await collectMessages(ws, 150);
-  ws.close();
-
-  const cylinderMessages = messages.filter((m) => m.type === "action-start" || m.type === "engine-idle");
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 6}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const cylinderMessages = data.cachedEvents.filter((m) => m.type === "action-start" || m.type === "engine-idle");
   assert.equal(cylinderMessages.length, 1, "only one cylinder-0 event should be cached");
-  assert.equal(cylinderMessages[0]?.type, "engine-idle", "engine-idle should replace action-start in cache");
+  assert.equal(cylinderMessages[0]?.type, "engine-idle", "engine-idle should replace action-start");
 });
 
 test("DashboardServer caches engine-idle with nextCycleAtMs", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 5,
+    port: TEST_PORT + 9,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -174,24 +266,19 @@ test("DashboardServer caches engine-idle with nextCycleAtMs", async (t) => {
   t.after(() => server.close());
 
   const nextCycleAtMs = Date.now() + 45000;
-  globalEventEmitter.emit("engine-idle", {
-    engineIndex: 1,
-    nextCycleAtMs,
-  });
+  globalEventEmitter.emit("engine-idle", { engineIndex: 1, nextCycleAtMs });
 
-  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 5}`);
-  const messages = await collectMessages(ws, 150);
-  ws.close();
-
-  const idleMsg = messages.find((m) => m.type === "engine-idle");
-  assert.ok(idleMsg !== undefined, "should replay engine-idle");
-  assert.equal(idleMsg?.data.engineIndex, 1);
-  assert.equal(idleMsg?.data.nextCycleAtMs, nextCycleAtMs, "nextCycleAtMs should be preserved in cache");
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 9}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const idleMsg = data.cachedEvents.find((m) => m.type === "engine-idle");
+  assert.ok(idleMsg !== undefined, "should cache engine-idle");
+  assert.equal(idleMsg?.data["engineIndex"], 1);
+  assert.equal(idleMsg?.data["nextCycleAtMs"], nextCycleAtMs, "nextCycleAtMs should be preserved");
 });
 
 test("DashboardServer caches engine-idle with rateLimitedUntilMs", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 6,
+    port: TEST_PORT + 10,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -207,18 +294,16 @@ test("DashboardServer caches engine-idle with rateLimitedUntilMs", async (t) => 
     rateLimitedUntilMs,
   });
 
-  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 6}`);
-  const messages = await collectMessages(ws, 150);
-  ws.close();
-
-  const idleMsg = messages.find((m) => m.type === "engine-idle");
-  assert.ok(idleMsg !== undefined, "should replay engine-idle");
-  assert.equal(idleMsg?.data.rateLimitedUntilMs, rateLimitedUntilMs, "rateLimitedUntilMs should be preserved in cache");
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 10}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const idleMsg = data.cachedEvents.find((m) => m.type === "engine-idle");
+  assert.ok(idleMsg !== undefined, "should cache engine-idle");
+  assert.equal(idleMsg?.data["rateLimitedUntilMs"], rateLimitedUntilMs, "rateLimitedUntilMs should be preserved");
 });
 
 test("DashboardServer caches action-start with startedAt for accurate elapsed-time replay", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 7,
+    port: TEST_PORT + 11,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -227,7 +312,7 @@ test("DashboardServer caches action-start with startedAt for accurate elapsed-ti
   await server.start();
   t.after(() => server.close());
 
-  const startedAt = Date.now() - 300_000; // simulates action started 5 minutes ago
+  const startedAt = Date.now() - 300_000;
   globalEventEmitter.emit("action-start", {
     actionIndex: 1,
     totalActions: 2,
@@ -237,18 +322,16 @@ test("DashboardServer caches action-start with startedAt for accurate elapsed-ti
     startedAt,
   });
 
-  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 7}`);
-  const messages = await collectMessages(ws, 150);
-  ws.close();
-
-  const actionMsg = messages.find((m) => m.type === "action-start");
-  assert.ok(actionMsg !== undefined, "should replay action-start");
-  assert.equal(actionMsg?.data.startedAt, startedAt, "startedAt should be preserved in cache for accurate elapsed-time display");
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 11}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const actionMsg = data.cachedEvents.find((m) => m.type === "action-start");
+  assert.ok(actionMsg !== undefined, "should cache action-start");
+  assert.equal(actionMsg?.data["startedAt"], startedAt, "startedAt should be preserved");
 });
 
-test("DashboardServer caches and replays shutdown-requested and app-shutdown", async (t) => {
+test("DashboardServer caches and replays shutdown-requested and app-shutdown via /api/state", async (t) => {
   const server = new DashboardServer({
-    port: TEST_PORT + 3,
+    port: TEST_PORT + 7,
     host: "127.0.0.1",
     owner: "test",
     repo: "repo",
@@ -260,11 +343,9 @@ test("DashboardServer caches and replays shutdown-requested and app-shutdown", a
   globalEventEmitter.emit("shutdown-requested", {});
   globalEventEmitter.emit("app-shutdown", {});
 
-  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 3}`);
-  const messages = await collectMessages(ws, 150);
-  ws.close();
-
-  const types = messages.map((m) => m.type);
-  assert.ok(types.includes("shutdown-requested"), "should replay shutdown-requested");
-  assert.ok(types.includes("app-shutdown"), "should replay app-shutdown");
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 7}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const types = data.cachedEvents.map((e) => e.type);
+  assert.ok(types.includes("shutdown-requested"), "should cache shutdown-requested");
+  assert.ok(types.includes("app-shutdown"), "should cache app-shutdown");
 });
