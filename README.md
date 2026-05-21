@@ -150,6 +150,12 @@ gh auth login
 claude login
 ```
 
+If vibrator crashes with 403 Forbidden errors from GitHub, you'll need to refresh the token and add these permissions:
+
+```bash
+gh auto refresh --scopes read:project,project
+```
+
 Optionally copy the environment template to set a default repository:
 
 ```bash
