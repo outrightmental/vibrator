@@ -429,6 +429,48 @@ test("listPullRequestComments excludes comment ids passed in excludeCommentIds",
   assert.equal(comments[0]?.body, "Genuine human feedback");
 });
 
+test("listPullRequestComments excludes comments that already carry a 👀 reaction", async (t) => {
+  // Vibrator reacts 👀 to every comment it reads; on the next cycle that
+  // comment must not be fed back into the review again.
+  mockPrCommentEndpoints(t, 60, {
+    issueComments: [
+      {
+        id: 8001,
+        user: { login: "alice", type: "User" },
+        body: "Already addressed last cycle",
+        created_at: "2024-03-01T10:00:00Z",
+        html_url: "https://github.com/o/r/pull/60#issuecomment-1",
+        reactions: { eyes: 1 },
+      },
+      {
+        id: 8002,
+        user: { login: "alice", type: "User" },
+        body: "Fresh feedback",
+        created_at: "2024-03-02T10:00:00Z",
+        html_url: "https://github.com/o/r/pull/60#issuecomment-2",
+        reactions: { eyes: 0 },
+      },
+    ],
+    reviewThreadComments: [
+      {
+        id: 8003,
+        user: { login: "alice", type: "User" },
+        body: "Inline note already seen",
+        created_at: "2024-03-03T10:00:00Z",
+        html_url: "https://github.com/o/r/pull/60#discussion_r1",
+        reactions: { eyes: 2 },
+      },
+    ],
+  });
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  const comments = await client.listPullRequestComments(60);
+
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0]?.id, 8002);
+  assert.equal(comments[0]?.body, "Fresh feedback");
+});
+
 test("addEyesReaction posts to the correct endpoint per comment kind", async (t) => {
   const reactionCalls: string[] = [];
   const fetchMock = t.mock.method(

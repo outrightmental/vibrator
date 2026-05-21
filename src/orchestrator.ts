@@ -110,19 +110,13 @@ export function parseClosingIssueNumbers(text: string): number[] {
 }
 
 /**
- * Returns the number of the earliest milestone that still has open issues,
- * or undefined if no issues have a milestone assigned.
+ * Sort key for milestone ordering: lower sorts first. Milestones order the
+ * work queue but never gate it — an issue from a later milestone is still
+ * eligible to start; it is simply chosen after earlier-milestone issues.
+ * Issues without a milestone sort after every milestoned issue.
  */
-export function selectEarliestMilestoneNumber(issues: Issue[]): number | undefined {
-  let earliest: number | undefined;
-  for (const issue of issues) {
-    if (issue.milestone !== undefined) {
-      if (earliest === undefined || issue.milestone.number < earliest) {
-        earliest = issue.milestone.number;
-      }
-    }
-  }
-  return earliest;
+function milestoneOrder(issue: Issue): number {
+  return issue.milestone?.number ?? Number.POSITIVE_INFINITY;
 }
 
 export function buildBlockedIssueIndex(issues: Issue[]): Record<number, number[]> {
@@ -506,18 +500,6 @@ export function buildPlan(
     }
   }
 
-  // Milestone gate: an issue in milestone N can start only once every issue
-  // in milestones < N has either been completed (closed, so absent from the
-  // open-issues list) or at least started (has an open linked PR or an
-  // active agent session, i.e. is in `unavailableIssueNumbers`). Find the
-  // earliest milestone that still contains an unstarted open issue — that is
-  // the only milestone whose issues are eligible to start now. Issues
-  // without a milestone are unaffected.
-  const unstartedIssues = issues.filter(
-    (issue) => !unavailableIssueNumbers.has(issue.number),
-  );
-  const earliestUnstartedMilestoneNumber = selectEarliestMilestoneNumber(unstartedIssues);
-
   const eligibleIssues = issues.filter((issue) => {
     if (unavailableIssueNumbers.has(issue.number)) {
       return false;
@@ -538,17 +520,23 @@ export function buildPlan(
       return false;
     }
 
-    if (earliestUnstartedMilestoneNumber !== undefined && issue.milestone !== undefined) {
-      return issue.milestone.number === earliestUnstartedMilestoneNumber;
-    }
-
     return true;
   });
 
-  // Prioritize bugs ahead of other types.
-  const prioritizedEligibleIssues = [...eligibleIssues].sort(
-    (left, right) => issuePriority(left) - issuePriority(right),
-  );
+  // Choose which eligible issues to start. Milestones are an ordering
+  // mechanism, not a gate: every eligible issue can start regardless of its
+  // milestone, but earlier-milestone issues are picked first. Bugs jump ahead
+  // of everything; within the same priority, earlier milestones win; an issue
+  // without a milestone sorts after all milestoned ones. Remaining ties fall
+  // back to created-at order, which is preserved because `issues` is already
+  // sorted by created-at and the sort below is stable.
+  const prioritizedEligibleIssues = [...eligibleIssues].sort((left, right) => {
+    const priorityDifference = issuePriority(left) - issuePriority(right);
+    if (priorityDifference !== 0) {
+      return priorityDifference;
+    }
+    return milestoneOrder(left) - milestoneOrder(right);
+  });
 
   for (const issue of prioritizedEligibleIssues.slice(0, remainingCapacity)) {
     actions.push({ type: "start-implementation", issueNumber: issue.number });

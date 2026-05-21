@@ -165,7 +165,9 @@ function findPullRequest(
 
 /**
  * Fetches the human comments on a PR, excluding any comment vibrator has
- * itself posted (tracked by persisted comment id).
+ * itself posted (tracked by persisted comment id) and any comment already
+ * marked read with a 👀 reaction — so a comment is addressed exactly once,
+ * not re-read on every cycle.
  */
 async function fetchHumanComments(
   gitHubClient: ActionGitHubClient,

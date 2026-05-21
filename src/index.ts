@@ -117,22 +117,23 @@ class PlanningMutex {
   }
 }
 
-/** Stable string key that uniquely identifies an orchestrator action. */
+/**
+ * Stable claim key identifying the *resource* an action operates on — an
+ * issue or a pull request — deliberately NOT the action type.
+ *
+ * Claims are keyed by resource so two engines can never run different actions
+ * against the same PR concurrently. The `in_progress` session that normally
+ * blocks re-planning is created inside `executeAction`, *after* the planning
+ * mutex is released. If claims were keyed by `type:number`, a second engine
+ * planning in that window could pick a different-typed action for the same PR
+ * (e.g. `address-failing-checks` while the first engine runs `self-review`),
+ * find that distinct key unclaimed, and double-book the PR onto two engines.
+ */
 function actionKey(action: OrchestratorAction): string {
-  switch (action.type) {
-    case "start-implementation":
-      return `start-implementation:${action.issueNumber}`;
-    case "self-review":
-      return `self-review:${action.pullRequestNumber}`;
-    case "address-failing-checks":
-      return `address-failing-checks:${action.pullRequestNumber}`;
-    case "resolve-conflicts":
-      return `resolve-conflicts:${action.pullRequestNumber}`;
-    case "squash-merge":
-      return `squash-merge:${action.pullRequestNumber}`;
-    case "request-review":
-      return `request-review:${action.pullRequestNumber}`;
+  if (action.type === "start-implementation") {
+    return `issue:${action.issueNumber}`;
   }
+  return `pr:${action.pullRequestNumber}`;
 }
 
 interface PollingState {
