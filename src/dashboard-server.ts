@@ -1747,9 +1747,26 @@ class DashboardUI {
   handleEngineShutdown(message) {
     const engineIndex = message.data.engineIndex;
     if (engineIndex !== undefined && this.cylinders[engineIndex]) {
-      this.cylinders[engineIndex].status = 'shutdown';
-      this.cylinders[engineIndex].thinkingLines = [];
+      const cyl = this.cylinders[engineIndex];
+
+      if (cyl.issueNumber != null && this.cylinderByIssue.get(cyl.issueNumber) === engineIndex) {
+        this.cylinderByIssue.delete(cyl.issueNumber);
+      }
+      if (cyl.prNumber != null && this.cylinderByPR.get(cyl.prNumber) === engineIndex) {
+        this.cylinderByPR.delete(cyl.prNumber);
+      }
+
+      cyl.status = 'shutdown';
+      cyl.issueNumber = null;
+      cyl.prNumber = null;
+      cyl.actionType = null;
+      cyl.actionStartedAt = null;
+      cyl.idleStatusText = null;
+      cyl.thinkingLines = [];
+
       this.renderPanelA();
+      this.recolorAllPills();
+      this.resortLifecyclePills();
     }
     this.addEventToStream(
       \`⏹ Engine \${(engineIndex ?? 0) + 1} shut down\`,
@@ -1996,21 +2013,15 @@ class DashboardUI {
     this.lastLifecyclePairs = pairs;
 
     const content = document.getElementById('lifecycle-content');
-    const subtitle = document.getElementById('lifecycle-subtitle');
     if (!content) return;
 
     if (pairs.length === 0) {
       content.innerHTML = '<div class="lifecycle-empty">⚡ All issues complete — repository is clean</div>';
-      if (subtitle) subtitle.textContent = 'done';
+      this.updateLifecycleSubtitle(pairs);
       return;
     }
 
-    if (subtitle) {
-      const active = pairs.filter(p => p.prPhase === 'active' || p.prPhase === 'planning').length;
-      subtitle.textContent = String(pairs.length)
-        + ' item' + (pairs.length !== 1 ? 's' : '')
-        + ' · ' + String(active) + ' in progress';
-    }
+    this.updateLifecycleSubtitle(pairs);
 
     content.querySelector('.lifecycle-empty')?.remove();
 
@@ -2089,6 +2100,24 @@ class DashboardUI {
     if (pair.prPhase === 'planning') return 3;
     const blocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
     return blocked ? 5 : 4;
+  }
+
+  countInProgressLifecyclePairs(pairs) {
+    return pairs.filter(pair => pair.issue && this.cylinderByIssue.has(pair.issue.number)).length;
+  }
+
+  updateLifecycleSubtitle(pairs = this.lastLifecyclePairs) {
+    const subtitle = document.getElementById('lifecycle-subtitle');
+    if (!subtitle) return;
+    if (!Array.isArray(pairs) || pairs.length === 0) {
+      subtitle.textContent = 'done';
+      return;
+    }
+
+    const inProgress = this.countInProgressLifecyclePairs(pairs);
+    subtitle.textContent = String(pairs.length)
+      + ' item' + (pairs.length !== 1 ? 's' : '')
+      + ' · ' + String(inProgress) + ' in progress';
   }
 
   resortLifecyclePills() {
@@ -2223,7 +2252,10 @@ class DashboardUI {
 
   recolorAllPills() {
     const content = document.getElementById('lifecycle-content');
-    if (!content) return;
+    if (!content) {
+      this.updateLifecycleSubtitle();
+      return;
+    }
     for (const pill of content.querySelectorAll('.lifecycle-pill')) {
       // Orphan-PR pills key as "pr-<n>" — non-numeric, so they keep their
       // default colour and are skipped by the isNaN guard below.
@@ -2234,6 +2266,8 @@ class DashboardUI {
       pill.style.setProperty('--pill-rgb', color.rgb);
       pill.style.setProperty('--pill-glow', \`rgba(\${color.rgb},0.3)\`);
     }
+
+    this.updateLifecycleSubtitle();
   }
 
   esc(text) {
