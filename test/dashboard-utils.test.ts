@@ -305,6 +305,45 @@ test("broadcastLifecycleUpdate: absent when no PR and not in planning set", asyn
   assert.equal(pairs[0]!.pr, null);
 });
 
+test("broadcastLifecycleUpdate: project mode hides out-of-scope statuses like Backlog", async () => {
+  const snapshot = {
+    issues: [
+      makeIssue({ number: 1, projectStatus: "Backlog" }),
+      makeIssue({ number: 2, projectStatus: "Ready" }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, true);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } | null }>;
+  assert.deepEqual(
+    pairs.map((p) => p.issue?.number),
+    [2],
+    "only in-scope project statuses should appear in lifecycle pane",
+  );
+});
+
+test("broadcastLifecycleUpdate: project mode keeps In Progress and In Review visible", async () => {
+  const snapshot = {
+    issues: [
+      makeIssue({ number: 3, projectStatus: "In Progress" }),
+      makeIssue({ number: 4, projectStatus: "In Review" }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, true);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } | null }>;
+  assert.deepEqual(
+    pairs.map((p) => p.issue?.number),
+    [3, 4],
+  );
+});
+
 test("broadcastLifecycleUpdate: planning when issue is in planningIssueNumbers", async () => {
   const issue = makeIssue({ number: 3 });
   const snapshot = { issues: [issue], pullRequests: [], agentSessions: [] };

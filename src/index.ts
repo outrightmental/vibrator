@@ -199,6 +199,7 @@ async function broadcastBetweenCycleActivity(
       claimedImplementationIssueNumbers(claimedActions),
       new Set(),
       blockedIssueNumbers,
+      config.projectMode !== undefined,
     );
 
     // Broadcast open PRs only when their state has changed since the last poll
@@ -563,6 +564,7 @@ async function runEngineLoop(
             claimedImplementationIssueNumbers(claimedActions),
             new Set(),
             plan.blockedIssueNumbers,
+            config.projectMode !== undefined,
           );
           return { action: a, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
         }
@@ -572,6 +574,7 @@ async function runEngineLoop(
         claimedImplementationIssueNumbers(claimedActions),
         new Set(),
         plan.blockedIssueNumbers,
+        config.projectMode !== undefined,
       );
       return { action: null, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
     });
@@ -643,7 +646,13 @@ async function runEngineLoop(
             for (const n of linked) mergedIssueNumbers.add(n);
           }
           if (mergedIssueNumbers.size > 0) {
-            broadcastLifecycleUpdate(snapshot, new Set(), mergedIssueNumbers, planned.blockedIssueNumbers);
+            broadcastLifecycleUpdate(
+              snapshot,
+              new Set(),
+              mergedIssueNumbers,
+              planned.blockedIssueNumbers,
+              config.projectMode !== undefined,
+            );
           }
         }
       } catch (error) {
