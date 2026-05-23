@@ -1544,6 +1544,46 @@ export class GitHubClient {
    * Cached project metadata: node ID, status field ID, and status option map.
    */
   private projectMetaCache: Map<number, ProjectMeta> | undefined;
+  private projectTitleCache: Map<number, string> | undefined;
+
+  async getProjectTitle(projectNumber: number): Promise<string> {
+    if (!this.projectTitleCache) {
+      this.projectTitleCache = new Map();
+    }
+    const cached = this.projectTitleCache.get(projectNumber);
+    if (cached) return cached;
+
+    type QueryResult = {
+      repository: {
+        projectV2: {
+          title: string;
+        } | null;
+      } | null;
+    };
+
+    const data = await this.graphqlRequest<QueryResult>(
+      `
+        query ProjectTitle($owner: String!, $repo: String!, $projectNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            projectV2(number: $projectNumber) {
+              title
+            }
+          }
+        }
+      `,
+      { owner: this.options.owner, repo: this.options.repo, projectNumber },
+    );
+
+    const title = data.repository?.projectV2?.title?.trim();
+    if (!title) {
+      throw new Error(
+        `GitHub Project #${projectNumber} not found in ${this.options.owner}/${this.options.repo}`,
+      );
+    }
+
+    this.projectTitleCache.set(projectNumber, title);
+    return title;
+  }
 
   private async getProjectMeta(projectNumber: number): Promise<ProjectMeta> {
     if (!this.projectMetaCache) {

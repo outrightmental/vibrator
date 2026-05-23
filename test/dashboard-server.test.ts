@@ -274,7 +274,7 @@ test("DashboardServer uses custom dashboardTitle in generated HTML", async (t) =
   assert.ok(html.includes("My Custom Title"), "HTML should contain the custom dashboard title");
 });
 
-test("DashboardServer defaults to 'Vibrator' when no dashboardTitle is provided", async (t) => {
+test("DashboardServer defaults to repository name when no dashboardTitle is provided", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 9,
     host: "127.0.0.1",
@@ -286,7 +286,7 @@ test("DashboardServer defaults to 'Vibrator' when no dashboardTitle is provided"
   t.after(() => server.close());
 
   const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 9}/`);
-  assert.ok(html.includes("Vibrator"), "HTML should contain the default title 'Vibrator'");
+  assert.ok(html.includes("repo"), "HTML should contain the default repository title");
 });
 
 test("DashboardServer caches and replays shutdown-requested and app-shutdown", async (t) => {

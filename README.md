@@ -224,7 +224,7 @@ Authentication is handled entirely by the `gh` and `claude` CLI tools. No API ke
 | `CLAUDE_MODEL` | *(Claude default)* | Claude model for implementation and review (e.g. `claude-sonnet-4-6`). |
 | `CLAUDE_COMMIT_MODEL` | `claude-haiku-4-5-20251001` | Model for commit message generation. A faster model is appropriate here. |
 | `DASHBOARD_PORT` | `3000` | HTTP port for the Dashboard server. |
-| `DASHBOARD_TITLE` | `Vibrator` | Title displayed in the Dashboard header. |
+| `DASHBOARD_TITLE` | repository name (Simple SDLC) / project title (Project SDLC) | Title displayed in the Dashboard header. |
 | `VIBRATOR_SESSION_STORE_PATH` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 | `CLAUDE_ACCOUNTS` | — | Comma- or newline-separated paths to Claude config directories for multi-account rotation. See [Multi-account rotation](#multi-account-rotation). |
 | `CLAUDE_ACCOUNTS_STORE_PATH` | `~/.vibrator/claude-accounts.json` | Path for persisted Claude account rate-limit state. |
