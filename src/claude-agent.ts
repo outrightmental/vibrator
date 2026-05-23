@@ -383,7 +383,7 @@ function runCommand(
       cwd: options.cwd,
       env: options.env,
       stdio: [
-        options.input !== undefined ? "pipe" : "inherit",
+        options.input !== undefined ? "pipe" : "ignore",
         options.captureStdout ? "pipe" : "inherit",
         options.onStderrChunk || options.captureStderr ? "pipe" : "inherit",
       ],
