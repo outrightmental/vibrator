@@ -787,13 +787,14 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
   }
 });
 
-test("generateFinalDescription passes claudeCommitModel to claude CLI", async () => {
+test("generateFinalDescription passes claudeCommitModel to claude CLI and closes stdin", async () => {
   const root = await mkdtemp(join(tmpdir(), "vibrator-commit-model-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
   const checkoutRootDir = join(root, "checkouts");
   const modelLogPath = join(root, "model-used.txt");
+  const stdinLogPath = join(root, "stdin-state.txt");
   const ghStubPath = join(binDir, "gh-stub.sh");
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const prBranch = "feature/commit-model-test";
@@ -846,6 +847,8 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI", async ()
       [
         "#!/bin/sh",
         "set -eu",
+        "STDIN_STATE=$(node -e \"const timer = setTimeout(() => { process.stdout.write('waiting'); process.exit(0); }, 200); process.stdin.on('end', () => { clearTimeout(timer); process.stdout.write('eof'); }); process.stdin.once('data', () => { clearTimeout(timer); process.stdout.write('data'); }); process.stdin.resume();\")",
+        `printf '%s' \"$STDIN_STATE\" > \"${stdinLogPath}\"`,
         // Capture model arg: parse --model <value> from $@
         "MODEL_USED=\"(none)\"",
         "while [ $# -gt 0 ]; do",
@@ -895,7 +898,9 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI", async ()
       assert.ok(description.includes("Did the thing."), "should return extracted description");
       const { readFile } = await import("node:fs/promises");
       const modelUsed = (await readFile(modelLogPath, "utf8")).trim();
+      const stdinState = (await readFile(stdinLogPath, "utf8")).trim();
       assert.equal(modelUsed, "claude-haiku-test-model", "should pass claudeCommitModel to claude CLI");
+      assert.equal(stdinState, "eof", "should close stdin for non-interactive Claude runs");
     } finally {
       if (previousRemote === undefined) {
         delete process.env.VIBRATOR_TEST_REMOTE;
