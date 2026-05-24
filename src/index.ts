@@ -175,7 +175,11 @@ async function broadcastBetweenCycleActivity(
     });
     const sessionStore = new FileSessionStore(config.sessionStorePath);
 
-    const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+    const snapshot = await loadSnapshot(
+      gitHubClient,
+      sessionStore,
+      config.projectMode ? { projectNumber: config.projectMode.projectNumber } : undefined,
+    );
 
     // Broadcast current repository state only when something changed
     const lastPrMap = lastSnapshot
