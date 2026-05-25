@@ -554,9 +554,19 @@ body {
   color: rgba(255, 130, 110, 1);
 }
 
+.pill-badge-inactive {
+  border-color: rgba(160, 160, 175, 0.55);
+  color: rgba(185, 185, 200, 0.85);
+}
+
 .pill-pr-half.absent.blocked {
   border: 2px dashed rgba(255, 100, 80, 0.35);
   opacity: 0.75;
+}
+
+.pill-pr-half.inactive {
+  border: 2px dashed rgba(120, 120, 135, 0.4);
+  opacity: 0.55;
 }
 
 /* A "manual"-labelled PR: parked, never worked on automatically. */
@@ -2098,6 +2108,7 @@ class DashboardUI {
     if (pair.prPhase === 'active') return 1;
     if (pair.prPhase === 'completed') return 2;
     if (pair.prPhase === 'planning') return 3;
+    if (pair.prPhase === 'inactive') return 6;
     const blocked = pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0;
     return blocked ? 5 : 4;
   }
@@ -2209,6 +2220,9 @@ class DashboardUI {
     if (!pair.pr) {
       if (pair.prPhase === 'planning') {
         return \`<div class="pill-label">PR</div><div class="pill-row"><span class="pill-title">implementing…</span></div>\`;
+      }
+      if (pair.prPhase === 'inactive' && pair.projectStatus) {
+        return \`<div class="pill-label">Status</div><div class="pill-row"><span class="pill-badge pill-badge-inactive">\${this.esc(pair.projectStatus)}</span></div>\`;
       }
       if (pair.blockedByIssueNumbers && pair.blockedByIssueNumbers.length > 0) {
         const blockerBadges = pair.blockedByIssueNumbers

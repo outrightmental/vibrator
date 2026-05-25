@@ -319,12 +319,18 @@ test("broadcastLifecycleUpdate: all open issues appear regardless of project sta
   const dataPromise = captureNextEvent("lifecycle-update");
   broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, true);
   const data = await dataPromise;
-  const pairs = data.pairs as Array<{ issue: { number: number } | null }>;
+  const pairs = data.pairs as Array<{ issue: { number: number } | null; prPhase: string; projectStatus?: string }>;
+  // "Ready" issue sorts before "inactive" issues; inactive issues sort by number.
   assert.deepEqual(
     pairs.map((p) => p.issue?.number),
-    [1, 2, 3, 4],
-    "all non-manual open issues should appear in lifecycle pane regardless of project status",
+    [2, 1, 3, 4],
+    "Ready issue should appear before inactive issues; all others sort by number",
   );
+  assert.equal(pairs[0]!.prPhase, "absent", "Ready issue is absent (workable)");
+  assert.equal(pairs[1]!.prPhase, "inactive");
+  assert.equal(pairs[1]!.projectStatus, "Backlog");
+  assert.equal(pairs[2]!.prPhase, "inactive");
+  assert.equal(pairs[3]!.prPhase, "inactive");
 });
 
 test("broadcastLifecycleUpdate: planning when issue is in planningIssueNumbers", async () => {
