@@ -115,10 +115,10 @@ function parseEmailFromAuthStatus(authStatusText: string): string {
 function resolveClaudeHome(claudeHomeDir?: string): string {
   const isNonEmpty = (value: string | undefined): value is string => value !== undefined && value.trim().length > 0;
   if (isNonEmpty(claudeHomeDir)) {
-    return claudeHomeDir;
+    return claudeHomeDir.trim();
   }
   if (isNonEmpty(process.env.CLAUDE_HOME)) {
-    return process.env.CLAUDE_HOME;
+    return process.env.CLAUDE_HOME.trim();
   }
   return join(homedir(), ".claude");
 }
