@@ -21,6 +21,7 @@ import {
   isRebaseInProgress,
   isClaudeUsageLimitMessage,
   isClaudeTermsAcceptanceMessage,
+  isClaudeNotLoggedInMessage,
   isNonFastForwardPushError,
   parseOriginHeadBranch,
   parseUsageResetTimeMs,
@@ -239,6 +240,14 @@ test("isClaudeTermsAcceptanceMessage detects the consumer-terms API error", () =
 
 test("isClaudeTermsAcceptanceMessage returns false for unrelated errors", () => {
   assert.equal(isClaudeTermsAcceptanceMessage("network timeout"), false);
+});
+
+test("isClaudeNotLoggedInMessage detects explicit /login prompt", () => {
+  assert.equal(isClaudeNotLoggedInMessage("Not logged in · Please run /login"), true);
+});
+
+test("isClaudeNotLoggedInMessage returns false for unrelated errors", () => {
+  assert.equal(isClaudeNotLoggedInMessage("network timeout"), false);
 });
 
 test("isNonFastForwardPushError detects git non-fast-forward push output", () => {

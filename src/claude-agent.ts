@@ -846,6 +846,10 @@ export function isClaudeTermsAcceptanceMessage(message: string): boolean {
   );
 }
 
+export function isClaudeNotLoggedInMessage(message: string): boolean {
+  return /not logged in|please run\s*\/login|run\s*\/login/i.test(message);
+}
+
 export function isNonFastForwardPushError(message: string): boolean {
   return /non-fast-forward|failed to push some refs|tip of your current branch is behind/i.test(
     message,
@@ -1619,6 +1623,34 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           );
         }
         await activateClaudeCredential(activeCredentialEmail);
+        try {
+          await runCommand(this.claudeCommand, ["auth", "status", "--text"], {
+            captureStdout: true,
+            captureStderr: true,
+            env,
+            timeoutMs: Math.min(this.claudeTimeoutMs, 30_000),
+          });
+        } catch (authError) {
+          const authMessage = authError instanceof Error ? authError.message : String(authError);
+          if (!isClaudeNotLoggedInMessage(authMessage)) {
+            throw authError;
+          }
+          const primaryCredentialEmail = this.accountManager.getStates()[0]?.email;
+          if (!primaryCredentialEmail) {
+            throw new Error("Claude CLI is not logged in and no stored credentials are available to recover session.");
+          }
+          process.stderr.write(
+            `[vibrator] Claude CLI reported logged out; re-activating primary credential ${primaryCredentialEmail}.\n`,
+          );
+          await activateClaudeCredential(primaryCredentialEmail);
+          await runCommand(this.claudeCommand, ["auth", "status", "--text"], {
+            captureStdout: true,
+            captureStderr: true,
+            env,
+            timeoutMs: Math.min(this.claudeTimeoutMs, 30_000),
+          });
+          activeCredentialEmail = primaryCredentialEmail;
+        }
       } else {
         if (claudeQuotaBlockedUntilMs !== undefined && Date.now() < claudeQuotaBlockedUntilMs) {
           throw new Error(
