@@ -107,10 +107,15 @@ export function broadcastLifecycleUpdate(
     });
   }
 
-  // Issues not yet paired get an absent or planning right half
+  // Issues not yet paired get an absent, planning, or inactive right half.
+  // An issue currently being implemented (in planningIssueNumbers) always
+  // renders as "planning" — the orchestrator is working on it now, regardless
+  // of what the project status field happens to say.
   for (const issue of visibleIssues) {
     if (pairedIssueNumbers.has(issue.number)) continue;
+    const isPlanning = planningIssueNumbers.has(issue.number);
     const isInactive =
+      !isPlanning &&
       projectModeEnabled &&
       issue.projectStatus !== undefined &&
       issue.projectStatus.toLowerCase() !== "ready";
@@ -126,7 +131,7 @@ export function broadcastLifecycleUpdate(
       pairs.push({
         issue: { number: issue.number, title: issue.title, state: issue.state },
         pr: null,
-        prPhase: planningIssueNumbers.has(issue.number) ? "planning" : "absent",
+        prPhase: isPlanning ? "planning" : "absent",
         colorIndex: issue.number % 6,
         ...(blockedIssueNumbers[issue.number] !== undefined && {
           blockedByIssueNumbers: blockedIssueNumbers[issue.number],
