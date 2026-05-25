@@ -16,7 +16,7 @@ import {
 } from "./claude-account-manager.js";
 import {
   buildDefaultSessionStorePath,
-  getGhToken,
+  getGitHubTokenFromEnv,
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
@@ -171,7 +171,7 @@ async function broadcastBetweenCycleActivity(
     const gitHubClient = new GitHubClient({
       owner: config.owner,
       repo: config.repo,
-      token: await getGhToken(),
+      token: getGitHubTokenFromEnv(),
     });
     const sessionStore = new FileSessionStore(config.sessionStorePath);
 
@@ -415,7 +415,7 @@ async function runEngineLoop(
   const gitHubClient = new GitHubClient({
     owner: config.owner,
     repo: config.repo,
-    token: await getGhToken(),
+    token: getGitHubTokenFromEnv(),
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
 
@@ -787,7 +787,7 @@ async function main(): Promise<void> {
     const startupGitHubClient = new GitHubClient({
       owner: config.owner,
       repo: config.repo,
-      token: await getGhToken(),
+      token: getGitHubTokenFromEnv(),
     });
     await startupGitHubClient.ensureLabelExists(
       "manual",

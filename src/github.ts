@@ -1,5 +1,3 @@
-import childProcess, { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { join } from "node:path";
 
 import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
@@ -11,76 +9,26 @@ import type {
   RepositorySnapshot,
 } from "./types.js";
 
-const execFileAsync = promisify(execFile);
-
 /**
- * Returns the GitHub token for the currently authenticated `gh` CLI user.
- * Throws with a clear message if the user is not logged in.
+ * Returns the GitHub token configured for Vibrator.
+ * Prefers the app-specific variable, then common GitHub token variables.
  */
-export async function getGhToken(): Promise<string> {
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync("gh", ["auth", "token"]));
-  } catch (error) {
-    throw new Error(
-      `Could not retrieve GitHub token from the gh CLI. ` +
-      `Make sure you are logged in with \`gh auth login\`. ` +
-      `(${String(error)})`,
-    );
+export function getGitHubTokenFromEnv(): string {
+  for (const name of ["VIBRATOR_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"] as const) {
+    const token = process.env[name]?.trim();
+    if (token) {
+      return token;
+    }
   }
-  const token = stdout.trim();
-  if (!token) {
-    throw new Error(
-      `The gh CLI returned an empty token. Run \`gh auth login\` to authenticate.`,
-    );
-  }
-  return token;
+  throw new Error(
+    "Missing GitHub token. Set VIBRATOR_GITHUB_TOKEN or GITHUB_TOKEN to a GitHub PAT with access to the target repository.",
+  );
 }
 
 interface PullRequestInlineComment {
   path: string;
   line: number;
   body: string;
-}
-
-interface ShellCommandError extends Error {
-  stdout?: string;
-  stderr?: string;
-  exitCode?: number | null;
-}
-
-function runShellCommand(command: string, args: readonly string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = childProcess.spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: string | Buffer) => {
-      const text = chunk.toString();
-      stdout += text;
-      process.stdout.write(text);
-    });
-    child.stderr?.on("data", (chunk: string | Buffer) => {
-      const text = chunk.toString();
-      stderr += text;
-      process.stderr.write(text);
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code !== 0) {
-        const error = new Error(
-          `Command \`${command} ${args.join(" ")}\` exited with non-zero status ${code ?? "unknown"}.`,
-        ) as ShellCommandError;
-        error.stdout = stdout;
-        error.stderr = stderr;
-        error.exitCode = code;
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
 }
 
 function mergeSortedUnique(...sources: ReadonlyArray<readonly number[]>): number[] {
@@ -152,13 +100,17 @@ interface ProjectMeta {
   statusOptions: Array<{ id: string; name: string }>;
 }
 
-function shouldRetryMergeWithAdmin(error: unknown): boolean {
+function isBranchProtectionMergeError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
-  const shellError = error as ShellCommandError;
-  const combinedOutput = `${shellError.stderr ?? ""}\n${shellError.stdout ?? ""}\n${error.message}`;
-  return /base branch policy prohibits the merge/i.test(combinedOutput);
+  const statusCode = (error as Error & { statusCode?: number }).statusCode;
+  return (
+    statusCode === 403 ||
+    statusCode === 405 ||
+    statusCode === 409 ||
+    /base branch policy prohibits the merge|protected branch|branch protection/i.test(error.message)
+  );
 }
 
 export function isVibratorReview(body: string | null | undefined): boolean {
@@ -1107,41 +1059,36 @@ export class GitHubClient {
   }
 
   /**
-   * Squash-merges a pull request using `gh pr merge --squash`, passing
-   * the provided subject and body as the commit message.
+   * Squash-merges a pull request through the GitHub REST API, passing the
+   * provided subject and body as the commit message.
    */
   async squashMergePullRequest(
     pullRequestNumber: number,
     subject: string,
     body: string,
   ): Promise<void> {
-    await runShellCommand("gh", [
-      "pr",
-      "ready",
-      String(pullRequestNumber),
-      "--repo",
-      `${this.options.owner}/${this.options.repo}`,
-    ]);
-    const mergeArgs = [
-      "pr",
-      "merge",
-      String(pullRequestNumber),
-      "--squash",
-      "--subject",
-      subject,
-      "--body",
-      body,
-      "--repo",
-      `${this.options.owner}/${this.options.repo}`,
-    ] as const;
+    await this.markPullRequestReadyForReview(pullRequestNumber);
 
     try {
-      await runShellCommand("gh", mergeArgs);
+      await this.request(
+        `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}/merge`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            commit_title: subject,
+            commit_message: body,
+            merge_method: "squash",
+          }),
+        },
+      );
     } catch (error) {
-      if (!shouldRetryMergeWithAdmin(error)) {
-        throw error;
+      if (isBranchProtectionMergeError(error)) {
+        throw new Error(
+          `GitHub API could not squash-merge PR #${pullRequestNumber}; branch protection may be blocking the merge and the API merge endpoint does not support the previous gh --admin retry. ${String(error)}`,
+        );
       }
-      await runShellCommand("gh", [...mergeArgs, "--admin"]);
+      throw error;
     }
   }
 
@@ -1488,10 +1435,12 @@ export class GitHubClient {
    * No-op if the PR is already ready.
    */
   async markPullRequestReadyForReview(pullRequestNumber: number): Promise<void> {
-    // Look up the PR node ID via REST first.
-    const pr = await this.request<{ node_id: string }>(
+    const pr = await this.request<{ node_id: string; draft: boolean }>(
       `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}`,
     );
+    if (!pr.draft) {
+      return;
+    }
     await this.graphqlRequest(
       `
         mutation MarkPullRequestReadyForReview($prId: ID!) {

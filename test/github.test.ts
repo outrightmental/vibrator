@@ -1,12 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import childProcess from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  getGitHubTokenFromEnv,
   GitHubClient,
   isVibratorReview,
   loadSnapshot,
@@ -46,131 +45,171 @@ test("isVibratorReview returns false for reviews from other sources", () => {
   assert.equal(isVibratorReview(undefined), false);
 });
 
-test("squashMergePullRequest retries with --admin when branch policy blocks merge", async (t) => {
-  const stderr = captureStderr(t);
-  const spawnCalls: Array<{ command: string; args: readonly string[] }> = [];
-  let mergeAttempts = 0;
-
-  const spawnMock = t.mock.method(
-    childProcess,
-    "spawn",
-    (command: string, args: readonly string[]) => {
-      spawnCalls.push({ command, args });
-
-      const child = new EventEmitter() as EventEmitter & {
-        stdout: EventEmitter;
-        stderr: EventEmitter;
-      };
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-
-      queueMicrotask(() => {
-        if (args[1] === "ready") {
-          child.emit("close", 0);
-          return;
-        }
-
-        mergeAttempts += 1;
-        if (mergeAttempts === 1) {
-          child.stderr.emit(
-            "data",
-            "X Pull request outrightmental/readtheroom#160 is not mergeable: the base branch policy prohibits the merge.\n" +
-              "To use administrator privileges to immediately merge the pull request, add the `--admin` flag.\n",
-          );
-          child.emit("close", 1);
-          return;
-        }
-
-        child.emit("close", 0);
-      });
-
-      return child;
-    },
-  );
-
+test("getGitHubTokenFromEnv prefers VIBRATOR_GITHUB_TOKEN", (t) => {
+  const previous = {
+    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+  };
   t.after(() => {
-    spawnMock.mock.restore();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
-
-  const client = new GitHubClient({
-    owner: "outrightmental",
-    repo: "readtheroom",
-    token: "token",
-  });
-
-  await client.squashMergePullRequest(160, "Subject", "Body");
-
-  assert.equal(spawnCalls.length, 3);
-  assert.deepEqual(spawnCalls[1]?.args, [
-    "pr",
-    "merge",
-    "160",
-    "--squash",
-    "--subject",
-    "Subject",
-    "--body",
-    "Body",
-    "--repo",
-    "outrightmental/readtheroom",
-  ]);
-  assert.deepEqual(spawnCalls[2]?.args, [
-    "pr",
-    "merge",
-    "160",
-    "--squash",
-    "--subject",
-    "Subject",
-    "--body",
-    "Body",
-    "--repo",
-    "outrightmental/readtheroom",
-    "--admin",
-  ]);
-  assert.match(stderr.output(), /base branch policy prohibits the merge/);
+  process.env.VIBRATOR_GITHUB_TOKEN = " vibrator-token ";
+  process.env.GITHUB_TOKEN = "github-token";
+  process.env.GH_TOKEN = "gh-token";
+  assert.equal(getGitHubTokenFromEnv(), "vibrator-token");
 });
 
-test("squashMergePullRequest does not retry unrelated gh merge failures", async (t) => {
-  const stderr = captureStderr(t);
-  const spawnMock = t.mock.method(
-    childProcess,
-    "spawn",
-    (_command: string, args: readonly string[]) => {
-      const child = new EventEmitter() as EventEmitter & {
-        stdout: EventEmitter;
-        stderr: EventEmitter;
-      };
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
+test("getGitHubTokenFromEnv falls back to GITHUB_TOKEN then GH_TOKEN", (t) => {
+  const previous = {
+    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+  };
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  delete process.env.VIBRATOR_GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = " github-token ";
+  process.env.GH_TOKEN = "gh-token";
+  assert.equal(getGitHubTokenFromEnv(), "github-token");
 
-      queueMicrotask(() => {
-        if (args[1] === "ready") {
-          child.emit("close", 0);
-          return;
-        }
+  delete process.env.GITHUB_TOKEN;
+  assert.equal(getGitHubTokenFromEnv(), "gh-token");
+});
 
-        child.stderr.emit("data", "network failure\n");
-        child.emit("close", 1);
-      });
+test("getGitHubTokenFromEnv throws a clear error when no token is set", (t) => {
+  const previous = {
+    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+  };
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  delete process.env.VIBRATOR_GITHUB_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.GH_TOKEN;
+  assert.throws(
+    () => getGitHubTokenFromEnv(),
+    /Missing GitHub token\. Set VIBRATOR_GITHUB_TOKEN or GITHUB_TOKEN/,
+  );
+});
 
-      return child;
+test("squashMergePullRequest marks draft PR ready and calls squash merge API", async (t) => {
+  const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      requests.push({ url: String(url), init });
+      if (String(url).endsWith("/pulls/160") && init?.method === undefined) {
+        return new Response(JSON.stringify({ node_id: "PR_node", draft: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (String(url).endsWith("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (String(url).endsWith("/pulls/160/merge") && init?.method === "PUT") {
+        return new Response(JSON.stringify({ merged: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
     },
   );
+  t.after(() => fetchMock.mock.restore());
 
-  t.after(() => {
-    spawnMock.mock.restore();
+  const client = new GitHubClient({ owner: "outrightmental", repo: "readtheroom", token: "token" });
+  await client.squashMergePullRequest(160, "Subject", "Body");
+
+  assert.equal(requests.length, 3);
+  assert.match(requests[1]!.init?.body as string, /markPullRequestReadyForReview/);
+  assert.deepEqual(JSON.parse(requests[2]!.init?.body as string), {
+    commit_title: "Subject",
+    commit_message: "Body",
+    merge_method: "squash",
   });
+});
 
-  const client = new GitHubClient({
-    owner: "outrightmental",
-    repo: "readtheroom",
-    token: "token",
-  });
+test("squashMergePullRequest skips ready mutation for non-draft PR", async (t) => {
+  const requests: string[] = [];
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      requests.push(String(url));
+      if (String(url).endsWith("/pulls/160") && init?.method === undefined) {
+        return new Response(JSON.stringify({ node_id: "PR_node", draft: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (String(url).endsWith("/pulls/160/merge") && init?.method === "PUT") {
+        return new Response(JSON.stringify({ merged: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
 
+  const client = new GitHubClient({ owner: "outrightmental", repo: "readtheroom", token: "token" });
+  await client.squashMergePullRequest(160, "Subject", "Body");
+
+  assert.deepEqual(requests, [
+    "https://api.github.com/repos/outrightmental/readtheroom/pulls/160",
+    "https://api.github.com/repos/outrightmental/readtheroom/pulls/160/merge",
+  ]);
+});
+
+test("squashMergePullRequest surfaces protected-branch API failures clearly", async (t) => {
+  const stderr = captureStderr(t);
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (String(url).endsWith("/pulls/160") && init?.method === undefined) {
+        return new Response(JSON.stringify({ node_id: "PR_node", draft: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (String(url).endsWith("/pulls/160/merge") && init?.method === "PUT") {
+        return new Response(JSON.stringify({ message: "base branch policy prohibits the merge" }), {
+          status: 405,
+          statusText: "Method Not Allowed",
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "readtheroom", token: "token" });
   await assert.rejects(
     client.squashMergePullRequest(160, "Subject", "Body"),
-    /non-zero status 1/,
+    /branch protection may be blocking the merge/,
   );
-  assert.match(stderr.output(), /network failure/);
+  assert.match(stderr.output(), /base branch policy prohibits the merge/);
 });
 
 test("listOpenIssues attaches GitHub-native blocked_by dependencies to issues", async (t) => {
