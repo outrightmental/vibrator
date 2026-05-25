@@ -15,6 +15,7 @@ export type DashboardEventType =
   | "broadcast-ci-status"
   | "broadcast-review-comment"
   | "broadcast-issue-update"
+  | "broadcast-credential-rotation"
   | "lifecycle-update"
   | "log-message"
   | "claude-thinking"

@@ -1089,6 +1089,44 @@ a.gh-link:hover {
 .cycle-banner.fade-out {
   animation: bannerFadeOut 0.8s ease-out forwards;
 }
+
+.credential-rotation-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3000;
+  background: rgba(18, 9, 36, 0.95);
+  border: 3px solid #ff00ff;
+  border-radius: 16px;
+  box-shadow: 0 0 48px rgba(255, 0, 255, 0.7), 0 0 24px rgba(0, 255, 255, 0.45);
+  padding: 24px 28px;
+  width: min(900px, 92vw);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.credential-rotation-modal.visible {
+  opacity: 1;
+}
+
+.credential-rotation-modal-title {
+  color: #ffff00;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-shadow: 0 0 8px rgba(255, 255, 0, 0.65);
+  margin-bottom: 10px;
+}
+
+.credential-rotation-modal-body {
+  color: #ffffff;
+  font-size: 18px;
+  line-height: 1.45;
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.25);
+}
 `;
   }
 
@@ -1145,6 +1183,7 @@ class DashboardUI {
     this.workerMap = {};
     this.shutdownRequested = false;
     this.appShutdown = false;
+    this.credentialRotationModalTimer = null;
     this.init();
   }
 
@@ -1225,6 +1264,10 @@ class DashboardUI {
         <div class="connection-status" id="connection-status">
           <span id="connection-text">Connecting...</span>
         </div>
+      </div>
+      <div id="credential-rotation-modal" class="credential-rotation-modal" aria-live="assertive" role="alert">
+        <div class="credential-rotation-modal-title">Credential Rotation</div>
+        <div id="credential-rotation-modal-body" class="credential-rotation-modal-body"></div>
       </div>
     \`;
     this.renderPanelA();
@@ -1554,7 +1597,11 @@ class DashboardUI {
       case 'broadcast-ci-status':
       case 'broadcast-review-comment':
       case 'broadcast-issue-update':
+      case 'broadcast-credential-rotation':
         this.handleBroadcastEvent(message);
+        if (message.type === 'broadcast-credential-rotation') {
+          this.showCredentialRotationModal(message.data);
+        }
         break;
       case 'lifecycle-update':
         this.handleLifecycleUpdate(message);
@@ -1841,6 +1888,7 @@ class DashboardUI {
     const category = message.type === 'broadcast-ci-status' ? 'ci' :
                      message.type === 'broadcast-commit' ? 'commit' :
                      message.type === 'broadcast-pr-update' ? 'pr' :
+                     message.type === 'broadcast-credential-rotation' ? 'issue' :
                      message.type === 'broadcast-issue-update' ? 'issue' : 'info';
 
     const label = message.type.replace('broadcast-', '').replace(/-/g, ' ').toUpperCase();
@@ -1994,6 +2042,24 @@ class DashboardUI {
       broadcastContent.insertBefore(card, broadcastContent.firstChild);
     } else {
       broadcastContent.appendChild(card);
+    }
+
+    showCredentialRotationModal(data) {
+      const modal = document.getElementById('credential-rotation-modal');
+      const body = document.getElementById('credential-rotation-modal-body');
+      if (!modal || !body) return;
+
+      const content = data && data.content ? String(data.content) : 'Claude credential rotation event received.';
+      body.textContent = content;
+      modal.classList.add('visible');
+
+      if (this.credentialRotationModalTimer) {
+        clearTimeout(this.credentialRotationModalTimer);
+      }
+      this.credentialRotationModalTimer = setTimeout(() => {
+        modal.classList.remove('visible');
+        this.credentialRotationModalTimer = null;
+      }, 6500);
     }
     broadcastContent.scrollTop = 0;
 

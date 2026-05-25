@@ -173,4 +173,4 @@ Each action is idempotent through session state. A later iteration observes what
 - **Self-review loop repeats**: the planner only advances once two consecutive clean self-reviews are recorded against the current head SHA. If Claude keeps pushing changes, review the PR diff to understand what it is fixing.
 - **Final description fails**: confirm `git`, `claude`, and the configured GitHub PAT are available locally.
 - **Too much parallel work**: lower `MAX_CONCURRENCY`.
-- **Rate limits**: configure `CLAUDE_ACCOUNTS` for multi-account rotation to keep the loop running when one account is rate-limited.
+- **Rate limits**: use the Claude credential vault commands (`add/list/remove`) so multi-account rotation can switch credentials automatically when one account is rate-limited.

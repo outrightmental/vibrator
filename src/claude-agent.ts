@@ -3,6 +3,7 @@ import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { globalEventEmitter } from "./event-emitter.js";
+import { activateClaudeCredential } from "./claude-credential-manager.js";
 import type { ClaudeAccountManager } from "./claude-account-manager.js";
 import { getGitHubTokenFromEnv } from "./github.js";
 
@@ -321,9 +322,9 @@ interface ClaudeAgentClientOptions {
    */
   claudeTimeoutMs?: number;
   /**
-   * Optional multi-account manager for rotating between Claude Code accounts
-   * when rate limits are reached.  When omitted, the client uses a single
-   * implicit account (the default ~/.claude credentials).
+   * Optional multi-account manager for rotating through stored Claude
+   * credentials when rate limits are reached. When omitted, the client uses
+   * the single currently active Claude credential.
    */
   accountManager?: ClaudeAccountManager;
   /** Zero-based index of the engine loop that owns this client instance. Used to route live thinking events to the correct dashboard cylinder. */
@@ -943,6 +944,66 @@ function buildPushRecoveryBackupBranchName(branch: string): string {
 
 export const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
 
+function emitLoudCredentialRotationEvent(params: {
+  fromEmail: string;
+  toEmail: string;
+  resetAtMs: number;
+  engineIndex?: number;
+}): void {
+  const bannerMessage =
+    `Claude Credentials for ${params.fromEmail} hit rate limit. ` +
+    `Switching to next credential, ${params.toEmail}.`;
+
+  const loudLine = `🚨🚨🚨 ${bannerMessage} 🚨🚨🚨`;
+  console.error(loudLine);
+
+  globalEventEmitter.emit("log-message", {
+    level: "warning",
+    message: loudLine,
+  });
+  globalEventEmitter.emit("broadcast-credential-rotation", {
+    content: bannerMessage,
+    fromEmail: params.fromEmail,
+    toEmail: params.toEmail,
+    resetAtMs: params.resetAtMs,
+    stateBefore: `Claude credential ${params.fromEmail} was active`,
+    changeHow: `Rate limit detected. Marked ${params.fromEmail} unavailable until ${formatLocalTime(params.resetAtMs)} local time`,
+    stateAfter: `Claude credential ${params.toEmail} is now active`,
+    excellence: "Credential rotation triggered immediately to maintain maximum development throughput",
+    ...(params.engineIndex !== undefined ? { workerIndex: params.engineIndex } : {}),
+  });
+}
+
+function emitLoudCredentialExhaustedEvent(params: {
+  exhaustedEmail: string;
+  resetAtMs: number;
+  nextAvailableAtMs: number;
+  engineIndex?: number;
+}): void {
+  const bannerMessage =
+    `Claude Credentials for ${params.exhaustedEmail} hit rate limit. ` +
+    `No further credentials are currently available.`;
+
+  const loudLine = `🚨🚨🚨 ${bannerMessage} 🚨🚨🚨`;
+  console.error(loudLine);
+
+  globalEventEmitter.emit("log-message", {
+    level: "warning",
+    message: loudLine,
+  });
+  globalEventEmitter.emit("broadcast-credential-rotation", {
+    content: bannerMessage,
+    fromEmail: params.exhaustedEmail,
+    toEmail: "",
+    resetAtMs: params.resetAtMs,
+    stateBefore: `Claude credential ${params.exhaustedEmail} was active`,
+    changeHow: `Rate limit detected. Marked ${params.exhaustedEmail} unavailable until ${formatLocalTime(params.resetAtMs)} local time`,
+    stateAfter: `All stored Claude credentials are rate-limited. Waiting until approximately ${formatLocalTime(params.nextAvailableAtMs)} local time`,
+    excellence: "Rotation state persisted — Vibrator will resume with the earliest available credential automatically",
+    ...(params.engineIndex !== undefined ? { workerIndex: params.engineIndex } : {}),
+  });
+}
+
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
   private readonly claudeCommand: string;
@@ -1504,8 +1565,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const env: NodeJS.ProcessEnv = { ...process.env };
     // Use the local Claude Code subscription, not the Anthropic Platform API.
     // Removing ANTHROPIC_API_KEY forces the claude CLI to authenticate via
-    // the subscription credentials in ~/.claude/.credentials.json (or the
-    // directory pointed to by CLAUDE_HOME when multi-account mode is active).
+    // the active subscription credentials in ~/.claude/.credentials.json (or
+    // CLAUDE_HOME when explicitly provided by the operator).
     delete env.ANTHROPIC_API_KEY;
     // Avoid Claude subprocesses inheriting Vibrator's GitHub token.
     delete env.GH_TOKEN;
@@ -1548,29 +1609,29 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       return { text, blockedUntilMs };
     };
 
-    // ── Multi-account mode ────────────────────────────────────────────────
-    // When an account manager is configured, pick the next available account
-    // and point CLAUDE_HOME at its config directory so the Claude CLI loads
-    // the correct subscription credentials.
-    let activeConfigDir: string | undefined;
-    if (this.accountManager) {
-      activeConfigDir = this.accountManager.acquireAccount();
-      if (activeConfigDir === undefined) {
-        const nextMs = this.accountManager.earliestAvailableMs();
-        const when = nextMs !== undefined ? ` until approximately ${formatLocalTime(nextMs)} local time` : "";
-        throw new Error(
-          `All Claude accounts are rate-limited${when}. Skipping Claude actions until an account becomes available.`,
-        );
-      }
-      // CLAUDE_HOME overrides the default ~/.claude config directory so the
-      // Claude CLI picks up the credentials for this specific account.
-      env.CLAUDE_HOME = activeConfigDir;
-    } else {
-      // ── Single-account mode (legacy) ──────────────────────────────────
-      if (claudeQuotaBlockedUntilMs !== undefined && Date.now() < claudeQuotaBlockedUntilMs) {
-        throw new Error(
-          `Claude CLI usage limit reached. Skipping Claude actions until approximately ${formatLocalTime(claudeQuotaBlockedUntilMs)} local time.`,
-        );
+    const maxCredentialAttempts = this.accountManager ? this.accountManager.accountCount + 1 : 1;
+    let credentialAttempts = 0;
+
+    while (credentialAttempts < maxCredentialAttempts) {
+      credentialAttempts += 1;
+      let activeCredentialEmail: string | undefined;
+
+      if (this.accountManager) {
+        activeCredentialEmail = this.accountManager.acquireAccount();
+        if (activeCredentialEmail === undefined) {
+          const nextMs = this.accountManager.earliestAvailableMs();
+          const when = nextMs !== undefined ? ` until approximately ${formatLocalTime(nextMs)} local time` : "";
+          throw new Error(
+            `All Claude credentials are rate-limited${when}. Skipping Claude actions until a credential becomes available.`,
+          );
+        }
+        await activateClaudeCredential(activeCredentialEmail);
+      } else {
+        if (claudeQuotaBlockedUntilMs !== undefined && Date.now() < claudeQuotaBlockedUntilMs) {
+          throw new Error(
+            `Claude CLI usage limit reached. Skipping Claude actions until approximately ${formatLocalTime(claudeQuotaBlockedUntilMs)} local time.`,
+          );
+        }
       }
 
       if (claudeTermsAcceptanceRequired) {
@@ -1578,78 +1639,92 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
         );
       }
-    }
 
-    const accountSuffix = activeConfigDir ? ` [${activeConfigDir}]` : "";
-    const slotId = statusBoard.allocate(`${modelDisplay}${accountSuffix}`);
+      const accountSuffix = activeCredentialEmail ? ` [${activeCredentialEmail}]` : "";
+      const slotId = statusBoard.allocate(`${modelDisplay}${accountSuffix}`);
 
-    try {
-      const result = await runCommand(
-        this.claudeCommand,
-        [
-          "--print",
-          "--verbose",
-          "--permission-mode",
-          "bypassPermissions",
-          ...modelArgs,
-          prompt,
-        ],
-        {
-          cwd,
-          captureStdout: true,
-          captureStderr: true,
-          env,
-          timeoutMs: this.claudeTimeoutMs,
-          onStderrChunk: (chunk: string) => {
-            const preview = extractThinkingPreview(chunk);
-            if (preview) {
-              statusBoard.update(slotId, preview);
-              globalEventEmitter.emit("claude-thinking", {
-                model: modelDisplay,
-                excerpt: preview,
-                ...(this.engineIndex !== undefined ? { engineIndex: this.engineIndex } : {}),
-              });
-            }
+      try {
+        const result = await runCommand(
+          this.claudeCommand,
+          [
+            "--print",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+            ...modelArgs,
+            prompt,
+          ],
+          {
+            cwd,
+            captureStdout: true,
+            captureStderr: true,
+            env,
+            timeoutMs: this.claudeTimeoutMs,
+            onStderrChunk: (chunk: string) => {
+              const preview = extractThinkingPreview(chunk);
+              if (preview) {
+                statusBoard.update(slotId, preview);
+                globalEventEmitter.emit("claude-thinking", {
+                  model: modelDisplay,
+                  excerpt: preview,
+                  ...(this.engineIndex !== undefined ? { engineIndex: this.engineIndex } : {}),
+                });
+              }
+            },
           },
-        },
-      );
+        );
 
-      statusBoard.free(slotId, `Claude [${modelDisplay}] done [${formatElapsed()}]`);
-      return result;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const quotaMessage = tryBuildQuotaMessage(message);
-      statusBoard.free(
-        slotId,
-        quotaMessage
-          ? `Claude [${modelDisplay}] quota limit [${formatElapsed()}]`
-          : `Claude [${modelDisplay}] error [${formatElapsed()}]`,
-      );
-      if (quotaMessage) {
-        if (this.accountManager && activeConfigDir) {
-          // In multi-account mode, record the rate limit against this specific
-          // account so subsequent invocations can rotate to another one.
-          await this.accountManager.markRateLimited(activeConfigDir, quotaMessage.blockedUntilMs);
-          const remaining = this.accountManager.acquireAccount();
-          const earliestMs = remaining === undefined ? this.accountManager.earliestAvailableMs() : undefined;
-          const suffix = remaining !== undefined
-            ? ` Rotating to next available account.`
-            : ` No more accounts available; waiting until ${formatLocalTime(earliestMs ?? quotaMessage.blockedUntilMs)}.`;
-          throw new Error(quotaMessage.text + suffix, { cause: error });
-        } else {
+        statusBoard.free(slotId, `Claude [${modelDisplay}] done [${formatElapsed()}]`);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const quotaMessage = tryBuildQuotaMessage(message);
+        statusBoard.free(
+          slotId,
+          quotaMessage
+            ? `Claude [${modelDisplay}] quota limit [${formatElapsed()}]`
+            : `Claude [${modelDisplay}] error [${formatElapsed()}]`,
+        );
+        if (quotaMessage) {
+          if (this.accountManager && activeCredentialEmail) {
+            await this.accountManager.markRateLimited(activeCredentialEmail, quotaMessage.blockedUntilMs);
+            const nextCredential = this.accountManager.acquireAccount();
+            if (nextCredential !== undefined) {
+              emitLoudCredentialRotationEvent({
+                fromEmail: activeCredentialEmail,
+                toEmail: nextCredential,
+                resetAtMs: quotaMessage.blockedUntilMs,
+                engineIndex: this.engineIndex,
+              });
+              continue;
+            }
+            const earliestMs = this.accountManager.earliestAvailableMs() ?? quotaMessage.blockedUntilMs;
+            emitLoudCredentialExhaustedEvent({
+              exhaustedEmail: activeCredentialEmail,
+              resetAtMs: quotaMessage.blockedUntilMs,
+              nextAvailableAtMs: earliestMs,
+              engineIndex: this.engineIndex,
+            });
+            throw new Error(
+              `${quotaMessage.text} No more credentials are currently available; waiting until ${formatLocalTime(earliestMs)}.`,
+              { cause: error },
+            );
+          }
           claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;
           throw new Error(quotaMessage.text, { cause: error });
         }
+        if (isClaudeTermsAcceptanceMessage(message)) {
+          claudeTermsAcceptanceRequired = true;
+          throw new Error(
+            "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
+            { cause: error },
+          );
+        }
+        throw error;
       }
-      if (isClaudeTermsAcceptanceMessage(message)) {
-        claudeTermsAcceptanceRequired = true;
-        throw new Error(
-          "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
-          { cause: error },
-        );
-      }
-      throw error;
     }
+
+    throw new Error("Failed to run Claude command after credential-rotation attempts.");
   }
 }
 

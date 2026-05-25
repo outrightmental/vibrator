@@ -12,8 +12,8 @@ import {
 import {
   ClaudeAccountManager,
   defaultAccountStorePath,
-  parseClaudeAccountsEnv,
 } from "./claude-account-manager.js";
+import { defaultClaudeCredentialStoreDir, listClaudeCredentials } from "./claude-credential-manager.js";
 import {
   buildDefaultSessionStorePath,
   getGitHubTokenFromEnv,
@@ -323,8 +323,8 @@ interface Config {
   dryRun: boolean;
   noBrowser: boolean;
   sessionStorePath: string;
-  /** Paths to Claude config directories for multi-account rotation (empty = single account). */
-  claudeAccountDirs: string[];
+  /** Stored Claude credential directory used for multi-account rotation. */
+  claudeCredentialStoreDir: string;
   /** File path for persisted Claude account rate-limit state. */
   claudeAccountStorePath: string;
   /** Human-in-the-Loop project mode config. Undefined = standard auto-merge mode. */
@@ -365,11 +365,10 @@ function parseArgs(argv: string[]): Config {
   const dashboardTitle = process.env.DASHBOARD_TITLE ?? "Vibrator";
   const claudeModel = process.env.CLAUDE_MODEL;
   const claudeCommitModel = process.env.CLAUDE_COMMIT_MODEL;
-  const claudeAccountDirs = process.env.CLAUDE_ACCOUNTS
-    ? parseClaudeAccountsEnv(process.env.CLAUDE_ACCOUNTS)
-    : [];
+  const claudeCredentialStoreDir =
+    process.env.CLAUDE_CREDENTIAL_STORE_DIR ?? defaultClaudeCredentialStoreDir();
   const claudeAccountStorePath =
-    process.env.CLAUDE_ACCOUNTS_STORE_PATH ?? defaultAccountStorePath();
+    process.env.CLAUDE_CREDENTIAL_ROTATION_STORE_PATH ?? defaultAccountStorePath();
 
   const projectNumberRaw = process.env.GITHUB_PROJECT_NUMBER;
   const projectNumber = projectNumberRaw
@@ -397,7 +396,7 @@ function parseArgs(argv: string[]): Config {
     dryRun,
     noBrowser,
     sessionStorePath,
-    claudeAccountDirs,
+    claudeCredentialStoreDir,
     claudeAccountStorePath,
     projectMode,
   };
@@ -406,6 +405,7 @@ function parseArgs(argv: string[]): Config {
 async function runEngineLoop(
   config: Config,
   engineIndex: number,
+  accountManager: ClaudeAccountManager | undefined,
   planningMutex: PlanningMutex,
   claimedActions: Set<string>,
   pollingState: PollingState,
@@ -418,15 +418,6 @@ async function runEngineLoop(
     token: getGitHubTokenFromEnv(),
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
-
-  let accountManager: ClaudeAccountManager | undefined;
-  if (config.claudeAccountDirs.length > 0) {
-    accountManager = new ClaudeAccountManager(
-      config.claudeAccountDirs,
-      config.claudeAccountStorePath,
-    );
-    await accountManager.load();
-  }
 
   const claudeAgentClient = createClaudeAgentClient({
     ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
@@ -810,6 +801,16 @@ async function main(): Promise<void> {
   };
   const shutdownSignal = { requested: false };
 
+  let accountManager: ClaudeAccountManager | undefined;
+  const storedCredentials = await listClaudeCredentials(config.claudeCredentialStoreDir);
+  if (storedCredentials.length > 0) {
+    accountManager = new ClaudeAccountManager(
+      storedCredentials.map((credential) => credential.email),
+      config.claudeAccountStorePath,
+    );
+    await accountManager.load();
+  }
+
   // Listen for Escape key on the console to trigger graceful shutdown
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
@@ -831,7 +832,7 @@ async function main(): Promise<void> {
   }
 
   const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
-    runEngineLoop(config, i, planningMutex, claimedActions, pollingState, shutdownSignal),
+    runEngineLoop(config, i, accountManager, planningMutex, claimedActions, pollingState, shutdownSignal),
   );
 
   await Promise.all(engines);

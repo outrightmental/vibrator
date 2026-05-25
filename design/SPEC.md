@@ -80,10 +80,10 @@ Agentic coding gets interesting when a repository can keep moving after a human 
 - `src/github.ts` wraps the GitHub REST and GraphQL surface used by the loop (issues, PRs, reviews, review threads, status checks, workflow approvals, project boards, merges).
 - `src/reconcile.ts` marks any leftover `in_progress` sessions as `failed` at the start of every iteration — every Claude action runs synchronously, so an active session can only be a crashed-process carcass.
 - `src/session-store.ts` persists session state in a local JSON file. Tracks PR comments and comment history. Auto-prunes old sessions (retains the 200 most recent).
-- `src/claude-account-manager.ts` manages rotating between multiple Claude Code accounts when rate limits are hit.
+- `src/claude-account-manager.ts` manages rotating between stored Claude credentials when rate limits are hit.
 - `src/dashboard-server.ts` serves the real-time **Dashboard** at `http://localhost:3000`. Includes the Issue → PR Lifecycle pane, live orchestrator logs, and a GitHub activity feed.
 - `src/dashboard-utils.ts` provides event-emission helpers used by `index.ts` to push orchestrator state to Dashboard clients over WebSocket.
-- `src/event-emitter.ts` is the global event system (23 event types) used for Dashboard communication.
+- `src/event-emitter.ts` is the global event system (24 event types) used for Dashboard communication.
 
 ## Data model
 

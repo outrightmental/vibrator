@@ -239,8 +239,8 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `DASHBOARD_PORT` | `3000` | HTTP port for the Dashboard server. |
 | `DASHBOARD_TITLE` | `Vibrator` | Title displayed in the Dashboard header. |
 | `VIBRATOR_SESSION_STORE_PATH` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
-| `CLAUDE_ACCOUNTS` | — | Comma- or newline-separated paths to Claude config directories for multi-account rotation. See [Multi-account rotation](#multi-account-rotation). |
-| `CLAUDE_ACCOUNTS_STORE_PATH` | `~/.vibrator/claude-accounts.json` | Path for persisted Claude account rate-limit state. |
+| `CLAUDE_CREDENTIAL_STORE_DIR` | `~/.vibrator/credentials/claude` | Directory containing stored Claude credentials used for [Multi-account rotation](#multi-account-rotation). |
+| `CLAUDE_CREDENTIAL_ROTATION_STORE_PATH` | `~/.vibrator/claude-credential-rotation.json` | Path for persisted credential rotation / rate-limit state. |
 | `GITHUB_PROJECT_NUMBER` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop). |
 | `VIBRATOR_REVIEWERS` | — | Comma-separated GitHub logins to request review from (Project SDLC only). |
 
@@ -285,19 +285,7 @@ GitHub sub-issues are understood natively. A parent issue is automatically block
 
 ## Multi-account rotation
 
-If you hit Claude Code rate limits with a single account, set `CLAUDE_ACCOUNTS` to a comma- or newline-separated list of paths to Claude config directories:
-
-```bash
-CLAUDE_ACCOUNTS=/home/user/.claude-account1,/home/user/.claude-account2
-```
-
-Vibrator starts with the first account and rotates to the next one automatically when a rate limit is hit. If all accounts are rate-limited, it waits until the earliest available account is ready again.
-
-Each directory must contain a `.credentials.json` file from a previously authenticated Claude Code session (run `claude` once in each directory to authenticate).
-
-## Claude credential vault commands
-
-Vibrator can maintain a local index of Claude CLI credentials in `~/.vibrator/credentials/claude/`:
+Vibrator rotates through Claude CLI credentials stored in `~/.vibrator/credentials/claude/`:
 
 ```bash
 npm run add-claude-credential
@@ -306,12 +294,21 @@ npm run remove-claude-credential -- "user@domain.com"
 npm run activate-claude-credential -- "user@domain.com"
 ```
 
+At runtime, Vibrator starts with the first stored credential. When a credential hits Claude rate limits, Vibrator immediately switches to the next credential, broadcasts the rotation loudly in CLI/dashboard, and continues automatically. If all credentials are rate-limited, Vibrator waits until the earliest one is available again.
+
 - `add-claude-credential` runs a Claude login flow, then records account metadata from `claude auth status --text` and captures the active credential.
   - macOS: reads `Claude Code-credentials` from Keychain using `security`.
   - Other platforms: reads `<CLAUDE_HOME or ~/.claude>/.credentials.json`.
 - `list-claude-credentials` enumerates JSON files in `~/.vibrator/credentials/claude/`.
 - `remove-claude-credential` deletes the matching JSON file.
 - `activate-claude-credential` loads one stored credential and writes it back to the active Claude location for the current platform.
+
+Optional configuration:
+
+```bash
+CLAUDE_CREDENTIAL_STORE_DIR=/path/to/credentials/claude
+CLAUDE_CREDENTIAL_ROTATION_STORE_PATH=/path/to/claude-credential-rotation.json
+```
 
 ## Development
 
