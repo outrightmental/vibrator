@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+import { replaceFileCrossPlatform } from "./fs-utils.js";
 
 export interface AccountState {
   /** Path to the Claude config directory for this account (e.g. ~/.claude-account1). */
@@ -18,40 +20,6 @@ interface AccountStoreFile {
 }
 
 const RATE_LIMIT_BUFFER_MS = 60 * 1000; // 1 minute after known reset
-const WINDOWS_RENAME_CONFLICT_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES"]);
-
-async function replaceFileCrossPlatform(tempPath: string, finalPath: string): Promise<void> {
-  try {
-    await rename(tempPath, finalPath);
-    return;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (!code || !WINDOWS_RENAME_CONFLICT_ERROR_CODES.has(code)) {
-      throw error;
-    }
-  }
-
-  const backupPath = `${finalPath}.${randomUUID()}.bak`;
-  let backupCreated = false;
-  try {
-    try {
-      await rename(finalPath, backupPath);
-      backupCreated = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    await rename(tempPath, finalPath);
-  } catch (error) {
-    if (backupCreated) {
-      try { await rename(backupPath, finalPath); } catch { /* best effort */ }
-    }
-    await rm(tempPath, { force: true });
-    throw error;
-  }
-  if (backupCreated) {
-    try { await rm(backupPath, { force: true }); } catch { /* best effort */ }
-  }
-}
 
 export function defaultAccountStorePath(): string {
   return join(homedir(), ".vibrator", "claude-accounts.json");

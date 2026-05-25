@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
+import { replaceFileCrossPlatform } from "./fs-utils.js";
 
-const WINDOWS_RENAME_CONFLICT_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES"]);
+const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
 
 export interface StoredClaudeCredential {
   provider: "claude-cli";
@@ -40,39 +40,6 @@ interface ActivateCredentialOptions {
   claudeHomeDir?: string;
 }
 
-async function replaceFileCrossPlatform(tempPath: string, finalPath: string): Promise<void> {
-  try {
-    await rename(tempPath, finalPath);
-    return;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (!code || !WINDOWS_RENAME_CONFLICT_ERROR_CODES.has(code)) {
-      throw error;
-    }
-  }
-
-  const backupPath = `${finalPath}.${randomUUID()}.bak`;
-  let backupCreated = false;
-  try {
-    try {
-      await rename(finalPath, backupPath);
-      backupCreated = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    await rename(tempPath, finalPath);
-  } catch (error) {
-    if (backupCreated) {
-      try { await rename(backupPath, finalPath); } catch { /* best effort */ }
-    }
-    await rm(tempPath, { force: true });
-    throw error;
-  }
-  if (backupCreated) {
-    try { await rm(backupPath, { force: true }); } catch { /* best effort */ }
-  }
-}
-
 function isEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
@@ -92,16 +59,16 @@ function escapeEmailForFilename(email: string): string {
 async function runCommand(
   command: string,
   args: string[],
-  options: { stdio?: "pipe" | "inherit"; rejectOnFailure?: boolean; input?: string } = {},
+  options: { stdio?: "pipe" | "inherit"; rejectOnFailure?: boolean; input?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<CommandResult> {
-  const { input } = options;
+  const { input, env } = options;
   const rejectOnFailure = options.rejectOnFailure ?? true;
   const effectiveStdio = options.stdio === "inherit"
     ? ("inherit" as const)
     : (["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"]);
   return new Promise((resolve, reject) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const child = spawn(command, args, { stdio: effectiveStdio as any });
+    const child = spawn(command, args, { stdio: effectiveStdio as any, ...(env !== undefined ? { env } : {}) });
     let stdout = "";
     let stderr = "";
 
@@ -175,6 +142,9 @@ async function activateLiveCredentialSecret(
     );
     // Pass the credential secret via stdin to security's interactive mode so
     // it is never exposed in the process argument list.
+    if (/[\r\n]/.test(credential.credentialSecret)) {
+      throw new Error("Credential secret must not contain newline characters.");
+    }
     const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const securityInput =
       `add-generic-password -U -s "${esc(CLAUDE_KEYCHAIN_SERVICE)}" -a "${esc(credential.email)}" -w "${esc(credential.credentialSecret)}"\n`;
@@ -288,9 +258,12 @@ export async function removeClaudeCredential(
 
 export async function addClaudeCredential(options: AddCredentialOptions = {}): Promise<StoredClaudeCredential> {
   const claudeCommand = options.claudeCommand ?? "claude";
-  await runCommand(claudeCommand, [], { stdio: "inherit" });
+  const claudeEnvOption = options.claudeHomeDir !== undefined
+    ? { env: { ...process.env, CLAUDE_HOME: resolveClaudeHome(options.claudeHomeDir) } }
+    : {};
+  await runCommand(claudeCommand, [], { stdio: "inherit", ...claudeEnvOption });
 
-  const authStatus = await runCommand(claudeCommand, ["auth", "status", "--text"]);
+  const authStatus = await runCommand(claudeCommand, ["auth", "status", "--text"], { ...claudeEnvOption });
   const email = parseEmailFromAuthStatus(authStatus.stdout);
   const credentialSecret = await readLiveCredentialSecret(options.claudeHomeDir);
 
