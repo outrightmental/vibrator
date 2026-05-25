@@ -767,7 +767,7 @@ function slugifyIssueTitle(title: string): string {
     .slice(0, 40);
 }
 
-const DEFAULT_CLAUDE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const DEFAULT_CLAUDE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 const DEFAULT_QUOTA_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
 
 let claudeQuotaBlockedUntilMs: number | undefined;
