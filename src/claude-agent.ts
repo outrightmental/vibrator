@@ -381,15 +381,48 @@ interface RunCommandOptions {
 class GitAuth {
   constructor(private readonly token: string) {}
 
-  env(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  env(baseEnv: NodeJS.ProcessEnv = process.env, authScopeUrls: readonly string[] = []): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = { ...baseEnv };
     const rawCount = env.GIT_CONFIG_COUNT;
     const count = rawCount === undefined ? 0 : Number.parseInt(rawCount, 10);
     const index = Number.isFinite(count) && count >= 0 ? count : 0;
-    env.GIT_CONFIG_COUNT = String(index + 1);
-    env[`GIT_CONFIG_KEY_${index}`] = "http.https://github.com/.extraheader";
-    env[`GIT_CONFIG_VALUE_${index}`] = `AUTHORIZATION: bearer ${this.token}`;
+    const authScopes = this.resolveAuthScopes(authScopeUrls);
+    env.GIT_CONFIG_COUNT = String(index + authScopes.length);
+    authScopes.forEach((scope, offset) => {
+      env[`GIT_CONFIG_KEY_${index + offset}`] = `http.${scope}/.extraheader`;
+      env[`GIT_CONFIG_VALUE_${index + offset}`] = `AUTHORIZATION: bearer ${this.token}`;
+    });
     return env;
+  }
+
+  private resolveAuthScopes(authScopeUrls: readonly string[]): string[] {
+    const scopes = new Set<string>();
+    for (const authScopeUrl of authScopeUrls) {
+      const scope = this.getHttpScope(authScopeUrl);
+      if (scope) {
+        scopes.add(scope);
+      }
+    }
+    if (scopes.size === 0) {
+      scopes.add("https://github.com");
+    }
+    return [...scopes];
+  }
+
+  private getHttpScope(url: string): string | undefined {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        return `${parsed.protocol.slice(0, -1)}://${parsed.host}`;
+      }
+      return undefined;
+    } catch {
+      const scpLikeMatch = /^[^@]+@([^:]+):/.exec(url);
+      if (scpLikeMatch?.[1]) {
+        return `https://${scpLikeMatch[1]}`;
+      }
+      return undefined;
+    }
   }
 }
 
@@ -1155,10 +1188,44 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     args: readonly string[],
     options: RunCommandOptions = {},
   ): Promise<string> {
-    return runCommand("git", args, {
-      ...options,
-      env: this.gitAuth.env(options.env),
-    });
+    return this.resolveGitAuthScopeUrls(args, options.cwd).then((authScopeUrls) =>
+      runCommand("git", args, {
+        ...options,
+        env: this.gitAuth.env(options.env, authScopeUrls),
+      }),
+    );
+  }
+
+  private async resolveGitAuthScopeUrls(
+    args: readonly string[],
+    cwd: string | undefined,
+  ): Promise<string[]> {
+    const authScopeUrls = [this.githubApiBaseUrl];
+    if (args[0] === "clone" && args[1]) {
+      authScopeUrls.push(args[1]);
+    }
+
+    const remoteName =
+      cwd && (args[0] === "fetch" || args[0] === "push" || args[0] === "pull") && args[1]
+        ? args[1]
+        : undefined;
+    if (remoteName && cwd) {
+      try {
+        const remoteUrl = (
+          await runCommand("git", ["remote", "get-url", remoteName], {
+            cwd,
+            captureStdout: true,
+          })
+        ).trim();
+        if (remoteUrl) {
+          authScopeUrls.push(remoteUrl);
+        }
+      } catch {
+        // Ignore missing remotes and fall back to API-derived scope.
+      }
+    }
+
+    return authScopeUrls;
   }
 
   private async fetchPullRequestForCheckout(

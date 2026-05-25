@@ -206,9 +206,19 @@ test("squashMergePullRequest surfaces protected-branch API failures clearly", as
   t.after(() => fetchMock.mock.restore());
 
   const client = new GitHubClient({ owner: "outrightmental", repo: "readtheroom", token: "token" });
-  await assert.rejects(
-    client.squashMergePullRequest(160, "Subject", "Body"),
-    /branch protection may be blocking the merge/,
+  let error: unknown;
+  try {
+    await client.squashMergePullRequest(160, "Subject", "Body");
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /branch protection may be blocking the merge/);
+  assert.equal((error as Error & { statusCode?: number }).statusCode, 405);
+  assert.equal(
+    ((error as Error & { cause?: { statusCode?: number } }).cause as { statusCode?: number })
+      ?.statusCode,
+    405,
   );
   assert.match(stderr.output(), /base branch policy prohibits the merge/);
 });

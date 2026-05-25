@@ -1084,9 +1084,15 @@ export class GitHubClient {
       );
     } catch (error) {
       if (isBranchProtectionMergeError(error)) {
-        throw new Error(
-          `GitHub API could not squash-merge PR #${pullRequestNumber}; branch protection may be blocking the merge and the API merge endpoint does not support an administrator-bypass retry. ${String(error)}`,
-        );
+        const wrappedError = new Error(
+          `GitHub API could not squash-merge PR #${pullRequestNumber}; branch protection may be blocking the merge and the API merge endpoint does not support an administrator-bypass retry.`,
+          { cause: error },
+        ) as Error & { statusCode?: number };
+        const statusCode = (error as Error & { statusCode?: number }).statusCode;
+        if (typeof statusCode === "number") {
+          wrappedError.statusCode = statusCode;
+        }
+        throw wrappedError;
       }
       throw error;
     }
