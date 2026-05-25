@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -210,6 +211,41 @@ test("squashMergePullRequest surfaces protected-branch API failures clearly", as
     /branch protection may be blocking the merge/,
   );
   assert.match(stderr.output(), /base branch policy prohibits the merge/);
+});
+
+test("runtime source no longer shells out to gh CLI operations", () => {
+  const files: string[] = [];
+  const collect = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      const path = join(dir, entry);
+      const stat = statSync(path);
+      if (stat.isDirectory()) {
+        collect(path);
+      } else if (path.endsWith(".ts")) {
+        files.push(path);
+      }
+    }
+  };
+  collect(join(process.cwd(), "src"));
+
+  const forbidden = [
+    ["gh", "auth", "token"].join(" "),
+    ["gh", "pr"].join(" "),
+    ["gh", "repo", "clone"].join(" "),
+    "runCommand(" + JSON.stringify("gh"),
+    "runShellCommand(" + JSON.stringify("gh"),
+    "spawn(" + JSON.stringify("gh"),
+  ];
+  for (const file of files) {
+    const contents = readFileSync(file, "utf8");
+    for (const needle of forbidden) {
+      assert.equal(
+        contents.includes(needle),
+        false,
+        `${file} should not contain ${needle}`,
+      );
+    }
+  }
 });
 
 test("listOpenIssues attaches GitHub-native blocked_by dependencies to issues", async (t) => {

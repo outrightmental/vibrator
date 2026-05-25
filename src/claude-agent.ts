@@ -717,7 +717,7 @@ function buildAddressFailingChecksPrompt(params: AddressFailingChecksParams): st
     "",
     "Failing checks (name + log excerpt):",
     "---",
-    checkList || "(no failing-check details were captured — investigate with `gh pr checks` and `gh run view`)",
+    checkList || "(no failing-check details were captured — investigate the PR checks in GitHub)",
     "---",
     ...formatUserCommentsSection(params.userComments),
     "",

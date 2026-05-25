@@ -751,6 +751,7 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
   const checkoutRootDir = join(root, "checkouts");
   const modelLogPath = join(root, "model-used.txt");
   const stdinLogPath = join(root, "stdin-state.txt");
+  const tokenEnvLogPath = join(root, "token-env.txt");
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const prBranch = "feature/commit-model-test";
   const prNumber = 42;
@@ -783,6 +784,7 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
         "set -eu",
         "STDIN_STATE=$(node -e \"const timer = setTimeout(() => { process.stdout.write('waiting'); process.exit(0); }, 200); process.stdin.on('end', () => { clearTimeout(timer); process.stdout.write('eof'); }); process.stdin.once('data', () => { clearTimeout(timer); process.stdout.write('data'); }); process.stdin.resume();\")",
         `printf '%s' \"$STDIN_STATE\" > \"${stdinLogPath}\"`,
+        `printf '%s|%s|%s' "\${GH_TOKEN:-unset}" "\${GITHUB_TOKEN:-unset}" "\${VIBRATOR_GITHUB_TOKEN:-unset}" > \"${tokenEnvLogPath}\"`,
         // Capture model arg: parse --model <value> from $@
         "MODEL_USED=\"(none)\"",
         "while [ $# -gt 0 ]; do",
@@ -812,6 +814,14 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
       headSha: prHeadSha,
       cloneUrl: remoteDir,
     });
+    const previousTokens = {
+      GH_TOKEN: process.env.GH_TOKEN,
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+      VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+    };
+    process.env.GH_TOKEN = "gh-token";
+    process.env.GITHUB_TOKEN = "github-token";
+    process.env.VIBRATOR_GITHUB_TOKEN = "vibrator-token";
 
     try {
       const client = createClaudeAgentClient({
@@ -838,10 +848,15 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI and closes
       const { readFile } = await import("node:fs/promises");
       const modelUsed = (await readFile(modelLogPath, "utf8")).trim();
       const stdinState = (await readFile(stdinLogPath, "utf8")).trim();
+      const tokenEnv = (await readFile(tokenEnvLogPath, "utf8")).trim();
       assert.equal(modelUsed, "claude-haiku-test-model", "should pass claudeCommitModel to claude CLI");
       assert.equal(stdinState, "eof", "should close stdin for non-interactive Claude runs");
+      assert.equal(tokenEnv, "unset|unset|unset", "should strip GitHub token env vars from Claude");
     } finally {
-      // no env cleanup needed
+      for (const [key, value] of Object.entries(previousTokens)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   } finally {
     await rm(root, { recursive: true, force: true });

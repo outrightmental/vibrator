@@ -299,7 +299,7 @@ export class GitHubClient {
         );
       } catch (error) {
         if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
-          console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check gh auth permissions or repository slug).`);
+          console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check GitHub token permissions or repository slug).`);
           return results;
         }
         throw error;
@@ -1085,7 +1085,7 @@ export class GitHubClient {
     } catch (error) {
       if (isBranchProtectionMergeError(error)) {
         throw new Error(
-          `GitHub API could not squash-merge PR #${pullRequestNumber}; branch protection may be blocking the merge and the API merge endpoint does not support the previous gh --admin retry. ${String(error)}`,
+          `GitHub API could not squash-merge PR #${pullRequestNumber}; branch protection may be blocking the merge and the API merge endpoint does not support an administrator-bypass retry. ${String(error)}`,
         );
       }
       throw error;
@@ -1290,7 +1290,7 @@ export class GitHubClient {
     } catch (error) {
       const statusCode = (error as Error & { statusCode?: number }).statusCode;
       // Token may lack check-runs access (403) or the ref may not exist (404).
-      // Return an empty list so Claude investigates with `gh pr checks` itself.
+      // Return an empty list so Claude investigates the PR checks itself.
       if (statusCode === 403 || statusCode === 404) {
         return [];
       }
