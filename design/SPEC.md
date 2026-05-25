@@ -35,9 +35,9 @@ Agentic coding gets interesting when a repository can keep moving after a human 
 - Replacing human product direction.
 - Inventing custom merge semantics outside GitHub's own controls.
 - Maintaining a central server. `vibrator` is designed as a local or scheduled process that can be stopped and restarted.
-- Inventing a custom workflow language. It intentionally leans on issue text, PR metadata, GitHub APIs, `gh`, `git`, and `claude`.
+- Inventing a custom workflow language. It intentionally leans on issue text, PR metadata, GitHub APIs, authenticated `git`, and `claude`.
 
-`vibrator` still treats GitHub as the merge authority. Its default path is a normal squash merge after the review/fix loop is clean. If the `gh` CLI reports that the merge is blocked specifically because the base branch policy requires an administrator bypass, `vibrator` retries that same squash merge with `--admin` rather than failing the loop outright.
+`vibrator` still treats GitHub as the merge authority. Its default path is a normal squash merge through the GitHub API after the review/fix loop is clean. If branch protection blocks that API merge, `vibrator` surfaces the GitHub error instead of attempting a CLI administrator-bypass retry.
 
 ## Architecture
 

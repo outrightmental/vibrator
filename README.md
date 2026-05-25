@@ -143,17 +143,11 @@ Install dependencies:
 npm install
 ```
 
-Authenticate the CLI tools (once, if not already done):
+Configure GitHub and Claude authentication (once, if not already done):
 
 ```bash
-gh auth login
+export VIBRATOR_GITHUB_TOKEN=github_pat_...
 claude login
-```
-
-If vibrator crashes with 403 Forbidden errors from GitHub, you'll need to refresh the token and add these permissions:
-
-```bash
-gh auto refresh --scopes read:project,project
 ```
 
 Optionally copy the environment template to set a default repository:
@@ -206,18 +200,37 @@ The Dashboard server still starts; the URL is printed to stdout so you can open 
 ## Requirements
 
 - Node.js 18+
-- The `claude` CLI (Claude Code) installed locally, on `PATH`, and logged in via `claude login`. Uses your Claude Code subscription — no API key required.
-- The `gh` CLI installed locally, on `PATH`, and logged in via `gh auth login` with `contents:write`, `pull_requests:write`, and `issues:read` access to the target repository. Used for all GitHub API calls, repo cloning, PR checkouts, and squash merges.
 - `git` on `PATH`.
+- A GitHub PAT exposed as `VIBRATOR_GITHUB_TOKEN` or `GITHUB_TOKEN`.
+- The `claude` CLI (Claude Code) installed locally, on `PATH`, and logged in via `claude login`. Uses your Claude Code subscription — no API key required.
 
 ## Configuration
 
-Authentication is handled entirely by the `gh` and `claude` CLI tools. No API keys or tokens need to be set as environment variables.
+Vibrator uses a GitHub PAT directly for API calls and Git clone/fetch/push operations. Claude Code authentication is still handled by the `claude` CLI.
+
+**GitHub token permissions**
+
+Fine-grained PATs need access to the target repository with:
+
+- Metadata: read
+- Contents: read/write
+- Pull requests: read/write
+- Issues: read/write
+- Actions: read/write
+- Checks: read
+- Commit statuses: read
+- Projects: read/write, if using project mode
+- Workflows: write, if the agent may push workflow file changes
+
+Classic PATs may need `repo`, `project` when using project mode, and `workflow` when the agent may edit or push workflow files.
 
 **Environment variables**
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `VIBRATOR_GITHUB_TOKEN` | — | Preferred GitHub PAT used by Vibrator for API and Git operations. |
+| `GITHUB_TOKEN` | — | Fallback GitHub token / PAT used when `VIBRATOR_GITHUB_TOKEN` is unset. |
+| `GH_TOKEN` | — | Compatibility fallback only. |
 | `GITHUB_REPOSITORY` | — | Default `owner/repo` when the CLI argument is omitted. |
 | `MAX_CONCURRENCY` | `3` | Maximum active work items across open PRs and in-flight implementations. |
 | `CYCLE_MINIMUM_SECONDS` | `60` | Minimum seconds between engine cycle starts. |

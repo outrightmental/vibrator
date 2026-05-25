@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { globalEventEmitter } from "./event-emitter.js";
 import type { ClaudeAccountManager } from "./claude-account-manager.js";
+import { getGitHubTokenFromEnv } from "./github.js";
 
 
 
@@ -304,8 +305,12 @@ interface ClaudeAgentClientOptions {
   checkoutRootDir?: string;
   /** Path / command for the local `claude` CLI. */
   claudeCommand?: string;
-  /** Path / command for the `gh` CLI used to fetch PR branches. */
-  ghCommand?: string;
+  /** GitHub token used for GitHub API and authenticated git operations. Defaults to env token resolution. */
+  githubToken?: string;
+  /** GitHub REST API base URL. */
+  githubApiBaseUrl?: string;
+  /** Override repository clone URLs in tests or enterprise deployments. */
+  repositoryCloneUrl?: string | ((owner: string, repo: string) => string);
   /** Model to pass to the claude CLI via --model. When omitted, falls back to CLAUDE_MODEL env. */
   claudeModel?: string;
   /** Model used specifically for commit message generation. Defaults to CLAUDE_COMMIT_MODEL env, then claude-haiku-4-5-20251001. */
@@ -371,6 +376,54 @@ interface RunCommandOptions {
    * and the promise rejects with a timeout error after this many milliseconds.
    */
   timeoutMs?: number;
+}
+
+class GitAuth {
+  constructor(private readonly token: string) {}
+
+  env(baseEnv: NodeJS.ProcessEnv = process.env, authScopeUrls: readonly string[] = []): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...baseEnv };
+    const rawCount = env.GIT_CONFIG_COUNT;
+    const count = rawCount === undefined ? 0 : Number.parseInt(rawCount, 10);
+    const index = Number.isFinite(count) && count >= 0 ? count : 0;
+    const authScopes = this.resolveAuthScopes(authScopeUrls);
+    env.GIT_CONFIG_COUNT = String(index + authScopes.length);
+    authScopes.forEach((scope, offset) => {
+      env[`GIT_CONFIG_KEY_${index + offset}`] = `http.${scope}/.extraheader`;
+      env[`GIT_CONFIG_VALUE_${index + offset}`] = `AUTHORIZATION: bearer ${this.token}`;
+    });
+    return env;
+  }
+
+  private resolveAuthScopes(authScopeUrls: readonly string[]): string[] {
+    const scopes = new Set<string>();
+    for (const authScopeUrl of authScopeUrls) {
+      const scope = this.getHttpScope(authScopeUrl);
+      if (scope) {
+        scopes.add(scope);
+      }
+    }
+    if (scopes.size === 0) {
+      scopes.add("https://github.com");
+    }
+    return [...scopes];
+  }
+
+  private getHttpScope(url: string): string | undefined {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        return `${parsed.protocol.slice(0, -1)}://${parsed.host}`;
+      }
+      return undefined;
+    } catch {
+      const scpLikeMatch = /^[^@]+@([^:]+):/.exec(url);
+      if (scpLikeMatch?.[1]) {
+        return `https://${scpLikeMatch[1]}`;
+      }
+      return undefined;
+    }
+  }
 }
 
 function runCommand(
@@ -697,7 +750,7 @@ function buildAddressFailingChecksPrompt(params: AddressFailingChecksParams): st
     "",
     "Failing checks (name + log excerpt):",
     "---",
-    checkList || "(no failing-check details were captured — investigate with `gh pr checks` and `gh run view`)",
+    checkList || "(no failing-check details were captured — investigate the PR checks in GitHub)",
     "---",
     ...formatUserCommentsSection(params.userComments),
     "",
@@ -891,7 +944,13 @@ export const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
   private readonly claudeCommand: string;
-  private readonly ghCommand: string;
+  private readonly githubToken: string;
+  private readonly githubApiBaseUrl: string;
+  private readonly repositoryCloneUrl:
+    | string
+    | ((owner: string, repo: string) => string)
+    | undefined;
+  private readonly gitAuth: GitAuth;
   private readonly claudeModel: string | undefined;
   private readonly claudeCommitModel: string;
   private readonly claudeTimeoutMs: number;
@@ -901,7 +960,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   constructor(options: ClaudeAgentClientOptions = {}) {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
     this.claudeCommand = options.claudeCommand ?? "claude";
-    this.ghCommand = options.ghCommand ?? "gh";
+    this.githubToken = options.githubToken ?? getGitHubTokenFromEnv();
+    this.githubApiBaseUrl = options.githubApiBaseUrl ?? "https://api.github.com";
+    this.repositoryCloneUrl = options.repositoryCloneUrl;
+    this.gitAuth = new GitAuth(this.githubToken);
     this.claudeModel = options.claudeModel ?? process.env.CLAUDE_MODEL;
     this.claudeCommitModel =
       options.claudeCommitModel ?? process.env.CLAUDE_COMMIT_MODEL ?? DEFAULT_COMMIT_MODEL;
@@ -975,7 +1037,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     }
 
     // Merge latest from base branch using 'theirs' strategy before pushing.
-    await runCommand("git", ["fetch", "origin", params.baseBranch], { cwd: repoDir });
+    await this.runAuthenticatedGit(["fetch", "origin", params.baseBranch], { cwd: repoDir });
     try {
           await runCommand("git", ["merge", `origin/${params.baseBranch}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
     } catch (error) {
@@ -1041,7 +1103,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // Begin a rebase onto the (refreshed) base branch so Claude has
     // conflicts to resolve locally. We use a rebase so the resulting
     // branch is fast-forward mergeable on GitHub.
-    await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
+    await this.runAuthenticatedGit(["fetch", "origin", params.baseRefName], { cwd: repoDir });
     try {
       await runCommand("git", ["rebase", `origin/${params.baseRefName}`], {
         cwd: repoDir,
@@ -1050,7 +1112,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       });
       // Rebase finished cleanly — no conflicts (race with the remote).
       // Merge latest from base branch using 'theirs' strategy before pushing.
-      await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
+      await this.runAuthenticatedGit(["fetch", "origin", params.baseRefName], { cwd: repoDir });
       try {
               await runCommand("git", ["merge", `origin/${params.baseRefName}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
       } catch (error) {
@@ -1075,7 +1137,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const prompt = buildResolveConflictsPrompt(params);
     await this.runClaude(prompt, repoDir);
     // Merge latest from base branch using 'theirs' strategy before pushing.
-    await runCommand("git", ["fetch", "origin", params.baseRefName], { cwd: repoDir });
+    await this.runAuthenticatedGit(["fetch", "origin", params.baseRefName], { cwd: repoDir });
     try {
             await runCommand("git", ["merge", `origin/${params.baseRefName}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
     } catch (error) {
@@ -1115,6 +1177,104 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     return extractFinalDescription(stdout);
   }
 
+  private getRepositoryCloneUrl(owner: string, repo: string): string {
+    if (typeof this.repositoryCloneUrl === "function") {
+      return this.repositoryCloneUrl(owner, repo);
+    }
+    return this.repositoryCloneUrl ?? `https://github.com/${owner}/${repo}.git`;
+  }
+
+  private runAuthenticatedGit(
+    args: readonly string[],
+    options: RunCommandOptions = {},
+  ): Promise<string> {
+    return this.resolveGitAuthScopeUrls(args, options.cwd).then((authScopeUrls) =>
+      runCommand("git", args, {
+        ...options,
+        env: this.gitAuth.env(options.env, authScopeUrls),
+      }),
+    );
+  }
+
+  private async resolveGitAuthScopeUrls(
+    args: readonly string[],
+    cwd: string | undefined,
+  ): Promise<string[]> {
+    const authScopeUrls = [this.githubApiBaseUrl];
+    if (args[0] === "clone" && args[1]) {
+      authScopeUrls.push(args[1]);
+    }
+
+    const remoteName =
+      cwd && (args[0] === "fetch" || args[0] === "push" || args[0] === "pull") && args[1]
+        ? args[1]
+        : undefined;
+    if (remoteName && cwd) {
+      try {
+        const remoteUrl = (
+          await runCommand("git", ["remote", "get-url", remoteName], {
+            cwd,
+            captureStdout: true,
+          })
+        ).trim();
+        if (remoteUrl) {
+          authScopeUrls.push(remoteUrl);
+        }
+      } catch {
+        // Ignore missing remotes and fall back to API-derived scope.
+      }
+    }
+
+    return authScopeUrls;
+  }
+
+  private async fetchPullRequestForCheckout(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+  ): Promise<{
+    head: {
+      ref: string;
+      sha: string;
+      repo: {
+        clone_url: string;
+        full_name: string;
+      };
+    };
+  }> {
+    const response = await fetch(
+      `${this.githubApiBaseUrl}/repos/${owner}/${repo}/pulls/${pullRequestNumber}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer " + this.githubToken,
+          "User-Agent": "vibrator",
+        },
+      },
+    );
+    if (!response.ok) {
+      let responseBody = "";
+      try {
+        responseBody = await response.text();
+      } catch {
+        responseBody = "(could not read response body)";
+      }
+      throw new Error(
+        `GitHub request failed (${response.status} ${response.statusText}) for PR checkout metadata. Response body: ${responseBody}`,
+      );
+    }
+    return (await response.json()) as {
+      head: {
+        ref: string;
+        sha: string;
+        repo: {
+          clone_url: string;
+          full_name: string;
+        };
+      };
+    };
+  }
+
   private async checkoutBaseBranch(params: {
     owner: string;
     repo: string;
@@ -1131,10 +1291,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     await mkdir(repoDir, { recursive: true });
     const gitDir = join(repoDir, ".git");
     if (!(await pathExists(gitDir))) {
-      await runCommand(this.ghCommand, [
-        "repo",
+      await this.runAuthenticatedGit([
         "clone",
-        `${params.owner}/${params.repo}`,
+        this.getRepositoryCloneUrl(params.owner, params.repo),
         repoDir,
       ]);
     }
@@ -1143,7 +1302,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
       { cwd: repoDir },
     );
-    await runCommand("git", ["fetch", "origin", "--prune"], { cwd: repoDir });
+    await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
     // A previous run may have been interrupted after Claude edited files but
     // before they were committed or pushed. Discard any leftover state so the
     // subsequent `git checkout -B` can switch branches cleanly.
@@ -1182,10 +1341,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
 
     const gitDir = join(repoDir, ".git");
     if (!(await pathExists(gitDir))) {
-      await runCommand(this.ghCommand, [
-        "repo",
+      await this.runAuthenticatedGit([
         "clone",
-        `${params.owner}/${params.repo}`,
+        this.getRepositoryCloneUrl(params.owner, params.repo),
         repoDir,
       ]);
     }
@@ -1195,25 +1353,44 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
       { cwd: repoDir },
     );
-    await runCommand("git", ["fetch", "origin", "--prune"], { cwd: repoDir });
+    await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
 
-    // Abort any rebase or merge left in progress by a previous iteration so
-    // that `gh pr checkout --force` can proceed cleanly.
-    if (
-      (await pathExists(join(repoDir, ".git", "rebase-merge"))) ||
-      (await pathExists(join(repoDir, ".git", "rebase-apply")))
-    ) {
-      await runCommand("git", ["rebase", "--abort"], { cwd: repoDir });
-    }
-    if (await pathExists(join(repoDir, ".git", "MERGE_HEAD"))) {
-      await runCommand("git", ["merge", "--abort"], { cwd: repoDir });
+    await this.resetWorkingTreeToClean(repoDir);
+
+    const pullRequest = await this.fetchPullRequestForCheckout(
+      params.owner,
+      params.repo,
+      params.pullRequestNumber,
+    );
+    const localBranchName = `pr-${params.pullRequestNumber}`;
+    const headRemoteName =
+      pullRequest.head.repo.full_name === `${params.owner}/${params.repo}`
+        ? "origin"
+        : `pr-${params.pullRequestNumber}-fork`;
+    const remoteRef = `refs/remotes/${headRemoteName}/${pullRequest.head.ref}`;
+
+    if (headRemoteName !== "origin") {
+      const remotes = (
+        await runCommand("git", ["remote"], { cwd: repoDir, captureStdout: true })
+      ).split(/\r?\n/);
+      if (remotes.includes(headRemoteName)) {
+        await runCommand("git", ["remote", "set-url", headRemoteName, pullRequest.head.repo.clone_url], {
+          cwd: repoDir,
+        });
+      } else {
+        await runCommand("git", ["remote", "add", headRemoteName, pullRequest.head.repo.clone_url], {
+          cwd: repoDir,
+        });
+      }
     }
 
-    await runCommand(
-      this.ghCommand,
-      ["pr", "checkout", String(params.pullRequestNumber), "--force"],
+    await this.runAuthenticatedGit(
+      ["fetch", headRemoteName, `+refs/heads/${pullRequest.head.ref}:${remoteRef}`],
       { cwd: repoDir },
     );
+    await runCommand("git", ["checkout", "-B", localBranchName, pullRequest.head.sha], {
+      cwd: repoDir,
+    });
 
     return repoDir;
   }
@@ -1225,7 +1402,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   ): Promise<AgentBranchUpdate> {
     // Always merge latest from the PR base branch before pushing.
     const baseBranch = await resolveBaseBranch(repoDir, options.baseBranch);
-    await runCommand("git", ["fetch", "origin", baseBranch], { cwd: repoDir });
+    await this.runAuthenticatedGit(["fetch", "origin", baseBranch], { cwd: repoDir });
     try {
       await runCommand("git", ["merge", `origin/${baseBranch}`, "-X", "theirs", "--no-edit"], { cwd: repoDir });
     } catch (error) {
@@ -1261,7 +1438,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     branch: string,
   ): Promise<void> {
     try {
-      await runCommand("git", pushArgs, { cwd: repoDir, captureStderr: true });
+      await this.runAuthenticatedGit(pushArgs, { cwd: repoDir, captureStderr: true });
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1279,7 +1456,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
 
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
-      await runCommand("git", ["fetch", "origin", branch], { cwd: repoDir });
+      await this.runAuthenticatedGit(["fetch", "origin", branch], { cwd: repoDir });
 
       try {
         await runCommand("git", ["merge", `origin/${branch}`, "--no-edit"], {
@@ -1308,7 +1485,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       }
 
       try {
-        await runCommand("git", pushArgs, { cwd: repoDir, captureStderr: true });
+        await this.runAuthenticatedGit(pushArgs, { cwd: repoDir, captureStderr: true });
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1328,10 +1505,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // the subscription credentials in ~/.claude/.credentials.json (or the
     // directory pointed to by CLAUDE_HOME when multi-account mode is active).
     delete env.ANTHROPIC_API_KEY;
-    // Avoid the `gh` CLI inside Claude's tool use picking up vibrator's
-    // own GitHub token (which may have different permissions than the
-    // user's `gh auth` setup).
+    // Avoid Claude subprocesses inheriting Vibrator's GitHub token.
     delete env.GH_TOKEN;
+    delete env.GITHUB_TOKEN;
+    delete env.VIBRATOR_GITHUB_TOKEN;
     const effectiveModel = modelOverride ?? this.claudeModel;
     const modelArgs = effectiveModel ? ["--model", effectiveModel] : [];
 

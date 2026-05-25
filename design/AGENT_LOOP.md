@@ -51,7 +51,7 @@ For issues, the planner:
 
 ### 5. Execute actions
 
-In dry-run mode, execution is skipped after printing the plan. In normal mode, actions call GitHub, `gh`, `git`, and the local `claude` CLI as needed. Each action records a completed session at the end.
+In dry-run mode, execution is skipped after printing the plan. In normal mode, actions call GitHub APIs, authenticated `git`, and the local `claude` CLI as needed. Each action records a completed session at the end.
 
 ## Pull-request lifecycle
 
@@ -139,7 +139,7 @@ The loop collects issue references from:
 - GitHub's linked closing issues API,
 - PR titles and bodies with phrases such as `fixes #123`, `closes #123`, `resolves #123`, `implements #123`, and `for #123`.
 
-Before merge, missing closing references are appended to the final PR body so GitHub can close the intended issues after the squash merge. If the initial squash merge fails only because GitHub requires an administrator bypass for the base branch policy, the loop retries with `gh pr merge --admin`.
+Before merge, missing closing references are appended to the final PR body so GitHub can close the intended issues after the squash merge. If branch protection blocks the GitHub API squash merge, the loop surfaces that error; the API path does not perform the previous CLI administrator-bypass retry.
 
 ## Action model
 
@@ -162,15 +162,15 @@ Each action is idempotent through session state. A later iteration observes what
 - Put real acceptance criteria in issue bodies.
 - Use dependency phrases instead of relying on issue order alone.
 - Start with `--dry-run --once` and a low `MAX_CONCURRENCY`.
-- Let branch protection and CI define the normal merge gate; admin bypass remains an explicit GitHub-controlled fallback.
+- Let branch protection and CI define the normal merge gate; protected-branch merge failures surface directly from GitHub.
 - Treat the generated final description as the permanent change record.
 
 ## Failure modes to watch
 
 - **`claude` CLI not found / not authenticated**: install Claude Code and run `claude login` to authenticate with your Claude Code subscription.
-- **`gh` CLI not authenticated for the repo**: Vibrator relies on `gh` to clone the repo and check out PR branches. Run `gh auth login`.
+- **Missing GitHub token / repository access**: set `VIBRATOR_GITHUB_TOKEN` or `GITHUB_TOKEN` to a PAT with access to the repository.
 - **No PR appears after start-implementation**: check the iteration log — Vibrator opens the PR itself via the REST API after Claude pushes, so an error from either step will surface in the action log.
 - **Self-review loop repeats**: the planner only advances once two consecutive clean self-reviews are recorded against the current head SHA. If Claude keeps pushing changes, review the PR diff to understand what it is fixing.
-- **Final description fails**: confirm `gh`, `git`, and `claude` are installed and authenticated locally.
+- **Final description fails**: confirm `git`, `claude`, and the configured GitHub PAT are available locally.
 - **Too much parallel work**: lower `MAX_CONCURRENCY`.
 - **Rate limits**: configure `CLAUDE_ACCOUNTS` for multi-account rotation to keep the loop running when one account is rate-limited.
