@@ -26,7 +26,7 @@ function createCredential(email: string, capturedAt: string): StoredClaudeCreden
 
 test("credentialFilePathForEmail normalizes email into expected filename shape", () => {
   const path = credentialFilePathForEmail("User.Name+tag@example.com", "/tmp/store");
-  assert.equal(path, "/tmp/store/user_dot_name_tag_at_example_dot_com.json");
+  assert.equal(path, join("/tmp/store", `${encodeURIComponent("user.name+tag@example.com")}.json`));
 });
 
 test("save/list/remove Claude credentials in ~/.vibrator-compatible JSON index", async () => {

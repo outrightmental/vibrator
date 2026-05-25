@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
+
+const WINDOWS_RENAME_CONFLICT_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES"]);
 
 export interface StoredClaudeCredential {
   provider: "claude-cli";
@@ -37,6 +40,39 @@ interface ActivateCredentialOptions {
   claudeHomeDir?: string;
 }
 
+async function replaceFileCrossPlatform(tempPath: string, finalPath: string): Promise<void> {
+  try {
+    await rename(tempPath, finalPath);
+    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!code || !WINDOWS_RENAME_CONFLICT_ERROR_CODES.has(code)) {
+      throw error;
+    }
+  }
+
+  const backupPath = `${finalPath}.${randomUUID()}.bak`;
+  let backupCreated = false;
+  try {
+    try {
+      await rename(finalPath, backupPath);
+      backupCreated = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await rename(tempPath, finalPath);
+  } catch (error) {
+    if (backupCreated) {
+      try { await rename(backupPath, finalPath); } catch { /* best effort */ }
+    }
+    await rm(tempPath, { force: true });
+    throw error;
+  }
+  if (backupCreated) {
+    try { await rm(backupPath, { force: true }); } catch { /* best effort */ }
+  }
+}
+
 function isEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
@@ -50,21 +86,22 @@ function normalizeEmail(email: string): string {
 }
 
 function escapeEmailForFilename(email: string): string {
-  return normalizeEmail(email)
-    .replace(/@/g, "_at_")
-    .replace(/\./g, "_dot_")
-    .replace(/[^a-z0-9_]/g, "_");
+  return encodeURIComponent(normalizeEmail(email));
 }
 
 async function runCommand(
   command: string,
   args: string[],
-  options: { stdio?: "pipe" | "inherit"; rejectOnFailure?: boolean } = {},
+  options: { stdio?: "pipe" | "inherit"; rejectOnFailure?: boolean; input?: string } = {},
 ): Promise<CommandResult> {
-  const stdio = options.stdio ?? "pipe";
+  const { input } = options;
   const rejectOnFailure = options.rejectOnFailure ?? true;
+  const effectiveStdio = options.stdio === "inherit"
+    ? ("inherit" as const)
+    : (["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"]);
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const child = spawn(command, args, { stdio: effectiveStdio as any });
     let stdout = "";
     let stderr = "";
 
@@ -79,8 +116,13 @@ async function runCommand(
       });
     }
 
+    if (input !== undefined && child.stdin) {
+      child.stdin.write(input);
+      child.stdin.end();
+    }
+
     child.on("error", reject);
-    child.on("close", (code) => {
+    child.on("close", (code: number | null) => {
       if (code !== 0 && rejectOnFailure) {
         reject(
           new Error(
@@ -131,22 +173,20 @@ async function activateLiveCredentialSecret(
       ["delete-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE],
       { rejectOnFailure: false },
     );
-    await runCommand("security", [
-      "add-generic-password",
-      "-U",
-      "-s",
-      CLAUDE_KEYCHAIN_SERVICE,
-      "-a",
-      credential.email,
-      "-w",
-      credential.credentialSecret,
-    ]);
+    // Pass the credential secret via stdin to security's interactive mode so
+    // it is never exposed in the process argument list.
+    const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const securityInput =
+      `add-generic-password -U -s "${esc(CLAUDE_KEYCHAIN_SERVICE)}" -a "${esc(credential.email)}" -w "${esc(credential.credentialSecret)}"\n`;
+    await runCommand("security", ["-i"], { input: securityInput });
     return;
   }
 
   const credentialPath = resolveLiveCredentialPath(claudeHomeDir);
   await mkdir(resolveClaudeHome(claudeHomeDir), { recursive: true });
-  await writeFile(credentialPath, `${credential.credentialSecret}\n`, { encoding: "utf8", mode: 0o600 });
+  const tempPath = `${credentialPath}.${randomUUID()}.tmp`;
+  await writeFile(tempPath, `${credential.credentialSecret}\n`, { encoding: "utf8", mode: 0o600 });
+  await replaceFileCrossPlatform(tempPath, credentialPath);
 }
 
 export function defaultClaudeCredentialStoreDir(): string {
@@ -165,7 +205,9 @@ export async function saveClaudeCredential(
   const path = credentialFilePathForEmail(email, storeDir);
   const payload: StoredClaudeCredential = { ...credential, email };
   await mkdir(storeDir, { recursive: true });
-  await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  const tempPath = `${path}.${randomUUID()}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await replaceFileCrossPlatform(tempPath, path);
   return path;
 }
 
@@ -206,21 +248,25 @@ export async function listClaudeCredentials(
   for (const fileName of entries) {
     if (!fileName.endsWith(".json")) continue;
     const path = join(storeDir, fileName);
-    const raw = await readFile(path, "utf8");
-    const parsed = JSON.parse(raw) as Partial<StoredClaudeCredential>;
-    if (
-      typeof parsed.email !== "string" ||
-      typeof parsed.platform !== "string" ||
-      typeof parsed.capturedAt !== "string"
-    ) {
+    try {
+      const raw = await readFile(path, "utf8");
+      const parsed = JSON.parse(raw) as Partial<StoredClaudeCredential>;
+      if (
+        typeof parsed.email !== "string" ||
+        typeof parsed.platform !== "string" ||
+        typeof parsed.capturedAt !== "string"
+      ) {
+        continue;
+      }
+      credentials.push({
+        email: normalizeEmail(parsed.email),
+        platform: parsed.platform,
+        capturedAt: parsed.capturedAt,
+        path,
+      });
+    } catch {
       continue;
     }
-    credentials.push({
-      email: normalizeEmail(parsed.email),
-      platform: parsed.platform,
-      capturedAt: parsed.capturedAt,
-      path,
-    });
   }
   return credentials.sort((a, b) => a.email.localeCompare(b.email));
 }
