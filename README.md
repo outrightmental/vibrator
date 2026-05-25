@@ -295,6 +295,24 @@ Vibrator starts with the first account and rotates to the next one automatically
 
 Each directory must contain a `.credentials.json` file from a previously authenticated Claude Code session (run `claude` once in each directory to authenticate).
 
+## Claude credential vault commands
+
+Vibrator can maintain a local index of Claude CLI credentials in `~/.vibrator/credentials/claude/`:
+
+```bash
+npm run add-claude-credential
+npm run list-claude-credentials
+npm run remove-claude-credential -- "user@domain.com"
+npm run activate-claude-credential -- "user@domain.com"
+```
+
+- `add-claude-credential` runs a Claude login flow, then records account metadata from `claude auth status --text` and captures the active credential.
+  - macOS: reads `Claude Code-credentials` from Keychain using `security`.
+  - Other platforms: reads `<CLAUDE_HOME or ~/.claude>/.credentials.json`.
+- `list-claude-credentials` enumerates JSON files in `~/.vibrator/credentials/claude/`.
+- `remove-claude-credential` deletes the matching JSON file.
+- `activate-claude-credential` loads one stored credential and writes it back to the active Claude location for the current platform.
+
 ## Development
 
 ```bash
