@@ -2043,24 +2043,6 @@ class DashboardUI {
     } else {
       broadcastContent.appendChild(card);
     }
-
-    showCredentialRotationModal(data) {
-      const modal = document.getElementById('credential-rotation-modal');
-      const body = document.getElementById('credential-rotation-modal-body');
-      if (!modal || !body) return;
-
-      const content = data && data.content ? String(data.content) : 'Claude credential rotation event received.';
-      body.textContent = content;
-      modal.classList.add('visible');
-
-      if (this.credentialRotationModalTimer) {
-        clearTimeout(this.credentialRotationModalTimer);
-      }
-      this.credentialRotationModalTimer = setTimeout(() => {
-        modal.classList.remove('visible');
-        this.credentialRotationModalTimer = null;
-      }, 6500);
-    }
     broadcastContent.scrollTop = 0;
 
     // Evict oldest items beyond limit with slide-away animation
@@ -2075,6 +2057,24 @@ class DashboardUI {
         }, 650);
       }
     }
+  }
+
+  showCredentialRotationModal(data) {
+    const modal = document.getElementById('credential-rotation-modal');
+    const body = document.getElementById('credential-rotation-modal-body');
+    if (!modal || !body) return;
+
+    const content = data && data.content ? String(data.content) : 'Claude credential rotation event received.';
+    body.textContent = content;
+    modal.classList.add('visible');
+
+    if (this.credentialRotationModalTimer) {
+      clearTimeout(this.credentialRotationModalTimer);
+    }
+    this.credentialRotationModalTimer = setTimeout(() => {
+      modal.classList.remove('visible');
+      this.credentialRotationModalTimer = null;
+    }, 6500);
   }
 
   getCurrentPhaseContent() {

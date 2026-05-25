@@ -289,6 +289,32 @@ test("DashboardServer defaults to 'Vibrator' when no dashboardTitle is provided"
   assert.ok(html.includes("Vibrator"), "HTML should contain the default title 'Vibrator'");
 });
 
+test("DashboardServer serves syntactically valid inline dashboard script", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 10,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 10}/`);
+  const lowerHtml = html.toLowerCase();
+  const scriptStartToken = "<script>";
+  const scriptEndToken = "</script>";
+  const scriptStart = lowerHtml.indexOf(scriptStartToken);
+  const scriptEnd = lowerHtml.indexOf(scriptEndToken, scriptStart + scriptStartToken.length);
+  const script = scriptStart >= 0 && scriptEnd > scriptStart
+    ? html.slice(scriptStart + scriptStartToken.length, scriptEnd)
+    : undefined;
+  assert.ok(script, "inline script should be present");
+  assert.doesNotThrow(() => {
+    new Function(script);
+  });
+});
+
 test("DashboardServer caches and replays shutdown-requested and app-shutdown", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 3,
