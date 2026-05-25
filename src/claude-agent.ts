@@ -387,10 +387,12 @@ class GitAuth {
     const count = rawCount === undefined ? 0 : Number.parseInt(rawCount, 10);
     const index = Number.isFinite(count) && count >= 0 ? count : 0;
     const authScopes = this.resolveAuthScopes(authScopeUrls);
+    // GitHub's git endpoint requires Basic auth; Bearer is only accepted by the REST API.
+    const basicCredential = Buffer.from(`x-access-token:${this.token}`).toString("base64");
     env.GIT_CONFIG_COUNT = String(index + authScopes.length);
     authScopes.forEach((scope, offset) => {
       env[`GIT_CONFIG_KEY_${index + offset}`] = `http.${scope}/.extraheader`;
-      env[`GIT_CONFIG_VALUE_${index + offset}`] = `AUTHORIZATION: bearer ${this.token}`;
+      env[`GIT_CONFIG_VALUE_${index + offset}`] = `AUTHORIZATION: Basic ${basicCredential}`;
     });
     return env;
   }
