@@ -3,7 +3,11 @@ import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { globalEventEmitter } from "./event-emitter.js";
-import { activateClaudeCredential } from "./claude-credential-manager.js";
+import {
+  activateClaudeCredential,
+  defaultClaudeCredentialStoreDir,
+  removeClaudeCredential,
+} from "./claude-credential-manager.js";
 import { broadcastCredentialRotation } from "./dashboard-utils.js";
 import type { ClaudeAccountManager } from "./claude-account-manager.js";
 import { getGitHubTokenFromEnv } from "./github.js";
@@ -328,6 +332,8 @@ interface ClaudeAgentClientOptions {
    * the single currently active Claude credential.
    */
   accountManager?: ClaudeAccountManager;
+  /** Path to the stored Claude credential vault directory. */
+  claudeCredentialStoreDir?: string;
   /** Zero-based index of the engine loop that owns this client instance. Used to route live thinking events to the correct dashboard cylinder. */
   engineIndex?: number;
 }
@@ -829,6 +835,21 @@ const DEFAULT_QUOTA_BACKOFF_MS = 15 * 60 * 1000; // 15 minutes
 
 let claudeQuotaBlockedUntilMs: number | undefined;
 let claudeTermsAcceptanceRequired = false;
+let credentialAuthLock = Promise.resolve();
+
+async function withCredentialAuthLock<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = credentialAuthLock;
+  let release!: () => void;
+  credentialAuthLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
 export function getClaudeQuotaBlockedUntilMs(): number | undefined {
   return claudeQuotaBlockedUntilMs;
@@ -848,6 +869,10 @@ export function isClaudeTermsAcceptanceMessage(message: string): boolean {
 
 export function isClaudeNotLoggedInMessage(message: string): boolean {
   return /not logged in|please run\s*\/login|run\s*\/login/i.test(message);
+}
+
+export function isClaudeCredentialExhaustedMessage(message: string): boolean {
+  return /no working claude credentials remain/i.test(message);
 }
 
 export function isNonFastForwardPushError(message: string): boolean {
@@ -1015,6 +1040,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly claudeCommitModel: string;
   private readonly claudeTimeoutMs: number;
   private readonly accountManager: ClaudeAccountManager | undefined;
+  private readonly claudeCredentialStoreDir: string;
   private readonly engineIndex: number | undefined;
 
   constructor(options: ClaudeAgentClientOptions = {}) {
@@ -1032,6 +1058,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       options.claudeTimeoutMs ??
       (envTimeout !== undefined ? Number.parseInt(envTimeout, 10) : DEFAULT_CLAUDE_TIMEOUT_MS);
     this.accountManager = options.accountManager;
+    this.claudeCredentialStoreDir = options.claudeCredentialStoreDir ?? defaultClaudeCredentialStoreDir();
     this.engineIndex = options.engineIndex;
   }
 
@@ -1614,35 +1641,26 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       let activeCredentialEmail: string | undefined;
 
       if (this.accountManager) {
-        activeCredentialEmail = this.accountManager.acquireAccount();
-        if (activeCredentialEmail === undefined) {
-          const nextMs = this.accountManager.earliestAvailableMs();
-          const when = nextMs !== undefined ? ` until approximately ${formatLocalTime(nextMs)} local time` : "";
-          throw new Error(
-            `All Claude credentials are rate-limited${when}. Skipping Claude actions until a credential becomes available.`,
-          );
-        }
-        await activateClaudeCredential(activeCredentialEmail);
-        try {
-          await runCommand(this.claudeCommand, ["auth", "status", "--text"], {
-            captureStdout: true,
-            captureStderr: true,
-            env,
-            timeoutMs: Math.min(this.claudeTimeoutMs, 30_000),
-          });
-        } catch (authError) {
-          const authMessage = authError instanceof Error ? authError.message : String(authError);
-          if (!isClaudeNotLoggedInMessage(authMessage)) {
-            throw authError;
+        let retryWithNextCredential = false;
+        let credentialError: Error | undefined;
+        await withCredentialAuthLock(async () => {
+          activeCredentialEmail = this.accountManager!.acquireAccount();
+          if (activeCredentialEmail === undefined) {
+            const nextMs = this.accountManager!.earliestAvailableMs();
+            if (nextMs === undefined) {
+              credentialError = new Error(
+                "No working Claude credentials remain after automatic rotation. Shutting down vibrator.",
+              );
+              return;
+            }
+            const when = ` until approximately ${formatLocalTime(nextMs)} local time`;
+            credentialError = new Error(
+              `All Claude credentials are rate-limited${when}. Skipping Claude actions until a credential becomes available.`,
+            );
+            return;
           }
-          const primaryCredentialEmail = this.accountManager.getStates()[0]?.email;
-          if (!primaryCredentialEmail) {
-            throw new Error("Claude CLI is not logged in and no stored credentials are available to recover session.");
-          }
-          process.stderr.write(
-            `[vibrator] Claude CLI reported logged out; re-activating primary credential ${primaryCredentialEmail}.\n`,
-          );
-          await activateClaudeCredential(primaryCredentialEmail);
+
+          await activateClaudeCredential(activeCredentialEmail);
           try {
             await runCommand(this.claudeCommand, ["auth", "status", "--text"], {
               captureStdout: true,
@@ -1650,17 +1668,45 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
               env,
               timeoutMs: Math.min(this.claudeTimeoutMs, 30_000),
             });
-          } catch (recheckError) {
-            const recheckMessage = recheckError instanceof Error ? recheckError.message : String(recheckError);
-            if (!isClaudeNotLoggedInMessage(recheckMessage)) {
-              throw recheckError;
+          } catch (authError) {
+            const authMessage = authError instanceof Error ? authError.message : String(authError);
+            if (!isClaudeNotLoggedInMessage(authMessage)) {
+              throw authError;
             }
-            throw new Error(
-              `Claude CLI remains logged out after activating stored credential ${primaryCredentialEmail}. ` +
-                "Vibrator will not run interactive login. Re-capture this account with add-claude-credential.",
+            process.stderr.write(
+              `[vibrator] Claude CLI reported logged out for ${activeCredentialEmail}; removing credential and rotating.\n`,
             );
+            try {
+              await removeClaudeCredential(activeCredentialEmail, this.claudeCredentialStoreDir);
+            } catch (removeError) {
+              process.stderr.write(
+                `[vibrator] Failed to remove invalid stored credential ${activeCredentialEmail}: ${
+                  removeError instanceof Error ? removeError.message : String(removeError)
+                }\n`,
+              );
+            }
+            await this.accountManager!.markUnavailable(activeCredentialEmail);
+            const nextCredential = this.accountManager!.acquireAccount();
+            if (nextCredential === undefined) {
+              credentialError = new Error(
+                "No working Claude credentials remain after automatic rotation. Shutting down vibrator.",
+              );
+              return;
+            }
+            emitLoudCredentialRotationEvent({
+              fromEmail: activeCredentialEmail,
+              toEmail: nextCredential,
+              resetAtMs: Date.now(),
+              engineIndex: this.engineIndex,
+            });
+            retryWithNextCredential = true;
           }
-          activeCredentialEmail = primaryCredentialEmail;
+        });
+        if (credentialError) {
+          throw credentialError;
+        }
+        if (retryWithNextCredential) {
+          continue;
         }
       } else {
         if (claudeQuotaBlockedUntilMs !== undefined && Date.now() < claudeQuotaBlockedUntilMs) {

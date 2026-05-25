@@ -178,3 +178,27 @@ test("getStates returns one entry per configured account", () => {
   assert.equal(states[0]!.email, "a@example.com");
   assert.equal(states[1]!.email, "b@example.com");
 });
+
+test("markUnavailable removes an account from future rotation", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "vibrator-acct-"));
+  try {
+    const storePath = join(tmpDir, "accounts.json");
+    const mgr = new ClaudeAccountManager(["a@example.com", "b@example.com"], storePath);
+    await mgr.markUnavailable("a@example.com");
+    assert.equal(mgr.acquireAccount(), "b@example.com");
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("availableAccountCount excludes unavailable credentials", async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), "vibrator-acct-"));
+  try {
+    const storePath = join(tmpDir, "accounts.json");
+    const mgr = new ClaudeAccountManager(["a@example.com", "b@example.com"], storePath);
+    await mgr.markUnavailable("a@example.com");
+    assert.equal(mgr.availableAccountCount, 1);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});

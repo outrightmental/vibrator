@@ -22,6 +22,7 @@ import {
   isClaudeUsageLimitMessage,
   isClaudeTermsAcceptanceMessage,
   isClaudeNotLoggedInMessage,
+  isClaudeCredentialExhaustedMessage,
   isNonFastForwardPushError,
   parseOriginHeadBranch,
   parseUsageResetTimeMs,
@@ -248,6 +249,17 @@ test("isClaudeNotLoggedInMessage detects explicit /login prompt", () => {
 
 test("isClaudeNotLoggedInMessage returns false for unrelated errors", () => {
   assert.equal(isClaudeNotLoggedInMessage("network timeout"), false);
+});
+
+test("isClaudeCredentialExhaustedMessage detects credential-exhausted fatal errors", () => {
+  assert.equal(
+    isClaudeCredentialExhaustedMessage("No working Claude credentials remain after automatic rotation. Shutting down vibrator."),
+    true,
+  );
+});
+
+test("isClaudeCredentialExhaustedMessage returns false for unrelated errors", () => {
+  assert.equal(isClaudeCredentialExhaustedMessage("network timeout"), false);
 });
 
 test("isNonFastForwardPushError detects git non-fast-forward push output", () => {

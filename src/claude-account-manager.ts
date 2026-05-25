@@ -13,6 +13,8 @@ export interface AccountState {
    * Includes the 1-minute post-reset buffer from the issue spec.
    */
   rateLimitedUntilMs?: number;
+  /** True when this credential is known bad (e.g. auth stays logged out). */
+  unavailable?: boolean;
 }
 
 interface AccountStoreFile {
@@ -63,6 +65,9 @@ export class ClaudeAccountManager {
           if (saved.rateLimitedUntilMs !== undefined) {
             state.rateLimitedUntilMs = saved.rateLimitedUntilMs;
           }
+          if (saved.unavailable === true) {
+            state.unavailable = true;
+          }
           this.states.set(email, state);
         }
       }
@@ -98,6 +103,9 @@ export class ClaudeAccountManager {
       const idx = (this.nextIndex + offset) % this.accountEmails.length;
       const email = this.accountEmails[idx]!;
       const state = this.states.get(email)!;
+      if (state.unavailable) {
+        continue;
+      }
       if (!state.rateLimitedUntilMs || now >= state.rateLimitedUntilMs) {
         this.nextIndex = idx;
         return email;
@@ -137,6 +145,32 @@ export class ClaudeAccountManager {
       this.nextIndex = (currentIdx + 1) % this.accountEmails.length;
     }
     await this.save();
+  }
+
+  /**
+   * Mark `email` unavailable for future rotation attempts (for example when
+   * auth status remains logged out after activation). Persists state to disk.
+   */
+  async markUnavailable(email: string): Promise<void> {
+    const normalized = email.trim().toLowerCase();
+    const state = this.states.get(normalized);
+    if (!state) return;
+    state.unavailable = true;
+    delete state.rateLimitedUntilMs;
+    const currentIdx = this.accountEmails.indexOf(normalized);
+    if (currentIdx >= 0 && this.nextIndex === currentIdx) {
+      this.nextIndex = (currentIdx + 1) % this.accountEmails.length;
+    }
+    await this.save();
+  }
+
+  /** Number of currently usable (non-unavailable) accounts. */
+  get availableAccountCount(): number {
+    let count = 0;
+    for (const state of this.states.values()) {
+      if (!state.unavailable) count++;
+    }
+    return count;
   }
 
   /** Number of configured accounts. */

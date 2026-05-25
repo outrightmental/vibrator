@@ -7,6 +7,7 @@ import {
   createClaudeAgentClient,
   DEFAULT_COMMIT_MODEL,
   isClaudeUsageLimitMessage,
+  isClaudeCredentialExhaustedMessage,
   getClaudeQuotaBlockedUntilMs,
 } from "./claude-agent.js";
 import {
@@ -422,6 +423,7 @@ async function runEngineLoop(
   const claudeAgentClient = createClaudeAgentClient({
     ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
     ...(config.claudeCommitModel !== undefined ? { claudeCommitModel: config.claudeCommitModel } : {}),
+    claudeCredentialStoreDir: config.claudeCredentialStoreDir,
     ...(accountManager !== undefined ? { accountManager } : {}),
     engineIndex,
   });
@@ -655,6 +657,9 @@ async function runEngineLoop(
         if (isClaudeUsageLimitMessage(errorMessage)) {
           cycleRateLimitedUntilMs =
             getClaudeQuotaBlockedUntilMs() ?? accountManager?.earliestAvailableMs();
+        }
+        if (isClaudeCredentialExhaustedMessage(errorMessage)) {
+          shutdownSignal.requested = true;
         }
         globalEventEmitter.emit("action-error", {
           actionIndex: engineIndex + 1,
