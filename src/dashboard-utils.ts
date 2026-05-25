@@ -350,6 +350,36 @@ export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?:
   });
 }
 
+export function broadcastCredentialRotation(
+  fromEmail: string,
+  toEmail: string | undefined,
+  resetAtText: string,
+  waitingUntilText: string | undefined,
+  workerIndex?: number,
+): void {
+  const hasNextCredential = toEmail !== undefined && toEmail.length > 0;
+  const content = hasNextCredential
+    ? `Claude Credentials for ${fromEmail} hit rate limit. Switching to next credential, ${toEmail}.`
+    : `Claude Credentials for ${fromEmail} hit rate limit. No further credentials are currently available.`;
+  const stateAfter = hasNextCredential
+    ? `Claude credential ${toEmail} is now active`
+    : `All stored Claude credentials are rate-limited. Waiting until approximately ${waitingUntilText ?? resetAtText} local time`;
+  const excellence = hasNextCredential
+    ? "Credential rotation triggered immediately to maintain maximum development throughput"
+    : "Rotation state persisted — Vibrator will resume with the earliest available credential automatically";
+
+  globalEventEmitter.emit("broadcast-credential-rotation", {
+    content,
+    fromEmail,
+    toEmail: toEmail ?? "",
+    stateBefore: `Claude credential ${fromEmail} was active`,
+    changeHow: `Rate limit detected. Marked ${fromEmail} unavailable until ${resetAtText} local time`,
+    stateAfter,
+    excellence,
+    workerIndex,
+  });
+}
+
 export function broadcastCommit(commit: Commit, workerIndex?: number): void {
   const shortHash = commit.hash.slice(0, 7);
   const firstLine = commit.message.split('\n')[0];

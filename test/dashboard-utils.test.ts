@@ -9,6 +9,7 @@ import {
   broadcastReviewComment,
   broadcastRepositorySnapshot,
   broadcastLifecycleUpdate,
+  broadcastCredentialRotation,
   hasPrStateChanged,
   filterNewCommits,
 } from "../src/dashboard-utils.js";
@@ -228,6 +229,26 @@ test("broadcastReviewComment emits structured fields", async () => {
   assert.ok((data.stateAfter as string).includes("3"), "stateAfter mentions comment count");
   assert.ok((data.excellence as string).length > 0, "excellence is populated");
   assert.equal(data.prNumber, 55);
+});
+
+test("broadcastCredentialRotation emits switch event details", async () => {
+  const dataPromise = captureNextEvent("broadcast-credential-rotation");
+  broadcastCredentialRotation("first@example.com", "second@example.com", "May 25, 6:45 PM", undefined, 1);
+  const data = await dataPromise;
+
+  assert.ok((data.content as string).includes("Switching to next credential"), "content announces switch");
+  assert.equal(data.fromEmail, "first@example.com");
+  assert.equal(data.toEmail, "second@example.com");
+  assert.equal(data.workerIndex, 1);
+});
+
+test("broadcastCredentialRotation emits exhausted event details when no next credential", async () => {
+  const dataPromise = captureNextEvent("broadcast-credential-rotation");
+  broadcastCredentialRotation("only@example.com", undefined, "May 25, 6:45 PM", "May 25, 7:15 PM");
+  const data = await dataPromise;
+
+  assert.ok((data.stateAfter as string).includes("Waiting until approximately May 25, 7:15 PM"), "stateAfter references wait time");
+  assert.equal(data.toEmail, "");
 });
 
 // broadcastRepositorySnapshot — excellence variants

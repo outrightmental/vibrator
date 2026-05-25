@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { globalEventEmitter } from "./event-emitter.js";
 import { activateClaudeCredential } from "./claude-credential-manager.js";
+import { broadcastCredentialRotation } from "./dashboard-utils.js";
 import type { ClaudeAccountManager } from "./claude-account-manager.js";
 import { getGitHubTokenFromEnv } from "./github.js";
 
@@ -948,7 +949,7 @@ function emitLoudCredentialRotationEvent(params: {
   fromEmail: string;
   toEmail: string;
   resetAtMs: number;
-  engineIndex?: number;
+  engineIndex: number | undefined;
 }): void {
   const bannerMessage =
     `Claude Credentials for ${params.fromEmail} hit rate limit. ` +
@@ -961,24 +962,20 @@ function emitLoudCredentialRotationEvent(params: {
     level: "warning",
     message: loudLine,
   });
-  globalEventEmitter.emit("broadcast-credential-rotation", {
-    content: bannerMessage,
-    fromEmail: params.fromEmail,
-    toEmail: params.toEmail,
-    resetAtMs: params.resetAtMs,
-    stateBefore: `Claude credential ${params.fromEmail} was active`,
-    changeHow: `Rate limit detected. Marked ${params.fromEmail} unavailable until ${formatLocalTime(params.resetAtMs)} local time`,
-    stateAfter: `Claude credential ${params.toEmail} is now active`,
-    excellence: "Credential rotation triggered immediately to maintain maximum development throughput",
-    ...(params.engineIndex !== undefined ? { workerIndex: params.engineIndex } : {}),
-  });
+  broadcastCredentialRotation(
+    params.fromEmail,
+    params.toEmail,
+    formatLocalTime(params.resetAtMs),
+    undefined,
+    params.engineIndex,
+  );
 }
 
 function emitLoudCredentialExhaustedEvent(params: {
   exhaustedEmail: string;
   resetAtMs: number;
   nextAvailableAtMs: number;
-  engineIndex?: number;
+  engineIndex: number | undefined;
 }): void {
   const bannerMessage =
     `Claude Credentials for ${params.exhaustedEmail} hit rate limit. ` +
@@ -991,17 +988,13 @@ function emitLoudCredentialExhaustedEvent(params: {
     level: "warning",
     message: loudLine,
   });
-  globalEventEmitter.emit("broadcast-credential-rotation", {
-    content: bannerMessage,
-    fromEmail: params.exhaustedEmail,
-    toEmail: "",
-    resetAtMs: params.resetAtMs,
-    stateBefore: `Claude credential ${params.exhaustedEmail} was active`,
-    changeHow: `Rate limit detected. Marked ${params.exhaustedEmail} unavailable until ${formatLocalTime(params.resetAtMs)} local time`,
-    stateAfter: `All stored Claude credentials are rate-limited. Waiting until approximately ${formatLocalTime(params.nextAvailableAtMs)} local time`,
-    excellence: "Rotation state persisted — Vibrator will resume with the earliest available credential automatically",
-    ...(params.engineIndex !== undefined ? { workerIndex: params.engineIndex } : {}),
-  });
+  broadcastCredentialRotation(
+    params.exhaustedEmail,
+    undefined,
+    formatLocalTime(params.resetAtMs),
+    formatLocalTime(params.nextAvailableAtMs),
+    params.engineIndex,
+  );
 }
 
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
