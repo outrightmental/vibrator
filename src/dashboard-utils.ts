@@ -7,13 +7,6 @@ function isManualIssue(issue: Issue): boolean {
   return issue.labels.includes("manual");
 }
 
-const PROJECT_LIFECYCLE_VISIBLE_STATUSES = new Set(["ready", "in progress", "in review"]);
-
-function isProjectLifecycleVisibleIssue(issue: Issue): boolean {
-  const status = issue.projectStatus?.trim().toLowerCase();
-  return status !== undefined && PROJECT_LIFECYCLE_VISIBLE_STATUSES.has(status);
-}
-
 // PRs labelled "manual" are never worked on automatically. They still appear
 // on the dashboard paired with their (non-manual) issue, but rendered disabled.
 function isManualPullRequest(pr: PullRequest): boolean {
@@ -60,9 +53,7 @@ export function broadcastLifecycleUpdate(
 ): void {
   const pairs: LifecyclePair[] = [];
   const pairedIssueNumbers = new Set<number>();
-  const visibleIssues = snapshot.issues.filter(
-    (i) => !isManualIssue(i) && (!projectModeEnabled || isProjectLifecycleVisibleIssue(i)),
-  );
+  const visibleIssues = snapshot.issues.filter((i) => !isManualIssue(i));
 
   // Pair each open PR with its closing issues (falling back to linked issues)
   for (const pr of snapshot.pullRequests) {
