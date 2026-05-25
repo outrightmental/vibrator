@@ -33,6 +33,7 @@ interface AddCredentialOptions {
   storeDir?: string;
   claudeCommand?: string;
   claudeHomeDir?: string;
+  runCommandImpl?: typeof runCommand;
 }
 
 interface ActivateCredentialOptions {
@@ -112,7 +113,27 @@ function parseEmailFromAuthStatus(authStatusText: string): string {
 }
 
 function resolveClaudeHome(claudeHomeDir?: string): string {
-  return claudeHomeDir ?? process.env.CLAUDE_HOME ?? join(homedir(), ".claude");
+  const isNonEmpty = (value: string | undefined): value is string => value !== undefined && value.trim().length > 0;
+  if (isNonEmpty(claudeHomeDir)) {
+    return claudeHomeDir;
+  }
+  if (isNonEmpty(process.env.CLAUDE_HOME)) {
+    return process.env.CLAUDE_HOME;
+  }
+  return join(homedir(), ".claude");
+}
+
+function buildClaudeCommandEnv(claudeHomeDir?: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
+  delete env.VIBRATOR_GITHUB_TOKEN;
+  if (claudeHomeDir !== undefined) {
+    env.CLAUDE_HOME = resolveClaudeHome(claudeHomeDir);
+  } else if (env.CLAUDE_HOME !== undefined && env.CLAUDE_HOME.trim().length === 0) {
+    delete env.CLAUDE_HOME;
+  }
+  return env;
 }
 
 function resolveLiveCredentialPath(claudeHomeDir?: string): string {
@@ -258,12 +279,11 @@ export async function removeClaudeCredential(
 
 export async function addClaudeCredential(options: AddCredentialOptions = {}): Promise<StoredClaudeCredential> {
   const claudeCommand = options.claudeCommand ?? "claude";
-  const claudeEnvOption = options.claudeHomeDir !== undefined
-    ? { env: { ...process.env, CLAUDE_HOME: resolveClaudeHome(options.claudeHomeDir) } }
-    : {};
-  await runCommand(claudeCommand, [], { stdio: "inherit", ...claudeEnvOption });
+  const runClaudeCommand = options.runCommandImpl ?? runCommand;
+  const claudeEnv = buildClaudeCommandEnv(options.claudeHomeDir);
+  await runClaudeCommand(claudeCommand, [], { stdio: "inherit", env: claudeEnv });
 
-  const authStatus = await runCommand(claudeCommand, ["auth", "status", "--text"], { ...claudeEnvOption });
+  const authStatus = await runClaudeCommand(claudeCommand, ["auth", "status", "--text"], { env: claudeEnv });
   const email = parseEmailFromAuthStatus(authStatus.stdout);
   const credentialSecret = await readLiveCredentialSecret(options.claudeHomeDir);
 
