@@ -1643,12 +1643,23 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
             `[vibrator] Claude CLI reported logged out; re-activating primary credential ${primaryCredentialEmail}.\n`,
           );
           await activateClaudeCredential(primaryCredentialEmail);
-          await runCommand(this.claudeCommand, ["auth", "status", "--text"], {
-            captureStdout: true,
-            captureStderr: true,
-            env,
-            timeoutMs: Math.min(this.claudeTimeoutMs, 30_000),
-          });
+          try {
+            await runCommand(this.claudeCommand, ["auth", "status", "--text"], {
+              captureStdout: true,
+              captureStderr: true,
+              env,
+              timeoutMs: Math.min(this.claudeTimeoutMs, 30_000),
+            });
+          } catch (recheckError) {
+            const recheckMessage = recheckError instanceof Error ? recheckError.message : String(recheckError);
+            if (!isClaudeNotLoggedInMessage(recheckMessage)) {
+              throw recheckError;
+            }
+            throw new Error(
+              `Claude CLI remains logged out after activating stored credential ${primaryCredentialEmail}. ` +
+                "Vibrator will not run interactive login. Re-capture this account with add-claude-credential.",
+            );
+          }
           activeCredentialEmail = primaryCredentialEmail;
         }
       } else {
