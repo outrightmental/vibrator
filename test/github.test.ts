@@ -258,6 +258,20 @@ test("runtime source no longer shells out to gh CLI operations", () => {
   }
 });
 
+test("claude-agent routes PR checkout metadata through the shared GitHub gateway", () => {
+  const source = readFileSync(join(process.cwd(), "src", "claude-agent.ts"), "utf8");
+  assert.equal(
+    /fetchPullRequestForCheckout[\s\S]*this\.githubGateway\.request/.test(source),
+    true,
+    "fetchPullRequestForCheckout should call githubGateway.request",
+  );
+  assert.equal(
+    /fetchPullRequestForCheckout[\s\S]*await fetch\(/.test(source),
+    false,
+    "fetchPullRequestForCheckout should not call fetch directly",
+  );
+});
+
 test("listOpenIssues attaches GitHub-native blocked_by dependencies to issues", async (t) => {
   const fetchMock = t.mock.method(
     globalThis,

@@ -247,6 +247,35 @@ test("DashboardServer caches action-start with startedAt for accurate elapsed-ti
   assert.equal(actionMsg?.data.startedAt, startedAt, "startedAt should be preserved in cache for accurate elapsed-time display");
 });
 
+test("DashboardServer clears cached github-rate-limit on github-rate-limit-cleared", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 8,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  globalEventEmitter.emit("github-rate-limit", {
+    kind: "secondary",
+    api: "rest",
+    blockedUntilMs: Date.now() + 60_000,
+    waitMs: 60_000,
+    message: "limited",
+    attempt: 1,
+  });
+  globalEventEmitter.emit("github-rate-limit-cleared", {});
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 8}`);
+  const messages = await collectMessages(ws, 150);
+  ws.close();
+
+  const rateLimitMsg = messages.find((m) => m.type === "github-rate-limit");
+  assert.equal(rateLimitMsg, undefined, "cleared cache should not replay stale github-rate-limit event");
+});
+
 function fetchHtml(url: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {

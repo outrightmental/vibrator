@@ -94,6 +94,10 @@ export class DashboardServer {
     } else if (type === "engine-shutdown") {
       const engineIndex = (data.engineIndex as number) ?? 0;
       this.cachedEvents.set(`cylinder-${engineIndex}`, event);
+    } else if (type === "github-rate-limit") {
+      this.cachedEvents.set(type, event);
+    } else if (type === "github-rate-limit-cleared") {
+      this.cachedEvents.delete("github-rate-limit");
     } else if (type === "shutdown-requested" || type === "app-shutdown") {
       this.cachedEvents.set(type, event);
     }

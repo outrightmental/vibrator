@@ -15,6 +15,7 @@ import {
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
+import { GitHubApiGateway } from "./github-gateway.js";
 import { buildPlan, type ProjectModeConfig } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
@@ -158,6 +159,7 @@ interface PollingState {
 
 async function broadcastBetweenCycleActivity(
   config: Config,
+  githubGateway: GitHubApiGateway,
   lastSnapshot: RepositorySnapshot | null,
   seenCommitHashes: Set<string>,
   claimedActions: ReadonlySet<string>,
@@ -166,7 +168,7 @@ async function broadcastBetweenCycleActivity(
     const gitHubClient = new GitHubClient({
       owner: config.owner,
       repo: config.repo,
-      token: getGitHubTokenFromEnv(),
+      gateway: githubGateway,
     });
     const sessionStore = new FileSessionStore(config.sessionStorePath);
 
@@ -389,6 +391,8 @@ function parseArgs(argv: string[]): Config {
 
 async function runEngineLoop(
   config: Config,
+  githubGateway: GitHubApiGateway,
+  githubToken: string,
   engineIndex: number,
   planningMutex: PlanningMutex,
   claimedActions: Set<string>,
@@ -399,11 +403,13 @@ async function runEngineLoop(
   const gitHubClient = new GitHubClient({
     owner: config.owner,
     repo: config.repo,
-    token: getGitHubTokenFromEnv(),
+    gateway: githubGateway,
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
 
   const claudeAgentClient = createClaudeAgentClient({
+    githubGateway,
+    githubToken,
     ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
     ...(config.claudeCommitModel !== undefined ? { claudeCommitModel: config.claudeCommitModel } : {}),
     engineIndex,
@@ -420,6 +426,18 @@ async function runEngineLoop(
 
     const cycleStart = Date.now();
     iterationNumber++;
+
+    const githubHold = githubGateway.currentRateLimitHold();
+    if (githubHold && Date.now() < githubHold.blockedUntilMs) {
+      globalEventEmitter.emit("engine-idle", {
+        engineIndex,
+        reason: "github-rate-limit",
+        rateLimitedUntilMs: githubHold.blockedUntilMs,
+        nextCycleAtMs: githubHold.blockedUntilMs,
+      });
+      await githubGateway.waitUntilReady();
+      continue;
+    }
 
     globalEventEmitter.emit("iteration-start", {
       iterationNumber,
@@ -697,6 +715,7 @@ async function runEngineLoop(
           ({ snapshot: pollingState.lastSnapshot, seenCommitHashes: pollingState.seenCommitHashes } =
             await broadcastBetweenCycleActivity(
               config,
+              githubGateway,
               pollingState.lastSnapshot,
               pollingState.seenCommitHashes,
               claimedActions,
@@ -709,6 +728,13 @@ async function runEngineLoop(
 
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
+  const githubToken = getGitHubTokenFromEnv();
+  const githubGateway = new GitHubApiGateway({
+    token: githubToken,
+    apiBaseUrl: process.env.GITHUB_API_BASE_URL ?? "https://api.github.com",
+    apiVersion: process.env.GITHUB_API_VERSION ?? "2022-11-28",
+    userAgent: "vibrator",
+  });
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
 
   // Start the Dashboard server
@@ -760,7 +786,7 @@ async function main(): Promise<void> {
     const startupGitHubClient = new GitHubClient({
       owner: config.owner,
       repo: config.repo,
-      token: getGitHubTokenFromEnv(),
+      gateway: githubGateway,
     });
     await startupGitHubClient.ensureLabelExists(
       "manual",
@@ -804,7 +830,16 @@ async function main(): Promise<void> {
   }
 
   const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
-    runEngineLoop(config, i, planningMutex, claimedActions, pollingState, shutdownSignal),
+    runEngineLoop(
+      config,
+      githubGateway,
+      githubToken,
+      i,
+      planningMutex,
+      claimedActions,
+      pollingState,
+      shutdownSignal,
+    ),
   );
 
   await Promise.all(engines);

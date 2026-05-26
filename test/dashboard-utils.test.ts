@@ -9,12 +9,15 @@ import {
   broadcastReviewComment,
   broadcastRepositorySnapshot,
   broadcastLifecycleUpdate,
+  broadcastGitHubRateLimit,
+  broadcastGitHubRateLimitCleared,
   hasPrStateChanged,
   filterNewCommits,
 } from "../src/dashboard-utils.js";
 import { globalEventEmitter } from "../src/event-emitter.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
 import type { PullRequest, Issue, Commit, RepositorySnapshot } from "../src/types.js";
+import type { GitHubRateLimitHold } from "../src/github-rate-limit.js";
 
 function captureNextEvent(eventType: string): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
@@ -228,6 +231,47 @@ test("broadcastReviewComment emits structured fields", async () => {
   assert.ok((data.stateAfter as string).includes("3"), "stateAfter mentions comment count");
   assert.ok((data.excellence as string).length > 0, "excellence is populated");
   assert.equal(data.prNumber, 55);
+});
+
+test("broadcastGitHubRateLimit emits machine-readable hold payload", async () => {
+  const hold: GitHubRateLimitHold = {
+    kind: "secondary",
+    api: "rest",
+    blockedUntilMs: 123_456,
+    waitMs: 60_000,
+    reason: "Secondary limit",
+    attempt: 2,
+    statusCode: 403,
+    operation: "list-issues",
+    method: "GET",
+    path: "/repos/o/r/issues",
+    snapshot: {
+      observedAtMs: 1,
+      api: "rest",
+      limit: 5000,
+      remaining: 0,
+      used: 5000,
+      resetAtMs: 120_000,
+      retryAfterMs: 60_000,
+    },
+  };
+
+  const dataPromise = captureNextEvent("github-rate-limit");
+  broadcastGitHubRateLimit(hold);
+  const data = await dataPromise;
+  assert.equal(data.kind, "secondary");
+  assert.equal(data.api, "rest");
+  assert.equal(data.blockedUntilMs, 123_456);
+  assert.equal(data.waitMs, 60_000);
+  assert.equal(data.remaining, 0);
+  assert.equal(data.operation, "list-issues");
+});
+
+test("broadcastGitHubRateLimitCleared emits cleared event", async () => {
+  const dataPromise = captureNextEvent("github-rate-limit-cleared");
+  broadcastGitHubRateLimitCleared();
+  const data = await dataPromise;
+  assert.deepEqual(data, {});
 });
 
 // broadcastRepositorySnapshot — excellence variants
