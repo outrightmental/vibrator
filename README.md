@@ -239,8 +239,6 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `DASHBOARD_PORT` | `3000` | HTTP port for the Dashboard server. |
 | `DASHBOARD_TITLE` | `Vibrator` | Title displayed in the Dashboard header. |
 | `VIBRATOR_SESSION_STORE_PATH` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
-| `CLAUDE_ACCOUNTS` | — | Comma- or newline-separated paths to Claude config directories for multi-account rotation. See [Multi-account rotation](#multi-account-rotation). |
-| `CLAUDE_ACCOUNTS_STORE_PATH` | `~/.vibrator/claude-accounts.json` | Path for persisted Claude account rate-limit state. |
 | `GITHUB_PROJECT_NUMBER` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop). |
 | `VIBRATOR_REVIEWERS` | — | Comma-separated GitHub logins to request review from (Project SDLC only). |
 
@@ -282,36 +280,6 @@ Priority order: **Bug** > earlier milestone > later milestone > no milestone, th
 ### Parent and sub-issues
 
 GitHub sub-issues are understood natively. A parent issue is automatically blocked until all of its open sub-issues are resolved — no explicit dependency phrases needed.
-
-## Multi-account rotation
-
-If you hit Claude Code rate limits with a single account, set `CLAUDE_ACCOUNTS` to a comma- or newline-separated list of paths to Claude config directories:
-
-```bash
-CLAUDE_ACCOUNTS=/home/user/.claude-account1,/home/user/.claude-account2
-```
-
-Vibrator starts with the first account and rotates to the next one automatically when a rate limit is hit. If all accounts are rate-limited, it waits until the earliest available account is ready again.
-
-Each directory must contain a `.credentials.json` file from a previously authenticated Claude Code session (run `claude` once in each directory to authenticate).
-
-## Claude credential vault commands
-
-Vibrator can maintain a local index of Claude CLI credentials in `~/.vibrator/credentials/claude/`:
-
-```bash
-npm run add-claude-credential
-npm run list-claude-credentials
-npm run remove-claude-credential -- "user@domain.com"
-npm run activate-claude-credential -- "user@domain.com"
-```
-
-- `add-claude-credential` runs a Claude login flow, then records account metadata from `claude auth status --text` and captures the active credential.
-  - macOS: reads `Claude Code-credentials` from Keychain using `security`.
-  - Other platforms: reads `<CLAUDE_HOME or ~/.claude>/.credentials.json`.
-- `list-claude-credentials` enumerates JSON files in `~/.vibrator/credentials/claude/`.
-- `remove-claude-credential` deletes the matching JSON file.
-- `activate-claude-credential` loads one stored credential and writes it back to the active Claude location for the current platform.
 
 ## Development
 

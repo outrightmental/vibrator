@@ -3,7 +3,6 @@ import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { globalEventEmitter } from "./event-emitter.js";
-import type { ClaudeAccountManager } from "./claude-account-manager.js";
 import { getGitHubTokenFromEnv } from "./github.js";
 
 
@@ -320,12 +319,6 @@ interface ClaudeAgentClientOptions {
    * Defaults to CLAUDE_TIMEOUT_MS env var, or 30 minutes if unset.
    */
   claudeTimeoutMs?: number;
-  /**
-   * Optional multi-account manager for rotating between Claude Code accounts
-   * when rate limits are reached.  When omitted, the client uses a single
-   * implicit account (the default ~/.claude credentials).
-   */
-  accountManager?: ClaudeAccountManager;
   /** Zero-based index of the engine loop that owns this client instance. Used to route live thinking events to the correct dashboard cylinder. */
   engineIndex?: number;
 }
@@ -956,7 +949,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly claudeModel: string | undefined;
   private readonly claudeCommitModel: string;
   private readonly claudeTimeoutMs: number;
-  private readonly accountManager: ClaudeAccountManager | undefined;
   private readonly engineIndex: number | undefined;
 
   constructor(options: ClaudeAgentClientOptions = {}) {
@@ -973,7 +965,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     this.claudeTimeoutMs =
       options.claudeTimeoutMs ??
       (envTimeout !== undefined ? Number.parseInt(envTimeout, 10) : DEFAULT_CLAUDE_TIMEOUT_MS);
-    this.accountManager = options.accountManager;
     this.engineIndex = options.engineIndex;
   }
 
@@ -1504,8 +1495,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const env: NodeJS.ProcessEnv = { ...process.env };
     // Use the local Claude Code subscription, not the Anthropic Platform API.
     // Removing ANTHROPIC_API_KEY forces the claude CLI to authenticate via
-    // the subscription credentials in ~/.claude/.credentials.json (or the
-    // directory pointed to by CLAUDE_HOME when multi-account mode is active).
+    // the subscription credentials in ~/.claude/.credentials.json.
     delete env.ANTHROPIC_API_KEY;
     // Avoid Claude subprocesses inheriting Vibrator's GitHub token.
     delete env.GH_TOKEN;
@@ -1548,40 +1538,19 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       return { text, blockedUntilMs };
     };
 
-    // ── Multi-account mode ────────────────────────────────────────────────
-    // When an account manager is configured, pick the next available account
-    // and point CLAUDE_HOME at its config directory so the Claude CLI loads
-    // the correct subscription credentials.
-    let activeConfigDir: string | undefined;
-    if (this.accountManager) {
-      activeConfigDir = this.accountManager.acquireAccount();
-      if (activeConfigDir === undefined) {
-        const nextMs = this.accountManager.earliestAvailableMs();
-        const when = nextMs !== undefined ? ` until approximately ${formatLocalTime(nextMs)} local time` : "";
-        throw new Error(
-          `All Claude accounts are rate-limited${when}. Skipping Claude actions until an account becomes available.`,
-        );
-      }
-      // CLAUDE_HOME overrides the default ~/.claude config directory so the
-      // Claude CLI picks up the credentials for this specific account.
-      env.CLAUDE_HOME = activeConfigDir;
-    } else {
-      // ── Single-account mode (legacy) ──────────────────────────────────
-      if (claudeQuotaBlockedUntilMs !== undefined && Date.now() < claudeQuotaBlockedUntilMs) {
-        throw new Error(
-          `Claude CLI usage limit reached. Skipping Claude actions until approximately ${formatLocalTime(claudeQuotaBlockedUntilMs)} local time.`,
-        );
-      }
-
-      if (claudeTermsAcceptanceRequired) {
-        throw new Error(
-          "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
-        );
-      }
+    if (claudeQuotaBlockedUntilMs !== undefined && Date.now() < claudeQuotaBlockedUntilMs) {
+      throw new Error(
+        `Claude CLI usage limit reached. Skipping Claude actions until approximately ${formatLocalTime(claudeQuotaBlockedUntilMs)} local time.`,
+      );
     }
 
-    const accountSuffix = activeConfigDir ? ` [${activeConfigDir}]` : "";
-    const slotId = statusBoard.allocate(`${modelDisplay}${accountSuffix}`);
+    if (claudeTermsAcceptanceRequired) {
+      throw new Error(
+        "Claude CLI account action required. Accept the updated Consumer Terms and Privacy Policy at claude.ai using the account shown in `claude /status`, then restart vibrator.",
+      );
+    }
+
+    const slotId = statusBoard.allocate(modelDisplay);
 
     try {
       const result = await runCommand(
@@ -1626,20 +1595,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           : `Claude [${modelDisplay}] error [${formatElapsed()}]`,
       );
       if (quotaMessage) {
-        if (this.accountManager && activeConfigDir) {
-          // In multi-account mode, record the rate limit against this specific
-          // account so subsequent invocations can rotate to another one.
-          await this.accountManager.markRateLimited(activeConfigDir, quotaMessage.blockedUntilMs);
-          const remaining = this.accountManager.acquireAccount();
-          const earliestMs = remaining === undefined ? this.accountManager.earliestAvailableMs() : undefined;
-          const suffix = remaining !== undefined
-            ? ` Rotating to next available account.`
-            : ` No more accounts available; waiting until ${formatLocalTime(earliestMs ?? quotaMessage.blockedUntilMs)}.`;
-          throw new Error(quotaMessage.text + suffix, { cause: error });
-        } else {
-          claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;
-          throw new Error(quotaMessage.text, { cause: error });
-        }
+        claudeQuotaBlockedUntilMs = quotaMessage.blockedUntilMs;
+        throw new Error(quotaMessage.text, { cause: error });
       }
       if (isClaudeTermsAcceptanceMessage(message)) {
         claudeTermsAcceptanceRequired = true;

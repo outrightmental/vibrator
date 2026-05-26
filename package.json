@@ -7,11 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "start": "npm run build && node dist/src/index.js",
-    "test": "node --import tsx --test $(find test -name '*.test.ts' | sort)",
-    "add-claude-credential": "tsx src/claude-credential-cli.ts add",
-    "list-claude-credentials": "tsx src/claude-credential-cli.ts list",
-    "remove-claude-credential": "tsx src/claude-credential-cli.ts remove",
-    "activate-claude-credential": "tsx src/claude-credential-cli.ts activate"
+    "test": "node --import tsx --test $(find test -name '*.test.ts' | sort)"
   },
   "repository": {
     "type": "git",
