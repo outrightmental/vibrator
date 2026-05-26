@@ -159,21 +159,23 @@ export function classifyRateLimitResponse(params: {
     isGraphQLErrorRateLimit,
   } = params;
 
-  const statusLooksRateLimited = statusCode === 403 || statusCode === 429;
+  const statusLooksRateLimited = statusCode === 429;
+  const snapshotLooksRateLimited =
+    snapshot.remaining === 0 || snapshot.retryAfterMs !== undefined;
   const bodyLooksSecondary =
     typeof responseBody === "string" &&
     SECONDARY_RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(responseBody));
 
-  const shouldTreatAsRateLimited = statusLooksRateLimited || isGraphQLErrorRateLimit === true;
+  const shouldTreatAsRateLimited =
+    statusLooksRateLimited ||
+    snapshotLooksRateLimited ||
+    bodyLooksSecondary ||
+    isGraphQLErrorRateLimit === true;
   if (!shouldTreatAsRateLimited && !bodyLooksSecondary) {
     return undefined;
   }
 
-  if (
-    statusLooksRateLimited &&
-    snapshot.remaining === 0 &&
-    snapshot.resetAtMs !== undefined
-  ) {
+  if (snapshot.remaining === 0 && snapshot.resetAtMs !== undefined) {
     const blockedUntilMs = snapshot.resetAtMs + resetSkewMs;
     return {
       kind: "primary",
@@ -191,7 +193,7 @@ export function classifyRateLimitResponse(params: {
     };
   }
 
-  if (statusLooksRateLimited && snapshot.retryAfterMs !== undefined) {
+  if (snapshot.retryAfterMs !== undefined) {
     const blockedUntilMs = nowMs + snapshot.retryAfterMs + resetSkewMs;
     return {
       kind: bodyLooksSecondary ? "abuse" : "secondary",
@@ -209,7 +211,7 @@ export function classifyRateLimitResponse(params: {
     };
   }
 
-  if (statusLooksRateLimited || bodyLooksSecondary || isGraphQLErrorRateLimit === true) {
+  if (shouldTreatAsRateLimited) {
     if (snapshot.remaining === 0 && snapshot.resetAtMs !== undefined) {
       const blockedUntilMs = snapshot.resetAtMs + resetSkewMs;
       return {

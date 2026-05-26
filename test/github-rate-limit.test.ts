@@ -77,6 +77,25 @@ test("classifyRateLimitResponse classifies secondary limits with Retry-After", (
   assert.equal(hold?.waitMs, 95_000);
 });
 
+test("classifyRateLimitResponse ignores non-rate-limited 403 responses", () => {
+  const hold = classifyRateLimitResponse({
+    api: "rest",
+    statusCode: 403,
+    snapshot: {
+      observedAtMs: 1000,
+      api: "rest",
+      remaining: 4999,
+      resetAtMs: 20_000,
+    },
+    responseBody: JSON.stringify({ message: "Resource not accessible by integration" }),
+    attempt: 1,
+    nowMs: 1000,
+    resetSkewMs: 5_000,
+    secondaryFallbackWaitMs: 60_000,
+  });
+  assert.equal(hold, undefined);
+});
+
 test("isRateLimitGraphQLError detects GraphQL rate-limit errors", () => {
   const payload = { errors: [{ message: "You have exceeded a secondary rate limit" }] };
   assert.equal(isRateLimitGraphQLError(payload), true);

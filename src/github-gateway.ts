@@ -22,7 +22,6 @@ export interface GitHubApiGatewayOptions {
   eventEmitter?: EventEmitter;
   clock?: () => number;
   sleep?: (ms: number) => Promise<void>;
-  maxInFlight?: number;
   mutativeSpacingMs?: number;
   maxAttempts?: number;
   secondaryFallbackWaitMs?: number;
