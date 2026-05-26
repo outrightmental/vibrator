@@ -28,7 +28,7 @@ export class DashboardServer {
     this.host = config.host ?? "localhost";
     this.owner = config.owner;
     this.repo = config.repo;
-    this.dashboardTitle = config.dashboardTitle ?? "Vibrator";
+    this.dashboardTitle = config.dashboardTitle ?? config.repo;
 
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
     this.wss = new WebSocketServer({ server: this.server });

@@ -20,6 +20,7 @@ import { buildPlan, type ProjectModeConfig } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
+import { resolveDashboardTitle } from "./dashboard-title.js";
 import { globalEventEmitter } from "./event-emitter.js";
 import {
   broadcastRepositorySnapshot,
@@ -315,7 +316,7 @@ interface Config {
   maxConcurrency: number;
   cycleMinimumMs: number;
   dashboardPort: number;
-  dashboardTitle: string;
+  dashboardTitle: string | undefined;
   once: boolean;
   dryRun: boolean;
   noBrowser: boolean;
@@ -355,7 +356,7 @@ function parseArgs(argv: string[]): Config {
   const noBrowser = argv.includes("--no-browser");
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
-  const dashboardTitle = process.env.DASHBOARD_TITLE ?? "Vibrator";
+  const dashboardTitle = process.env.DASHBOARD_TITLE;
   const claudeModel = process.env.CLAUDE_MODEL;
   const claudeCommitModel = process.env.CLAUDE_COMMIT_MODEL;
 
@@ -736,9 +737,35 @@ async function main(): Promise<void> {
     userAgent: "vibrator",
   });
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
+  let projectTitle: string | undefined;
+  if (config.dashboardTitle === undefined && config.projectMode) {
+    try {
+      const gitHubClient = new GitHubClient({
+        owner: config.owner,
+        repo: config.repo,
+        token: await getGhToken(),
+      });
+      projectTitle = await gitHubClient.getProjectTitle(config.projectMode.projectNumber);
+    } catch (error) {
+      console.warn(
+        `[vibrator] Could not resolve project title for dashboard header: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  const dashboardTitle = resolveDashboardTitle(
+    config.dashboardTitle,
+    config.repo,
+    config.projectMode,
+    projectTitle,
+  );
 
   // Start the Dashboard server
-  const dashboard = new DashboardServer({ port: config.dashboardPort, owner: config.owner, repo: config.repo, dashboardTitle: config.dashboardTitle });
+  const dashboard = new DashboardServer({
+    port: config.dashboardPort,
+    owner: config.owner,
+    repo: config.repo,
+    dashboardTitle,
+  });
   let dashboardReady = false;
   try {
     await dashboard.initialize();

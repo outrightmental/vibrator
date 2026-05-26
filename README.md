@@ -237,7 +237,7 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `CLAUDE_MODEL` | *(Claude default)* | Claude model for implementation and review (e.g. `claude-sonnet-4-6`). |
 | `CLAUDE_COMMIT_MODEL` | `claude-haiku-4-5-20251001` | Model for commit message generation. A faster model is appropriate here. |
 | `DASHBOARD_PORT` | `3000` | HTTP port for the Dashboard server. |
-| `DASHBOARD_TITLE` | `Vibrator` | Title displayed in the Dashboard header. |
+| `DASHBOARD_TITLE` | repository name (Simple SDLC) / project title (Project SDLC) | Title displayed in the Dashboard header. |
 | `VIBRATOR_SESSION_STORE_PATH` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 | `GITHUB_PROJECT_NUMBER` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop). |
 | `VIBRATOR_REVIEWERS` | — | Comma-separated GitHub logins to request review from (Project SDLC only). |
