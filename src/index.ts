@@ -452,6 +452,7 @@ async function runEngineLoop(
       if (engineIndex === 0) {
         section("Workflow approvals");
         try {
+          note("looking up workflow runs awaiting maintainer approval…");
           const pendingRuns = await gitHubClient.listWorkflowRunsAwaitingApproval();
           if (pendingRuns.length === 0) {
             bullet("0 runs awaiting maintainer approval");
@@ -482,16 +483,22 @@ async function runEngineLoop(
         }
       }
 
+      section(`Engine ${engineIndex + 1}: Snapshot`);
+      note("loading issues, pull requests, and agent sessions from GitHub…");
       const snapshot = await loadSnapshot(
         gitHubClient,
         sessionStore,
         config.projectMode ? { projectNumber: config.projectMode.projectNumber } : undefined,
       );
       const openPullRequests = snapshot.pullRequests.filter((p) => p.state === "open");
+      bullet(
+        `${snapshot.issues.length} open issue(s), ${openPullRequests.length} open pull request(s), ${snapshot.agentSessions.filter((s) => s.status === "in_progress").length} active session(s)`,
+      );
 
       if (engineIndex === 0) {
         // Reconcile stale sessions before planning so the planner sees clean state
         section("Reconciliation");
+        note("checking for stale in-progress sessions…");
         const reconcileEvents = await reconcileSessions(sessionStore, snapshot.agentSessions);
         bullet(`${reconcileEvents.length} stale session(s) failed`);
         for (const event of reconcileEvents) {
@@ -809,6 +816,8 @@ async function main(): Promise<void> {
 
   // Ensure the "manual" label exists in the repository so users can apply it
   // to issues they want vibrator to skip.
+  section("Startup");
+  note("ensuring the \"manual\" label exists on the repository…");
   try {
     const startupGitHubClient = new GitHubClient({
       owner: config.owner,
@@ -820,10 +829,9 @@ async function main(): Promise<void> {
       "e0e0e0",
       "Prevents vibrator from automatically picking up this issue",
     );
+    bullet("\"manual\" label is present");
   } catch (error) {
-    console.warn(
-      `[vibrator] Could not ensure "manual" label exists: ${(error as Error).message}`,
-    );
+    bullet(`could not ensure "manual" label exists: ${(error as Error).message}`);
   }
 
   // ── Launch N independent engine loops ─────────────────────────────────────
