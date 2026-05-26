@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import childProcess from "node:child_process";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  getGitHubTokenFromEnv,
   GitHubClient,
   isVibratorReview,
   loadSnapshot,
@@ -46,118 +46,296 @@ test("isVibratorReview returns false for reviews from other sources", () => {
   assert.equal(isVibratorReview(undefined), false);
 });
 
-test("squashMergePullRequest retries with --admin when branch policy blocks merge", async (t) => {
-  const stderr = captureStderr(t);
-  const spawnCalls: Array<{ command: string; args: readonly string[] }> = [];
-  let mergeAttempts = 0;
+test("getGitHubTokenFromEnv prefers VIBRATOR_GITHUB_TOKEN", (t) => {
+  const previous = {
+    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+  };
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  process.env.VIBRATOR_GITHUB_TOKEN = " vibrator-token ";
+  process.env.GITHUB_TOKEN = "github-token";
+  process.env.GH_TOKEN = "gh-token";
+  assert.equal(getGitHubTokenFromEnv(), "vibrator-token");
+});
 
-  const spawnMock = t.mock.method(
-    childProcess,
-    "spawn",
-    (command: string, args: readonly string[]) => {
-      spawnCalls.push({ command, args });
+test("getGitHubTokenFromEnv falls back to GITHUB_TOKEN then GH_TOKEN", (t) => {
+  const previous = {
+    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+  };
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  delete process.env.VIBRATOR_GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = " github-token ";
+  process.env.GH_TOKEN = "gh-token";
+  assert.equal(getGitHubTokenFromEnv(), "github-token");
 
-      const child = new EventEmitter() as EventEmitter & {
-        stdout: EventEmitter;
-        stderr: EventEmitter;
-      };
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
+  delete process.env.GITHUB_TOKEN;
+  assert.equal(getGitHubTokenFromEnv(), "gh-token");
+});
 
-      queueMicrotask(() => {
-        if (args[1] === "ready") {
-          child.emit("close", 0);
-          return;
-        }
+test("getGitHubTokenFromEnv throws a clear error when no token is set", (t) => {
+  const previous = {
+    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+  };
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  delete process.env.VIBRATOR_GITHUB_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.GH_TOKEN;
+  assert.throws(
+    () => getGitHubTokenFromEnv(),
+    /Missing GitHub token\. Set VIBRATOR_GITHUB_TOKEN or GITHUB_TOKEN/,
+  );
+});
 
-        mergeAttempts += 1;
-        if (mergeAttempts === 1) {
-          child.stderr.emit(
-            "data",
-            "X Pull request outrightmental/readtheroom#160 is not mergeable: the base branch policy prohibits the merge.\n" +
-              "To use administrator privileges to immediately merge the pull request, add the `--admin` flag.\n",
-          );
-          child.emit("close", 1);
-          return;
-        }
-
-        child.emit("close", 0);
-      });
-
-      return child;
+test("squashMergePullRequest marks draft PR ready and calls squash merge API", async (t) => {
+  const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      requests.push({ url: String(url), init });
+      if (String(url).endsWith("/pulls/160") && init?.method === undefined) {
+        return new Response(JSON.stringify({ node_id: "PR_node", draft: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (String(url).endsWith("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (String(url).endsWith("/pulls/160/merge") && init?.method === "PUT") {
+        return new Response(JSON.stringify({ merged: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
     },
   );
+  t.after(() => fetchMock.mock.restore());
 
-  t.after(() => {
-    spawnMock.mock.restore();
-  });
-
-  const client = new GitHubClient({
-    owner: "outrightmental",
-    repo: "readtheroom",
-    token: "token",
-  });
-
+  const client = new GitHubClient({ owner: "outrightmental", repo: "readtheroom", token: "token" });
   await client.squashMergePullRequest(160, "Subject", "Body");
 
-  assert.equal(spawnCalls.length, 3);
-  assert.deepEqual(spawnCalls[1]?.args, [
-    "pr",
-    "merge",
-    "160",
-    "--squash",
-    "--subject",
-    "Subject",
-    "--body",
-    "Body",
-    "--repo",
-    "outrightmental/readtheroom",
+  assert.equal(requests.length, 3);
+  assert.match(requests[1]!.init?.body as string, /markPullRequestReadyForReview/);
+  assert.deepEqual(JSON.parse(requests[2]!.init?.body as string), {
+    commit_title: "Subject",
+    commit_message: "Body",
+    merge_method: "squash",
+  });
+});
+
+test("squashMergePullRequest skips ready mutation for non-draft PR", async (t) => {
+  const requests: string[] = [];
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      requests.push(String(url));
+      if (String(url).endsWith("/pulls/160") && init?.method === undefined) {
+        return new Response(JSON.stringify({ node_id: "PR_node", draft: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (String(url).endsWith("/pulls/160/merge") && init?.method === "PUT") {
+        return new Response(JSON.stringify({ merged: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "readtheroom", token: "token" });
+  await client.squashMergePullRequest(160, "Subject", "Body");
+
+  assert.deepEqual(requests, [
+    "https://api.github.com/repos/outrightmental/readtheroom/pulls/160",
+    "https://api.github.com/repos/outrightmental/readtheroom/pulls/160/merge",
   ]);
-  assert.deepEqual(spawnCalls[2]?.args, [
-    "pr",
-    "merge",
-    "160",
-    "--squash",
-    "--subject",
-    "Subject",
-    "--body",
-    "Body",
-    "--repo",
-    "outrightmental/readtheroom",
-    "--admin",
-  ]);
+});
+
+test("squashMergePullRequest surfaces protected-branch API failures clearly", async (t) => {
+  const stderr = captureStderr(t);
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      if (String(url).endsWith("/pulls/160") && init?.method === undefined) {
+        return new Response(JSON.stringify({ node_id: "PR_node", draft: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (String(url).endsWith("/pulls/160/merge") && init?.method === "PUT") {
+        return new Response(JSON.stringify({ message: "base branch policy prohibits the merge" }), {
+          status: 405,
+          statusText: "Method Not Allowed",
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "readtheroom", token: "token" });
+  let error: unknown;
+  try {
+    await client.squashMergePullRequest(160, "Subject", "Body");
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /branch protection may be blocking the merge/);
+  assert.equal((error as Error & { statusCode?: number }).statusCode, 405);
+  assert.equal(
+    ((error as Error & { cause?: { statusCode?: number } }).cause as { statusCode?: number })
+      ?.statusCode,
+    405,
+  );
   assert.match(stderr.output(), /base branch policy prohibits the merge/);
 });
 
-test("squashMergePullRequest does not retry unrelated gh merge failures", async (t) => {
-  const stderr = captureStderr(t);
-  const spawnMock = t.mock.method(
-    childProcess,
-    "spawn",
-    (_command: string, args: readonly string[]) => {
-      const child = new EventEmitter() as EventEmitter & {
-        stdout: EventEmitter;
-        stderr: EventEmitter;
-      };
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
+test("runtime source no longer shells out to gh CLI operations", () => {
+  const files: string[] = [];
+  const collect = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      const path = join(dir, entry);
+      const stat = statSync(path);
+      if (stat.isDirectory()) {
+        collect(path);
+      } else if (path.endsWith(".ts")) {
+        files.push(path);
+      }
+    }
+  };
+  collect(join(process.cwd(), "src"));
 
-      queueMicrotask(() => {
-        if (args[1] === "ready") {
-          child.emit("close", 0);
-          return;
-        }
+  const forbidden = [
+    ["gh", "auth", "token"].join(" "),
+    ["gh", "pr"].join(" "),
+    ["gh", "repo", "clone"].join(" "),
+    "runCommand(" + JSON.stringify("gh"),
+    "runShellCommand(" + JSON.stringify("gh"),
+    "spawn(" + JSON.stringify("gh"),
+  ];
+  for (const file of files) {
+    const contents = readFileSync(file, "utf8");
+    for (const needle of forbidden) {
+      assert.equal(
+        contents.includes(needle),
+        false,
+        `${file} should not contain ${needle}`,
+      );
+    }
+  }
+});
 
-        child.stderr.emit("data", "network failure\n");
-        child.emit("close", 1);
-      });
+test("claude-agent routes PR checkout metadata through the shared GitHub gateway", () => {
+  const source = readFileSync(join(process.cwd(), "src", "claude-agent.ts"), "utf8");
+  assert.equal(
+    /fetchPullRequestForCheckout[\s\S]*this\.githubGateway\.request/.test(source),
+    true,
+    "fetchPullRequestForCheckout should call githubGateway.request",
+  );
+  assert.equal(
+    /fetchPullRequestForCheckout[\s\S]*await fetch\(/.test(source),
+    false,
+    "fetchPullRequestForCheckout should not call fetch directly",
+  );
+});
 
-      return child;
+test("listOpenIssues attaches GitHub-native blocked_by dependencies to issues", async (t) => {
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+      const url = String(_url);
+
+      // REST issue list: two open issues, #336 and #327.
+      if (url.includes("/issues?") && !url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 336,
+              title: "Blocked issue",
+              body: "no blocker mentions in body",
+              state: "open",
+              created_at: "2024-01-01T00:00:00Z",
+              updated_at: "2024-01-01T00:00:00Z",
+            },
+            {
+              number: 327,
+              title: "Blocker (also blocked by another)",
+              body: "no blocker mentions in body",
+              state: "open",
+              created_at: "2024-01-02T00:00:00Z",
+              updated_at: "2024-01-02T00:00:00Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // GraphQL parent-numbers query: no sub-issues in this repo.
+      if (url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { repository: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // Issue-dependencies REST endpoint.
+      if (url.endsWith("/issues/336/dependencies/blocked_by")) {
+        return new Response(
+          JSON.stringify([
+            { number: 327, state: "open" },
+            // A closed blocker that must be filtered out.
+            { number: 325, state: "closed" },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/issues/327/dependencies/blocked_by")) {
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected fetch call to ${url}`);
     },
   );
 
   t.after(() => {
-    spawnMock.mock.restore();
+    fetchMock.mock.restore();
   });
 
   const client = new GitHubClient({
@@ -166,11 +344,81 @@ test("squashMergePullRequest does not retry unrelated gh merge failures", async 
     token: "token",
   });
 
-  await assert.rejects(
-    client.squashMergePullRequest(160, "Subject", "Body"),
-    /non-zero status 1/,
+  const issues = await client.listOpenIssues();
+  const blocked = issues.find((i) => i.number === 336);
+  const blocker = issues.find((i) => i.number === 327);
+
+  assert.deepEqual(blocked?.blockedByIssueNumbers, [327]);
+  assert.equal(
+    blocker?.blockedByIssueNumbers,
+    undefined,
+    "Issues with an empty blocked_by list must not carry the field at all.",
   );
-  assert.match(stderr.output(), /network failure/);
+});
+
+test("listOpenIssues falls back gracefully when Issue Dependencies endpoint is unavailable", async (t) => {
+  const warnOutput: string[] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    warnOutput.push(args.map(String).join(" "));
+  });
+
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request): Promise<Response> => {
+      const url = String(_url);
+
+      if (url.includes("/issues?") && !url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 5,
+              title: "Issue five",
+              body: "body",
+              state: "open",
+              created_at: "2024-01-01T00:00:00Z",
+              updated_at: "2024-01-01T00:00:00Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { repository: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (url.includes("/dependencies/blocked_by")) {
+        return new Response(JSON.stringify({ message: "Not Found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+
+  t.after(() => {
+    fetchMock.mock.restore();
+  });
+
+  const client = new GitHubClient({
+    owner: "outrightmental",
+    repo: "testrepo",
+    token: "token",
+  });
+
+  const issues = await client.listOpenIssues();
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0]?.blockedByIssueNumbers, undefined);
+  assert.ok(
+    warnOutput.some((line) => line.includes("Issue Dependencies feature")),
+    "Expected a warning explaining the dependency-endpoint degradation",
+  );
 });
 
 test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fails", async (t) => {
@@ -220,6 +468,14 @@ test("listOpenIssues falls back gracefully when parent-numbers GraphQL query fai
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
+      }
+
+      // Issue-dependencies endpoint: no dependencies in this repo.
+      if (url.includes("/dependencies/blocked_by")) {
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
       throw new Error(`Unexpected fetch call to ${url}`);
@@ -603,4 +859,38 @@ test("loadSnapshot (project mode) skips comment fetch when pr.updatedAt is not n
   assert.equal(commentsFetched, false, "comments should not be fetched when updatedAt <= lastReadAt");
   const pr = snapshot.pullRequests.find((p) => p.number === 10);
   assert.equal(pr?.hasNewCommentsSinceLastRead, undefined);
+});
+
+test("loadSnapshot does not throw when listing open issues fails", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const store = new FileSessionStore(join(dir, "sessions.json"));
+  const client = new GitHubClient({ owner: "owner", repo: "repo", token: "fake" });
+  t.mock.method(client, "listOpenIssues", async () => {
+    throw new Error("GitHub request failed (403 Forbidden) for /issues");
+  });
+  t.mock.method(client, "listOpenPullRequests", async () => [makePr()]);
+
+  const snapshot = await loadSnapshot(client, store);
+
+  assert.deepEqual(snapshot.issues, []);
+  assert.equal(snapshot.pullRequests.length, 1);
+});
+
+test("loadSnapshot does not throw when listing open pull requests fails", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const store = new FileSessionStore(join(dir, "sessions.json"));
+  const client = new GitHubClient({ owner: "owner", repo: "repo", token: "fake" });
+  t.mock.method(client, "listOpenIssues", async () => []);
+  t.mock.method(client, "listOpenPullRequests", async () => {
+    throw new Error("GitHub request failed (403 Forbidden) for /pulls?state=open");
+  });
+
+  const snapshot = await loadSnapshot(client, store);
+
+  assert.deepEqual(snapshot.pullRequests, []);
+  assert.equal(snapshot.issues.length, 0);
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type {
@@ -8,6 +8,7 @@ import type {
   AgentSessionResult,
   AgentSessionStatus,
 } from "./types.js";
+import { replaceFileCrossPlatform } from "./fs-utils.js";
 
 interface SessionState {
   sessions: AgentSession[];
@@ -25,7 +26,6 @@ interface SessionState {
 }
 
 const MAX_PERSISTED_TERMINAL_SESSIONS = 200;
-const WINDOWS_RENAME_CONFLICT_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES"]);
 
 function nowIsoString(): string {
   return new Date().toISOString();
@@ -49,56 +49,6 @@ function pruneSessions(sessions: AgentSession[]): AgentSession[] {
   return [...activeSessions, ...terminalSessions].sort(
     (left, right) => getSessionSortTimestamp(left) - getSessionSortTimestamp(right),
   );
-}
-
-async function replaceFileCrossPlatform(
-  tempFilePath: string,
-  filePath: string,
-): Promise<void> {
-  try {
-    await rename(tempFilePath, filePath);
-    return;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (!code || !WINDOWS_RENAME_CONFLICT_ERROR_CODES.has(code)) {
-      throw error;
-    }
-  }
-
-  const backupFilePath = `${filePath}.${randomUUID()}.bak`;
-  let backupCreated = false;
-
-  try {
-    try {
-      await rename(filePath, backupFilePath);
-      backupCreated = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
-
-    await rename(tempFilePath, filePath);
-  } catch (error) {
-    if (backupCreated) {
-      try {
-        await rename(backupFilePath, filePath);
-      } catch {
-        // Best effort restore before surfacing the original write failure.
-      }
-    }
-
-    await rm(tempFilePath, { force: true });
-    throw error;
-  }
-
-  if (backupCreated) {
-    try {
-      await rm(backupFilePath, { force: true });
-    } catch {
-      // Best-effort cleanup after the replacement already succeeded.
-    }
-  }
 }
 
 export class FileSessionStore {

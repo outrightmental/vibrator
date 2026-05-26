@@ -12,20 +12,17 @@ import {
   getClaudeQuotaBlockedUntilMs,
 } from "./claude-agent.js";
 import {
-  ClaudeAccountManager,
-  defaultAccountStorePath,
-  parseClaudeAccountsEnv,
-} from "./claude-account-manager.js";
-import {
   buildDefaultSessionStorePath,
-  getGhToken,
+  getGitHubTokenFromEnv,
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
+import { GitHubApiGateway } from "./github-gateway.js";
 import { buildPlan, type ProjectModeConfig } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
+import { resolveDashboardTitle } from "./dashboard-title.js";
 import { globalEventEmitter } from "./event-emitter.js";
 import {
   broadcastRepositorySnapshot,
@@ -165,6 +162,7 @@ interface PollingState {
 
 async function broadcastBetweenCycleActivity(
   config: Config,
+  githubGateway: GitHubApiGateway,
   lastSnapshot: RepositorySnapshot | null,
   seenCommitHashes: Set<string>,
   claimedActions: ReadonlySet<string>,
@@ -173,11 +171,15 @@ async function broadcastBetweenCycleActivity(
     const gitHubClient = new GitHubClient({
       owner: config.owner,
       repo: config.repo,
-      token: await getGhToken(),
+      gateway: githubGateway,
     });
     const sessionStore = new FileSessionStore(config.sessionStorePath);
 
-    const snapshot = await loadSnapshot(gitHubClient, sessionStore);
+    const snapshot = await loadSnapshot(
+      gitHubClient,
+      sessionStore,
+      config.projectMode ? { projectNumber: config.projectMode.projectNumber } : undefined,
+    );
 
     // Broadcast current repository state only when something changed
     const lastPrMap = lastSnapshot
@@ -201,6 +203,7 @@ async function broadcastBetweenCycleActivity(
       claimedImplementationIssueNumbers(claimedActions),
       new Set(),
       blockedIssueNumbers,
+      config.projectMode !== undefined,
     );
 
     // Broadcast open PRs only when their state has changed since the last poll
@@ -315,15 +318,11 @@ interface Config {
   maxConcurrency: number;
   cycleMinimumMs: number;
   dashboardPort: number;
-  dashboardTitle: string;
+  dashboardTitle: string | undefined;
   once: boolean;
   dryRun: boolean;
   noBrowser: boolean;
   sessionStorePath: string;
-  /** Paths to Claude config directories for multi-account rotation (empty = single account). */
-  claudeAccountDirs: string[];
-  /** File path for persisted Claude account rate-limit state. */
-  claudeAccountStorePath: string;
   /** Human-in-the-Loop project mode config. Undefined = standard auto-merge mode. */
   projectMode: ProjectModeConfig | undefined;
 }
@@ -359,14 +358,9 @@ function parseArgs(argv: string[]): Config {
   const noBrowser = argv.includes("--no-browser");
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
-  const dashboardTitle = process.env.DASHBOARD_TITLE ?? "Vibrator";
+  const dashboardTitle = process.env.DASHBOARD_TITLE;
   const claudeModel = process.env.CLAUDE_MODEL;
   const claudeCommitModel = process.env.CLAUDE_COMMIT_MODEL;
-  const claudeAccountDirs = process.env.CLAUDE_ACCOUNTS
-    ? parseClaudeAccountsEnv(process.env.CLAUDE_ACCOUNTS)
-    : [];
-  const claudeAccountStorePath =
-    process.env.CLAUDE_ACCOUNTS_STORE_PATH ?? defaultAccountStorePath();
 
   const projectNumberRaw = process.env.GITHUB_PROJECT_NUMBER;
   const projectNumber = projectNumberRaw
@@ -394,14 +388,14 @@ function parseArgs(argv: string[]): Config {
     dryRun,
     noBrowser,
     sessionStorePath,
-    claudeAccountDirs,
-    claudeAccountStorePath,
     projectMode,
   };
 }
 
 async function runEngineLoop(
   config: Config,
+  githubGateway: GitHubApiGateway,
+  githubToken: string,
   engineIndex: number,
   planningMutex: PlanningMutex,
   claimedActions: Set<string>,
@@ -412,23 +406,15 @@ async function runEngineLoop(
   const gitHubClient = new GitHubClient({
     owner: config.owner,
     repo: config.repo,
-    token: await getGhToken(),
+    gateway: githubGateway,
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
 
-  let accountManager: ClaudeAccountManager | undefined;
-  if (config.claudeAccountDirs.length > 0) {
-    accountManager = new ClaudeAccountManager(
-      config.claudeAccountDirs,
-      config.claudeAccountStorePath,
-    );
-    await accountManager.load();
-  }
-
   const claudeAgentClient = createClaudeAgentClient({
+    githubGateway,
+    githubToken,
     ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
     ...(config.claudeCommitModel !== undefined ? { claudeCommitModel: config.claudeCommitModel } : {}),
-    ...(accountManager !== undefined ? { accountManager } : {}),
     engineIndex,
   });
 
@@ -443,6 +429,18 @@ async function runEngineLoop(
 
     const cycleStart = Date.now();
     iterationNumber++;
+
+    const githubHold = githubGateway.currentRateLimitHold();
+    if (githubHold && Date.now() < githubHold.blockedUntilMs) {
+      globalEventEmitter.emit("engine-idle", {
+        engineIndex,
+        reason: "github-rate-limit",
+        rateLimitedUntilMs: githubHold.blockedUntilMs,
+        nextCycleAtMs: githubHold.blockedUntilMs,
+      });
+      await githubGateway.waitUntilReady();
+      continue;
+    }
 
     globalEventEmitter.emit("iteration-start", {
       iterationNumber,
@@ -544,33 +542,39 @@ async function runEngineLoop(
       // moved on to reviewing it. Any engine planning under the mutex sees a
       // fresh snapshot, so the freshest planner's view always wins.
       //
-      // Any issue with a start-implementation action in the plan is shown
-      // "planning" — including one currently being implemented (its action
-      // is claimed). Excluding claimed actions here would drop the in-flight
-      // issue's pulsing right half, leaving a left-half-only pill.
-      // Start with the planner's own start-implementation targets, then merge
-      // in any issue already claimed by an executing engine. The merge matters
-      // in project mode: once an engine moves its claimed issue to "In
-      // Progress" (outside the planning mutex), the next planner filters that
-      // issue out of `eligibleIssues`, so `plan.actions` drops it — but a
-      // cylinder is still implementing it, so the lifecycle pill must keep
-      // pulsing "implementing…" instead of falling back to absent.
-      const planningIssueNumbers = claimedImplementationIssueNumbers(claimedActions);
-      for (const a of plan.actions) {
-        if (a.type === "start-implementation") {
-          planningIssueNumbers.add(a.issueNumber);
-        }
-      }
-      broadcastLifecycleUpdate(snapshot, planningIssueNumbers, new Set(), plan.blockedIssueNumbers);
-
-      // Find the first unclaimed action
+      // Find the first unclaimed action and claim it BEFORE broadcasting, so
+      // the new claim is reflected in `claimedImplementationIssueNumbers`.
+      //
+      // The lifecycle "planning" state (the pulsing dashed right half) must
+      // coincide 1:1 with a cylinder actively working on the issue. We derive
+      // it exclusively from `claimedActions` — every claimed start-impl is
+      // about to fire (or has already fired) an `action-start` that maps the
+      // issue to a cylinder on the client. Future-plan entries (the planner's
+      // next-up start-impl targets, not yet picked by any engine) deliberately
+      // do NOT pulse: they have no cylinder mapping, so showing them as
+      // "implementing…" would render a pulsing row over a subdued/inactive
+      // pill — the bug this guards against.
       for (const a of plan.actions) {
         const key = actionKey(a);
         if (!claimedActions.has(key)) {
           claimedActions.add(key);
+          broadcastLifecycleUpdate(
+            snapshot,
+            claimedImplementationIssueNumbers(claimedActions),
+            new Set(),
+            plan.blockedIssueNumbers,
+            config.projectMode !== undefined,
+          );
           return { action: a, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
         }
       }
+      broadcastLifecycleUpdate(
+        snapshot,
+        claimedImplementationIssueNumbers(claimedActions),
+        new Set(),
+        plan.blockedIssueNumbers,
+        config.projectMode !== undefined,
+      );
       return { action: null, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
     });
 
@@ -641,14 +645,19 @@ async function runEngineLoop(
             for (const n of linked) mergedIssueNumbers.add(n);
           }
           if (mergedIssueNumbers.size > 0) {
-            broadcastLifecycleUpdate(snapshot, new Set(), mergedIssueNumbers, planned.blockedIssueNumbers);
+            broadcastLifecycleUpdate(
+              snapshot,
+              new Set(),
+              mergedIssueNumbers,
+              planned.blockedIssueNumbers,
+              config.projectMode !== undefined,
+            );
           }
         }
       } catch (error) {
         const errorMessage = (error as Error).message;
         if (isClaudeUsageLimitMessage(errorMessage)) {
-          cycleRateLimitedUntilMs =
-            getClaudeQuotaBlockedUntilMs() ?? accountManager?.earliestAvailableMs();
+          cycleRateLimitedUntilMs = getClaudeQuotaBlockedUntilMs();
         }
         globalEventEmitter.emit("action-error", {
           actionIndex: engineIndex + 1,
@@ -709,6 +718,7 @@ async function runEngineLoop(
           ({ snapshot: pollingState.lastSnapshot, seenCommitHashes: pollingState.seenCommitHashes } =
             await broadcastBetweenCycleActivity(
               config,
+              githubGateway,
               pollingState.lastSnapshot,
               pollingState.seenCommitHashes,
               claimedActions,
@@ -721,10 +731,43 @@ async function runEngineLoop(
 
 async function main(): Promise<void> {
   const config = parseArgs(process.argv.slice(2));
+  const githubToken = getGitHubTokenFromEnv();
+  const githubGateway = new GitHubApiGateway({
+    token: githubToken,
+    apiBaseUrl: process.env.GITHUB_API_BASE_URL ?? "https://api.github.com",
+    apiVersion: process.env.GITHUB_API_VERSION ?? "2022-11-28",
+    userAgent: "vibrator",
+  });
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
+  let projectTitle: string | undefined;
+  if (config.dashboardTitle === undefined && config.projectMode) {
+    try {
+      const gitHubClient = new GitHubClient({
+        owner: config.owner,
+        repo: config.repo,
+        token: githubToken,
+      });
+      projectTitle = await gitHubClient.getProjectTitle(config.projectMode.projectNumber);
+    } catch (error) {
+      console.warn(
+        `[vibrator] Could not resolve project title for dashboard header: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  const dashboardTitle = resolveDashboardTitle(
+    config.dashboardTitle,
+    config.repo,
+    config.projectMode,
+    projectTitle,
+  );
 
   // Start the Dashboard server
-  const dashboard = new DashboardServer({ port: config.dashboardPort, owner: config.owner, repo: config.repo, dashboardTitle: config.dashboardTitle });
+  const dashboard = new DashboardServer({
+    port: config.dashboardPort,
+    owner: config.owner,
+    repo: config.repo,
+    dashboardTitle,
+  });
   let dashboardReady = false;
   try {
     await dashboard.initialize();
@@ -779,7 +822,7 @@ async function main(): Promise<void> {
     const startupGitHubClient = new GitHubClient({
       owner: config.owner,
       repo: config.repo,
-      token: await getGhToken(),
+      gateway: githubGateway,
     });
     await startupGitHubClient.ensureLabelExists(
       "manual",
@@ -823,7 +866,16 @@ async function main(): Promise<void> {
   }
 
   const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
-    runEngineLoop(config, i, planningMutex, claimedActions, pollingState, shutdownSignal),
+    runEngineLoop(
+      config,
+      githubGateway,
+      githubToken,
+      i,
+      planningMutex,
+      claimedActions,
+      pollingState,
+      shutdownSignal,
+    ),
   );
 
   await Promise.all(engines);

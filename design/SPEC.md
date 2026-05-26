@@ -35,9 +35,9 @@ Agentic coding gets interesting when a repository can keep moving after a human 
 - Replacing human product direction.
 - Inventing custom merge semantics outside GitHub's own controls.
 - Maintaining a central server. `vibrator` is designed as a local or scheduled process that can be stopped and restarted.
-- Inventing a custom workflow language. It intentionally leans on issue text, PR metadata, GitHub APIs, `gh`, `git`, and `claude`.
+- Inventing a custom workflow language. It intentionally leans on issue text, PR metadata, GitHub APIs, authenticated `git`, and `claude`.
 
-`vibrator` still treats GitHub as the merge authority. Its default path is a normal squash merge after the review/fix loop is clean. If the `gh` CLI reports that the merge is blocked specifically because the base branch policy requires an administrator bypass, `vibrator` retries that same squash merge with `--admin` rather than failing the loop outright.
+`vibrator` still treats GitHub as the merge authority. Its default path is a normal squash merge through the GitHub API after the review/fix loop is clean. If branch protection blocks that API merge, `vibrator` surfaces the GitHub error instead of attempting a CLI administrator-bypass retry.
 
 ## Architecture
 
@@ -80,7 +80,6 @@ Agentic coding gets interesting when a repository can keep moving after a human 
 - `src/github.ts` wraps the GitHub REST and GraphQL surface used by the loop (issues, PRs, reviews, review threads, status checks, workflow approvals, project boards, merges).
 - `src/reconcile.ts` marks any leftover `in_progress` sessions as `failed` at the start of every iteration — every Claude action runs synchronously, so an active session can only be a crashed-process carcass.
 - `src/session-store.ts` persists session state in a local JSON file. Tracks PR comments and comment history. Auto-prunes old sessions (retains the 200 most recent).
-- `src/claude-account-manager.ts` manages rotating between multiple Claude Code accounts when rate limits are hit.
 - `src/dashboard-server.ts` serves the real-time **Dashboard** at `http://localhost:3000`. Includes the Issue → PR Lifecycle pane, live orchestrator logs, and a GitHub activity feed.
 - `src/dashboard-utils.ts` provides event-emission helpers used by `index.ts` to push orchestrator state to Dashboard clients over WebSocket.
 - `src/event-emitter.ts` is the global event system (23 event types) used for Dashboard communication.

@@ -143,10 +143,10 @@ Install dependencies:
 npm install
 ```
 
-Authenticate the CLI tools (once, if not already done):
+Configure GitHub and Claude authentication (once, if not already done):
 
 ```bash
-gh auth login
+export VIBRATOR_GITHUB_TOKEN=github_pat_...
 claude login
 ```
 
@@ -200,28 +200,45 @@ The Dashboard server still starts; the URL is printed to stdout so you can open 
 ## Requirements
 
 - Node.js 18+
-- The `claude` CLI (Claude Code) installed locally, on `PATH`, and logged in via `claude login`. Uses your Claude Code subscription — no API key required.
-- The `gh` CLI installed locally, on `PATH`, and logged in via `gh auth login` with `contents:write`, `pull_requests:write`, and `issues:read` access to the target repository. Used for all GitHub API calls, repo cloning, PR checkouts, and squash merges.
 - `git` on `PATH`.
+- A GitHub PAT exposed as `VIBRATOR_GITHUB_TOKEN` or `GITHUB_TOKEN`.
+- The `claude` CLI (Claude Code) installed locally, on `PATH`, and logged in via `claude login`. Uses your Claude Code subscription — no API key required.
 
 ## Configuration
 
-Authentication is handled entirely by the `gh` and `claude` CLI tools. No API keys or tokens need to be set as environment variables.
+Vibrator uses a GitHub PAT directly for API calls and Git clone/fetch/push operations. Claude Code authentication is still handled by the `claude` CLI.
+
+**GitHub token permissions**
+
+Fine-grained PATs need access to the target repository with:
+
+- Metadata: read
+- Contents: read/write
+- Pull requests: read/write
+- Issues: read/write
+- Actions: read/write
+- Checks: read
+- Commit statuses: read
+- Projects: read/write, if using project mode
+- Workflows: write, if the agent may push workflow file changes
+
+Classic PATs may need `repo`, `project` when using project mode, and `workflow` when the agent may edit or push workflow files.
 
 **Environment variables**
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `VIBRATOR_GITHUB_TOKEN` | — | Preferred GitHub PAT used by Vibrator for API and Git operations. |
+| `GITHUB_TOKEN` | — | Fallback GitHub token / PAT used when `VIBRATOR_GITHUB_TOKEN` is unset. |
+| `GH_TOKEN` | — | Compatibility fallback only. |
 | `GITHUB_REPOSITORY` | — | Default `owner/repo` when the CLI argument is omitted. |
 | `MAX_CONCURRENCY` | `3` | Maximum active work items across open PRs and in-flight implementations. |
 | `CYCLE_MINIMUM_SECONDS` | `60` | Minimum seconds between engine cycle starts. |
 | `CLAUDE_MODEL` | *(Claude default)* | Claude model for implementation and review (e.g. `claude-sonnet-4-6`). |
 | `CLAUDE_COMMIT_MODEL` | `claude-haiku-4-5-20251001` | Model for commit message generation. A faster model is appropriate here. |
 | `DASHBOARD_PORT` | `3000` | HTTP port for the Dashboard server. |
-| `DASHBOARD_TITLE` | `Vibrator` | Title displayed in the Dashboard header. |
+| `DASHBOARD_TITLE` | repository name (Simple SDLC) / project title (Project SDLC) | Title displayed in the Dashboard header. |
 | `VIBRATOR_SESSION_STORE_PATH` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
-| `CLAUDE_ACCOUNTS` | — | Comma- or newline-separated paths to Claude config directories for multi-account rotation. See [Multi-account rotation](#multi-account-rotation). |
-| `CLAUDE_ACCOUNTS_STORE_PATH` | `~/.vibrator/claude-accounts.json` | Path for persisted Claude account rate-limit state. |
 | `GITHUB_PROJECT_NUMBER` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop). |
 | `VIBRATOR_REVIEWERS` | — | Comma-separated GitHub logins to request review from (Project SDLC only). |
 
@@ -263,18 +280,6 @@ Priority order: **Bug** > earlier milestone > later milestone > no milestone, th
 ### Parent and sub-issues
 
 GitHub sub-issues are understood natively. A parent issue is automatically blocked until all of its open sub-issues are resolved — no explicit dependency phrases needed.
-
-## Multi-account rotation
-
-If you hit Claude Code rate limits with a single account, set `CLAUDE_ACCOUNTS` to a comma- or newline-separated list of paths to Claude config directories:
-
-```bash
-CLAUDE_ACCOUNTS=/home/user/.claude-account1,/home/user/.claude-account2
-```
-
-Vibrator starts with the first account and rotates to the next one automatically when a rate limit is hit. If all accounts are rate-limited, it waits until the earliest available account is ready again.
-
-Each directory must contain a `.credentials.json` file from a previously authenticated Claude Code session (run `claude` once in each directory to authenticate).
 
 ## Development
 

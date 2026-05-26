@@ -9,12 +9,15 @@ import {
   broadcastReviewComment,
   broadcastRepositorySnapshot,
   broadcastLifecycleUpdate,
+  broadcastGitHubRateLimit,
+  broadcastGitHubRateLimitCleared,
   hasPrStateChanged,
   filterNewCommits,
 } from "../src/dashboard-utils.js";
 import { globalEventEmitter } from "../src/event-emitter.js";
 import type { DashboardEvent } from "../src/event-emitter.js";
 import type { PullRequest, Issue, Commit, RepositorySnapshot } from "../src/types.js";
+import type { GitHubRateLimitHold } from "../src/github-rate-limit.js";
 
 function captureNextEvent(eventType: string): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
@@ -230,6 +233,47 @@ test("broadcastReviewComment emits structured fields", async () => {
   assert.equal(data.prNumber, 55);
 });
 
+test("broadcastGitHubRateLimit emits machine-readable hold payload", async () => {
+  const hold: GitHubRateLimitHold = {
+    kind: "secondary",
+    api: "rest",
+    blockedUntilMs: 123_456,
+    waitMs: 60_000,
+    reason: "Secondary limit",
+    attempt: 2,
+    statusCode: 403,
+    operation: "list-issues",
+    method: "GET",
+    path: "/repos/o/r/issues",
+    snapshot: {
+      observedAtMs: 1,
+      api: "rest",
+      limit: 5000,
+      remaining: 0,
+      used: 5000,
+      resetAtMs: 120_000,
+      retryAfterMs: 60_000,
+    },
+  };
+
+  const dataPromise = captureNextEvent("github-rate-limit");
+  broadcastGitHubRateLimit(hold);
+  const data = await dataPromise;
+  assert.equal(data.kind, "secondary");
+  assert.equal(data.api, "rest");
+  assert.equal(data.blockedUntilMs, 123_456);
+  assert.equal(data.waitMs, 60_000);
+  assert.equal(data.remaining, 0);
+  assert.equal(data.operation, "list-issues");
+});
+
+test("broadcastGitHubRateLimitCleared emits cleared event", async () => {
+  const dataPromise = captureNextEvent("github-rate-limit-cleared");
+  broadcastGitHubRateLimitCleared();
+  const data = await dataPromise;
+  assert.deepEqual(data, {});
+});
+
 // broadcastRepositorySnapshot — excellence variants
 
 function makeSnapshot(overrides: {
@@ -303,6 +347,34 @@ test("broadcastLifecycleUpdate: absent when no PR and not in planning set", asyn
   assert.equal(pairs.length, 1);
   assert.equal(pairs[0]!.prPhase, "absent");
   assert.equal(pairs[0]!.pr, null);
+});
+
+test("broadcastLifecycleUpdate: all open issues appear regardless of project status", async () => {
+  const snapshot = {
+    issues: [
+      makeIssue({ number: 1, projectStatus: "Backlog" }),
+      makeIssue({ number: 2, projectStatus: "Ready" }),
+      makeIssue({ number: 3, projectStatus: "In Progress" }),
+      makeIssue({ number: 4, projectStatus: "In Review" }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, true);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } | null; prPhase: string; projectStatus?: string }>;
+  // "Ready" issue sorts before "inactive" issues; inactive issues sort by number.
+  assert.deepEqual(
+    pairs.map((p) => p.issue?.number),
+    [2, 1, 3, 4],
+    "Ready issue should appear before inactive issues; all others sort by number",
+  );
+  assert.equal(pairs[0]!.prPhase, "absent", "Ready issue is absent (workable)");
+  assert.equal(pairs[1]!.prPhase, "inactive");
+  assert.equal(pairs[1]!.projectStatus, "Backlog");
+  assert.equal(pairs[2]!.prPhase, "inactive");
+  assert.equal(pairs[3]!.prPhase, "inactive");
 });
 
 test("broadcastLifecycleUpdate: planning when issue is in planningIssueNumbers", async () => {

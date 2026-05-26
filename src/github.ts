@@ -1,9 +1,8 @@
-import childProcess, { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { join } from "node:path";
 
 import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
+import { GitHubApiGateway } from "./github-gateway.js";
 import type {
   Commit,
   Issue,
@@ -11,76 +10,26 @@ import type {
   RepositorySnapshot,
 } from "./types.js";
 
-const execFileAsync = promisify(execFile);
-
 /**
- * Returns the GitHub token for the currently authenticated `gh` CLI user.
- * Throws with a clear message if the user is not logged in.
+ * Returns the GitHub token configured for Vibrator.
+ * Prefers the app-specific variable, then common GitHub token variables.
  */
-export async function getGhToken(): Promise<string> {
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync("gh", ["auth", "token"]));
-  } catch (error) {
-    throw new Error(
-      `Could not retrieve GitHub token from the gh CLI. ` +
-      `Make sure you are logged in with \`gh auth login\`. ` +
-      `(${String(error)})`,
-    );
+export function getGitHubTokenFromEnv(): string {
+  for (const name of ["VIBRATOR_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"] as const) {
+    const token = process.env[name]?.trim();
+    if (token) {
+      return token;
+    }
   }
-  const token = stdout.trim();
-  if (!token) {
-    throw new Error(
-      `The gh CLI returned an empty token. Run \`gh auth login\` to authenticate.`,
-    );
-  }
-  return token;
+  throw new Error(
+    "Missing GitHub token. Set VIBRATOR_GITHUB_TOKEN or GITHUB_TOKEN to a GitHub PAT with access to the target repository.",
+  );
 }
 
 interface PullRequestInlineComment {
   path: string;
   line: number;
   body: string;
-}
-
-interface ShellCommandError extends Error {
-  stdout?: string;
-  stderr?: string;
-  exitCode?: number | null;
-}
-
-function runShellCommand(command: string, args: readonly string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = childProcess.spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: string | Buffer) => {
-      const text = chunk.toString();
-      stdout += text;
-      process.stdout.write(text);
-    });
-    child.stderr?.on("data", (chunk: string | Buffer) => {
-      const text = chunk.toString();
-      stderr += text;
-      process.stderr.write(text);
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code !== 0) {
-        const error = new Error(
-          `Command \`${command} ${args.join(" ")}\` exited with non-zero status ${code ?? "unknown"}.`,
-        ) as ShellCommandError;
-        error.stdout = stdout;
-        error.stderr = stderr;
-        error.exitCode = code;
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
 }
 
 function mergeSortedUnique(...sources: ReadonlyArray<readonly number[]>): number[] {
@@ -127,11 +76,6 @@ interface GitHubPullRequestReviewResponse {
   commit_id: string | null;
 }
 
-interface GraphQLResponse<T> {
-  data?: T;
-  errors?: Array<{ message: string }>;
-}
-
 interface PullRequestReviewThreadsQueryResponse {
   repository: {
     pullRequest: {
@@ -152,13 +96,17 @@ interface ProjectMeta {
   statusOptions: Array<{ id: string; name: string }>;
 }
 
-function shouldRetryMergeWithAdmin(error: unknown): boolean {
+function isBranchProtectionMergeError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
-  const shellError = error as ShellCommandError;
-  const combinedOutput = `${shellError.stderr ?? ""}\n${shellError.stdout ?? ""}\n${error.message}`;
-  return /base branch policy prohibits the merge/i.test(combinedOutput);
+  const statusCode = (error as Error & { statusCode?: number }).statusCode;
+  return (
+    statusCode === 403 ||
+    statusCode === 405 ||
+    statusCode === 409 ||
+    /base branch policy prohibits the merge|protected branch|branch protection/i.test(error.message)
+  );
 }
 
 export function isVibratorReview(body: string | null | undefined): boolean {
@@ -168,7 +116,8 @@ export function isVibratorReview(body: string | null | undefined): boolean {
 export interface GitHubClientOptions {
   owner: string;
   repo: string;
-  token: string;
+  gateway?: GitHubApiGateway;
+  token?: string;
   apiBaseUrl?: string;
   htmlBaseUrl?: string;
 }
@@ -202,14 +151,19 @@ export interface PullRequestComment {
 export const VIBRATOR_COMMENT_MARKER = "<!-- vibrator:automated-comment -->";
 
 export class GitHubClient {
-  private readonly apiBaseUrl: string;
+  private readonly gateway: GitHubApiGateway;
   readonly htmlBaseUrl: string;
   readonly owner: string;
   readonly repo: string;
   private authenticatedLoginCache: Promise<string> | undefined;
 
   constructor(private readonly options: GitHubClientOptions) {
-    this.apiBaseUrl = options.apiBaseUrl ?? "https://api.github.com";
+    this.gateway =
+      options.gateway ??
+      new GitHubApiGateway({
+        token: options.token ?? getGitHubTokenFromEnv(),
+        ...(options.apiBaseUrl !== undefined ? { apiBaseUrl: options.apiBaseUrl } : {}),
+      });
     this.htmlBaseUrl = options.htmlBaseUrl ?? "https://github.com";
     this.owner = options.owner;
     this.repo = options.repo;
@@ -228,135 +182,25 @@ export class GitHubClient {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const url = `${this.apiBaseUrl}${path}`;
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${this.options.token}`,
-        "User-Agent": "vibrator",
-        ...(init?.headers ?? {}),
-      },
-    });
-
-    if (response.status === 404) {
-      throw Object.assign(
-        new Error(`GitHub request failed (404 Not Found) for ${path}`),
-        { statusCode: 404 },
-      );
-    }
-
-    if (response.status === 403) {
-      throw Object.assign(
-        new Error(`GitHub request failed (403 Forbidden) for ${path}`),
-        { statusCode: 403 },
-      );
-    }
-
-    if (!response.ok) {
-      // Read the body for full triage context before throwing.
-      let responseBody: string;
-      try {
-        responseBody = await response.text();
-      } catch {
-        responseBody = "(could not read response body)";
-      }
-
-      // Redact auth from request headers for safe logging.
-      const requestHeaders: Record<string, string> = {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "vibrator",
-        ...(init?.headers as Record<string, string> ?? {}),
-      };
-      delete requestHeaders["Authorization"];
-
-      let requestBodySummary: string;
-      if (typeof init?.body === "string") {
-        try {
-          // Pretty-print JSON bodies for readability.
-          requestBodySummary = JSON.stringify(JSON.parse(init.body), null, 2);
-        } catch {
-          requestBodySummary = init.body;
-        }
-      } else {
-        requestBodySummary = "(no body)";
-      }
-
-      console.error(
-        `[vibrator] GitHub ${response.status} ${response.statusText} — full triage context:\n` +
-        `  Method : ${init?.method ?? "GET"}\n` +
-        `  URL    : ${url}\n` +
-        `  Request headers (redacted): ${JSON.stringify(requestHeaders)}\n` +
-        `  Request body:\n${requestBodySummary}\n` +
-        `  Response body:\n${responseBody}`,
-      );
-
-      throw Object.assign(
-        new Error(
-          `GitHub request failed (${response.status} ${response.statusText}) for ${path}. ` +
-          `Response body: ${responseBody}`,
-        ),
-        { statusCode: response.status },
-      );
-    }
-
-    if (response.status === 204) {
-      return undefined as T;
-    }
-
-    return (await response.json()) as T;
+    return this.gateway.request<T>(path, init);
   }
 
   private async graphqlRequest<T>(
     query: string,
     variables: Record<string, unknown>,
   ): Promise<T> {
-    const response = await fetch(`${this.apiBaseUrl}/graphql`, {
-      method: "POST",
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${this.options.token}`,
-        "Content-Type": "application/json",
-        "User-Agent": "vibrator",
-      },
-      body: JSON.stringify({ query, variables }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`GitHub request failed (${response.status} ${response.statusText}) for /graphql`);
-    }
-
-    const payload = (await response.json()) as GraphQLResponse<T>;
-    if (!payload.data) {
-      const messages = payload.errors?.map((error) => error.message).join("; ") ?? "Unknown GraphQL error";
-      throw new Error(`GitHub GraphQL request failed: ${messages}`);
-    }
-
-    return payload.data;
+    return this.gateway.graphql<T>(query, variables);
   }
 
   private async getAllPages<T>(path: string): Promise<T[]> {
-    const results: T[] = [];
-    let page = 1;
-    while (true) {
-      const separator = path.includes("?") ? "&" : "?";
-      let response: T[];
-      try {
-        response = await this.request<T[]>(
-          `${path}${separator}per_page=100&page=${page}`,
-        );
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
-          console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check gh auth permissions or repository slug).`);
-          return results;
-        }
-        throw error;
+    try {
+      return await this.gateway.getAllPages<T>(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
+        console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check GitHub token permissions or repository slug).`);
+        return [];
       }
-      results.push(...response);
-      if (response.length < 100) {
-        return results;
-      }
-      page += 1;
+      throw error;
     }
   }
 
@@ -541,10 +385,17 @@ export class GitHubClient {
       ),
       this.fetchOpenIssueParentNumbers(),
     ]);
+    const openIssueNumbers = new Set(
+      issues
+        .filter((issue) => !issue.pull_request)
+        .map((issue) => issue.number),
+    );
+    const blockedByNumbers = await this.fetchOpenIssueBlockedByNumbers(openIssueNumbers);
     return issues
       .filter((issue) => !issue.pull_request)
       .map((issue) => {
         const parentNumber = parentNumbers.get(issue.number);
+        const blockedBy = blockedByNumbers.get(issue.number);
         return {
           number: issue.number,
           title: issue.title,
@@ -555,6 +406,9 @@ export class GitHubClient {
           type: issue.type?.name ?? null,
           labels: (issue.labels ?? []).map((label) => label.name),
           ...(parentNumber !== undefined ? { parentNumber } : {}),
+          ...(blockedBy && blockedBy.length > 0
+            ? { blockedByIssueNumbers: blockedBy }
+            : {}),
           ...(issue.milestone
             ? { milestone: { number: issue.milestone.number, title: issue.milestone.title } }
             : {}),
@@ -628,6 +482,71 @@ export class GitHubClient {
       );
     }
 
+    return result;
+  }
+
+  /**
+   * Returns a map of open issue number → list of open issue numbers that
+   * block it, sourced from GitHub's native Issue Dependencies feature
+   * (REST `/issues/{n}/dependencies/blocked_by`).
+   *
+   * This is distinct from sub-issue parent/child links and from body-text
+   * "blocked by #N" mentions. Without this call, blockers configured
+   * through the GitHub UI's Dependencies panel are invisible to the
+   * orchestrator and blocked issues are picked up anyway.
+   *
+   * Closed blockers are filtered out — they cannot block anything. Issues
+   * blocked only by closed (or otherwise non-open) blockers are omitted
+   * from the result map entirely.
+   *
+   * Issue Dependencies is a rolling-out GitHub feature. If the endpoint
+   * is unavailable on a given repository the call returns 404 (or some
+   * other error); the failure is logged once and the orchestrator
+   * continues to work without dependency-based blocking.
+   */
+  private async fetchOpenIssueBlockedByNumbers(
+    openIssueNumbers: ReadonlySet<number>,
+  ): Promise<Map<number, number[]>> {
+    const result = new Map<number, number[]>();
+    let featureUnavailable = false;
+
+    const lookups = [...openIssueNumbers].map(async (issueNumber) => {
+      if (featureUnavailable) return;
+      try {
+        const blockers = await this.request<Array<{ number: number; state: string }>>(
+          `/repos/${this.options.owner}/${this.options.repo}/issues/${issueNumber}/dependencies/blocked_by`,
+        );
+        const openBlockers = blockers
+          .filter((blocker) => blocker.state === "open" && openIssueNumbers.has(blocker.number))
+          .map((blocker) => blocker.number)
+          .sort((left, right) => left - right);
+        if (openBlockers.length > 0) {
+          result.set(issueNumber, openBlockers);
+        }
+      } catch (error) {
+        const statusCode = (error as { statusCode?: number }).statusCode;
+        if (statusCode === 404 || statusCode === 410) {
+          // Feature not available on this repo — stop trying and let the
+          // orchestrator proceed without dependency-based blocking.
+          if (!featureUnavailable) {
+            featureUnavailable = true;
+            console.warn(
+              `[vibrator] Could not fetch issue dependencies — the Issue Dependencies feature ` +
+              `may not be enabled on this repository (${statusCode}). ` +
+              `GitHub-native "blocked by" relationships will be skipped.`,
+            );
+          }
+          return;
+        }
+        // Transient or unexpected failure on a single issue: log and keep
+        // going so one bad call doesn't poison the whole list.
+        console.warn(
+          `[vibrator] Could not fetch dependencies for issue #${issueNumber}: ${String(error)}.`,
+        );
+      }
+    });
+
+    await Promise.all(lookups);
     return result;
   }
 
@@ -1032,41 +951,42 @@ export class GitHubClient {
   }
 
   /**
-   * Squash-merges a pull request using `gh pr merge --squash`, passing
-   * the provided subject and body as the commit message.
+   * Squash-merges a pull request through the GitHub REST API, passing the
+   * provided subject and body as the commit message.
    */
   async squashMergePullRequest(
     pullRequestNumber: number,
     subject: string,
     body: string,
   ): Promise<void> {
-    await runShellCommand("gh", [
-      "pr",
-      "ready",
-      String(pullRequestNumber),
-      "--repo",
-      `${this.options.owner}/${this.options.repo}`,
-    ]);
-    const mergeArgs = [
-      "pr",
-      "merge",
-      String(pullRequestNumber),
-      "--squash",
-      "--subject",
-      subject,
-      "--body",
-      body,
-      "--repo",
-      `${this.options.owner}/${this.options.repo}`,
-    ] as const;
+    await this.markPullRequestReadyForReview(pullRequestNumber);
 
     try {
-      await runShellCommand("gh", mergeArgs);
+      await this.request(
+        `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}/merge`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            commit_title: subject,
+            commit_message: body,
+            merge_method: "squash",
+          }),
+        },
+      );
     } catch (error) {
-      if (!shouldRetryMergeWithAdmin(error)) {
-        throw error;
+      if (isBranchProtectionMergeError(error)) {
+        const wrappedError = new Error(
+          `GitHub API could not squash-merge PR #${pullRequestNumber}; branch protection may be blocking the merge and the API merge endpoint does not support an administrator-bypass retry.`,
+          { cause: error },
+        ) as Error & { statusCode?: number };
+        const statusCode = (error as Error & { statusCode?: number }).statusCode;
+        if (typeof statusCode === "number") {
+          wrappedError.statusCode = statusCode;
+        }
+        throw wrappedError;
       }
-      await runShellCommand("gh", [...mergeArgs, "--admin"]);
+      throw error;
     }
   }
 
@@ -1268,7 +1188,7 @@ export class GitHubClient {
     } catch (error) {
       const statusCode = (error as Error & { statusCode?: number }).statusCode;
       // Token may lack check-runs access (403) or the ref may not exist (404).
-      // Return an empty list so Claude investigates with `gh pr checks` itself.
+      // Return an empty list so Claude investigates the PR checks itself.
       if (statusCode === 403 || statusCode === 404) {
         return [];
       }
@@ -1413,10 +1333,12 @@ export class GitHubClient {
    * No-op if the PR is already ready.
    */
   async markPullRequestReadyForReview(pullRequestNumber: number): Promise<void> {
-    // Look up the PR node ID via REST first.
-    const pr = await this.request<{ node_id: string }>(
+    const pr = await this.request<{ node_id: string; draft: boolean }>(
       `/repos/${this.options.owner}/${this.options.repo}/pulls/${pullRequestNumber}`,
     );
+    if (!pr.draft) {
+      return;
+    }
     await this.graphqlRequest(
       `
         mutation MarkPullRequestReadyForReview($prId: ID!) {
@@ -1469,6 +1391,46 @@ export class GitHubClient {
    * Cached project metadata: node ID, status field ID, and status option map.
    */
   private projectMetaCache: Map<number, ProjectMeta> | undefined;
+  private projectTitleCache: Map<number, string> | undefined;
+
+  async getProjectTitle(projectNumber: number): Promise<string> {
+    if (!this.projectTitleCache) {
+      this.projectTitleCache = new Map();
+    }
+    const cached = this.projectTitleCache.get(projectNumber);
+    if (cached) return cached;
+
+    type QueryResult = {
+      repository: {
+        projectV2: {
+          title: string;
+        } | null;
+      } | null;
+    };
+
+    const data = await this.graphqlRequest<QueryResult>(
+      `
+        query ProjectTitle($owner: String!, $repo: String!, $projectNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            projectV2(number: $projectNumber) {
+              title
+            }
+          }
+        }
+      `,
+      { owner: this.options.owner, repo: this.options.repo, projectNumber },
+    );
+
+    const title = data.repository?.projectV2?.title?.trim();
+    if (!title) {
+      throw new Error(
+        `GitHub Project #${projectNumber} not found in ${this.options.owner}/${this.options.repo}`,
+      );
+    }
+
+    this.projectTitleCache.set(projectNumber, title);
+    return title;
+  }
 
   private async getProjectMeta(projectNumber: number): Promise<ProjectMeta> {
     if (!this.projectMetaCache) {
@@ -1730,8 +1692,14 @@ export async function loadSnapshot(
   projectConfig?: { projectNumber: number },
 ): Promise<RepositorySnapshot> {
   const [issues, pullRequests, agentSessions] = await Promise.all([
-    gitHubClient.listOpenIssues(),
-    gitHubClient.listOpenPullRequests(),
+    gitHubClient.listOpenIssues().catch((error) => {
+      console.warn(`[vibrator] Could not list open issues: ${String(error)}`);
+      return [];
+    }),
+    gitHubClient.listOpenPullRequests().catch((error) => {
+      console.warn(`[vibrator] Could not list open pull requests: ${String(error)}`);
+      return [];
+    }),
     sessionStore.load(),
   ]);
 

@@ -47,6 +47,47 @@ function runOrThrow(
   return result.stdout.trim();
 }
 
+function mockSameRepoPullRequestFetch(
+  t: test.TestContext,
+  params: {
+    owner: string;
+    repo: string;
+    pullRequestNumber: number;
+    branch: string;
+    headSha: string;
+    cloneUrl: string;
+  },
+): void {
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      assert.equal(
+        String(url),
+        `https://api.github.com/repos/${params.owner}/${params.repo}/pulls/${params.pullRequestNumber}`,
+      );
+      const authorization = String(
+        init?.headers && (init.headers as Record<string, string>).Authorization,
+      );
+      assert.equal(authorization.startsWith("Bearer "), true);
+      return new Response(
+        JSON.stringify({
+          head: {
+            ref: params.branch,
+            sha: params.headSha,
+            repo: {
+              clone_url: params.cloneUrl,
+              full_name: `${params.owner}/${params.repo}`,
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    },
+  );
+  t.after(() => fetchMock.mock.restore());
+}
+
 test("extractFinalDescription returns the text between the sentinel markers", () => {
   const stdout = [
     "Tool: read file",
@@ -274,14 +315,13 @@ test("isRebaseInProgress returns false when no rebase state exists", async () =>
   assert.equal(result, false);
 });
 
-test("selfReview does not report changes when only merging latest base advances HEAD", async () => {
+test("selfReview does not report changes when only merging latest base advances HEAD", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "vibrator-self-review-base-merge-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
   const checkoutRootDir = join(root, "checkouts");
   const verifyDir = join(root, "verify");
-  const ghStubPath = join(binDir, "gh-stub.sh");
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const prBranch = "feature/no-op-review";
 
@@ -313,28 +353,6 @@ test("selfReview does not report changes when only merging latest base advances 
     const mainHeadAfterAdvance = runOrThrow("git", ["rev-parse", "HEAD"], seedDir);
 
     await writeFile(
-      ghStubPath,
-      [
-        "#!/bin/sh",
-        "set -eu",
-        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
-        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
-        "  exit 0",
-        "fi",
-        "if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"checkout\" ]; then",
-        "  git fetch origin --prune",
-        "  git checkout -B \"$VIBRATOR_TEST_PR_BRANCH\" \"origin/$VIBRATOR_TEST_PR_BRANCH\"",
-        "  exit 0",
-        "fi",
-        "echo \"unsupported gh args: $*\" >&2",
-        "exit 2",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    await chmod(ghStubPath, 0o755);
-
-    await writeFile(
       claudeStubPath,
       [
         "#!/bin/sh",
@@ -346,16 +364,21 @@ test("selfReview does not report changes when only merging latest base advances 
     );
     await chmod(claudeStubPath, 0o755);
 
-    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
-    const previousBranch = process.env.VIBRATOR_TEST_PR_BRANCH;
-    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
-    process.env.VIBRATOR_TEST_PR_BRANCH = prBranch;
+    mockSameRepoPullRequestFetch(t, {
+      owner: "example",
+      repo: "repo",
+      pullRequestNumber: 77,
+      branch: prBranch,
+      headSha: prBranchHeadBeforeMainAdvance,
+      cloneUrl: remoteDir,
+    });
 
     try {
       const client = createClaudeAgentClient({
         checkoutRootDir,
-        ghCommand: ghStubPath,
         claudeCommand: claudeStubPath,
+        githubToken: "test-token",
+        repositoryCloneUrl: remoteDir,
         claudeTimeoutMs: 120000,
       });
 
@@ -380,16 +403,7 @@ test("selfReview does not report changes when only merging latest base advances 
       const status = runOrThrow("git", ["status", "--porcelain"], verifyDir);
       assert.equal(status, "");
     } finally {
-      if (previousRemote === undefined) {
-        delete process.env.VIBRATOR_TEST_REMOTE;
-      } else {
-        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
-      }
-      if (previousBranch === undefined) {
-        delete process.env.VIBRATOR_TEST_PR_BRANCH;
-      } else {
-        process.env.VIBRATOR_TEST_PR_BRANCH = previousBranch;
-      }
+      // no env cleanup needed
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -403,7 +417,6 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
   const binDir = join(root, "bin");
   const checkoutRootDir = join(root, "checkouts");
   const verifyDir = join(root, "verify");
-  const ghStubPath = join(binDir, "gh-stub.sh");
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const issueNumber = 298;
   const issueTitle = "Affiliate Program Enhancements";
@@ -423,23 +436,6 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
     runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
     runOrThrow("git", ["branch", "-M", "main"], seedDir);
     runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
-
-    await writeFile(
-      ghStubPath,
-      [
-        "#!/bin/sh",
-        "set -eu",
-        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
-        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
-        "  exit 0",
-        "fi",
-        "echo \"unsupported gh args: $*\" >&2",
-        "exit 2",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    await chmod(ghStubPath, 0o755);
 
     await writeFile(
       claudeStubPath,
@@ -476,14 +472,12 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
     await writeFile(join(issueCheckoutDir, "tracked.txt"), "PRIOR INTERRUPTED EDIT\n", "utf8");
     await writeFile(join(issueCheckoutDir, "stale-untracked.txt"), "leftover\n", "utf8");
 
-    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
-    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
-
     try {
       const client = createClaudeAgentClient({
         checkoutRootDir,
-        ghCommand: ghStubPath,
         claudeCommand: claudeStubPath,
+        githubToken: "test-token",
+        repositoryCloneUrl: remoteDir,
         claudeTimeoutMs: 120000,
       });
 
@@ -505,11 +499,7 @@ test("implementIssue cleans stale uncommitted state left by a prior interrupted 
       // The prior interrupted edits must NOT have made it into the pushed branch.
       assert.doesNotMatch(history, /PRIOR INTERRUPTED EDIT/);
     } finally {
-      if (previousRemote === undefined) {
-        delete process.env.VIBRATOR_TEST_REMOTE;
-      } else {
-        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
-      }
+      // no env cleanup needed
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -523,7 +513,6 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
   const binDir = join(root, "bin");
   const checkoutRootDir = join(root, "checkouts");
   const verifyDir = join(root, "verify");
-  const ghStubPath = join(binDir, "gh-stub.sh");
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const issueNumber = 173;
   const issueTitle = "Gift Certificates";
@@ -548,23 +537,6 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
     runOrThrow("git", ["add", "existing.txt"], seedDir);
     runOrThrow("git", ["commit", "-m", "existing remote branch commit"], seedDir);
     runOrThrow("git", ["push", "-u", "origin", branch], seedDir);
-
-    await writeFile(
-      ghStubPath,
-      [
-        "#!/bin/sh",
-        "set -eu",
-        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
-        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
-        "  exit 0",
-        "fi",
-        "echo \"unsupported gh args: $*\" >&2",
-        "exit 2",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    await chmod(ghStubPath, 0o755);
 
     await writeFile(
       claudeStubPath,
@@ -603,8 +575,9 @@ test("implementIssue retries push by merging remote branch on non-fast-forward",
     try {
       const client = createClaudeAgentClient({
         checkoutRootDir,
-        ghCommand: ghStubPath,
         claudeCommand: claudeStubPath,
+        githubToken: "test-token",
+        repositoryCloneUrl: remoteDir,
         claudeTimeoutMs: 120000,
       });
 
@@ -652,7 +625,6 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
   const binDir = join(root, "bin");
   const checkoutRootDir = join(root, "checkouts");
   const verifyDir = join(root, "verify");
-  const ghStubPath = join(binDir, "gh-stub.sh");
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const issueNumber = 173;
   const issueTitle = "Gift Certificates";
@@ -678,23 +650,6 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
     runOrThrow("git", ["add", "existing.txt"], seedDir);
     runOrThrow("git", ["commit", "-m", "existing remote branch commit"], seedDir);
     runOrThrow("git", ["push", "-u", "origin", branch], seedDir);
-
-    await writeFile(
-      ghStubPath,
-      [
-        "#!/bin/sh",
-        "set -eu",
-        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
-        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
-        "  exit 0",
-        "fi",
-        "echo \"unsupported gh args: $*\" >&2",
-        "exit 2",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    await chmod(ghStubPath, 0o755);
 
     await writeFile(
       claudeStubPath,
@@ -742,8 +697,9 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
     try {
       const client = createClaudeAgentClient({
         checkoutRootDir,
-        ghCommand: ghStubPath,
         claudeCommand: claudeStubPath,
+        githubToken: "test-token",
+        repositoryCloneUrl: remoteDir,
         claudeTimeoutMs: 120000,
       });
 
@@ -787,14 +743,15 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
   }
 });
 
-test("generateFinalDescription passes claudeCommitModel to claude CLI", async () => {
+test("generateFinalDescription passes claudeCommitModel to claude CLI and closes stdin", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "vibrator-commit-model-test-"));
   const remoteDir = join(root, "remote.git");
   const seedDir = join(root, "seed");
   const binDir = join(root, "bin");
   const checkoutRootDir = join(root, "checkouts");
   const modelLogPath = join(root, "model-used.txt");
-  const ghStubPath = join(binDir, "gh-stub.sh");
+  const stdinLogPath = join(root, "stdin-state.txt");
+  const tokenEnvLogPath = join(root, "token-env.txt");
   const claudeStubPath = join(binDir, "claude-stub.sh");
   const prBranch = "feature/commit-model-test";
   const prNumber = 42;
@@ -818,34 +775,16 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI", async ()
     runOrThrow("git", ["add", "feature.txt"], seedDir);
     runOrThrow("git", ["commit", "-m", "add feature"], seedDir);
     runOrThrow("git", ["push", "-u", "origin", prBranch], seedDir);
-
-    await writeFile(
-      ghStubPath,
-      [
-        "#!/bin/sh",
-        "set -eu",
-        "if [ \"$1\" = \"repo\" ] && [ \"$2\" = \"clone\" ]; then",
-        "  git clone \"$VIBRATOR_TEST_REMOTE\" \"$4\"",
-        "  exit 0",
-        "fi",
-        "if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"checkout\" ]; then",
-        "  git fetch origin --prune",
-        "  git checkout -B \"$VIBRATOR_TEST_PR_BRANCH\" \"origin/$VIBRATOR_TEST_PR_BRANCH\"",
-        "  exit 0",
-        "fi",
-        "echo \"unsupported gh args: $*\" >&2",
-        "exit 2",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    await chmod(ghStubPath, 0o755);
+    const prHeadSha = runOrThrow("git", ["rev-parse", "HEAD"], seedDir);
 
     await writeFile(
       claudeStubPath,
       [
         "#!/bin/sh",
         "set -eu",
+        "STDIN_STATE=$(node -e \"const timer = setTimeout(() => { process.stdout.write('waiting'); process.exit(0); }, 200); process.stdin.on('end', () => { clearTimeout(timer); process.stdout.write('eof'); }); process.stdin.once('data', () => { clearTimeout(timer); process.stdout.write('data'); }); process.stdin.resume();\")",
+        `printf '%s' \"$STDIN_STATE\" > \"${stdinLogPath}\"`,
+        `printf '%s|%s|%s' "\${GH_TOKEN:-unset}" "\${GITHUB_TOKEN:-unset}" "\${VIBRATOR_GITHUB_TOKEN:-unset}" > \"${tokenEnvLogPath}\"`,
         // Capture model arg: parse --model <value> from $@
         "MODEL_USED=\"(none)\"",
         "while [ $# -gt 0 ]; do",
@@ -867,16 +806,29 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI", async ()
     );
     await chmod(claudeStubPath, 0o755);
 
-    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
-    const previousBranch = process.env.VIBRATOR_TEST_PR_BRANCH;
-    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
-    process.env.VIBRATOR_TEST_PR_BRANCH = prBranch;
+    mockSameRepoPullRequestFetch(t, {
+      owner: "example",
+      repo: "repo",
+      pullRequestNumber: prNumber,
+      branch: prBranch,
+      headSha: prHeadSha,
+      cloneUrl: remoteDir,
+    });
+    const previousTokens = {
+      GH_TOKEN: process.env.GH_TOKEN,
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+      VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
+    };
+    process.env.GH_TOKEN = "gh-token";
+    process.env.GITHUB_TOKEN = "github-token";
+    process.env.VIBRATOR_GITHUB_TOKEN = "vibrator-token";
 
     try {
       const client = createClaudeAgentClient({
         checkoutRootDir,
-        ghCommand: ghStubPath,
         claudeCommand: claudeStubPath,
+        githubToken: "test-token",
+        repositoryCloneUrl: remoteDir,
         claudeTimeoutMs: 120000,
         claudeCommitModel: "claude-haiku-test-model",
       });
@@ -895,17 +847,15 @@ test("generateFinalDescription passes claudeCommitModel to claude CLI", async ()
       assert.ok(description.includes("Did the thing."), "should return extracted description");
       const { readFile } = await import("node:fs/promises");
       const modelUsed = (await readFile(modelLogPath, "utf8")).trim();
+      const stdinState = (await readFile(stdinLogPath, "utf8")).trim();
+      const tokenEnv = (await readFile(tokenEnvLogPath, "utf8")).trim();
       assert.equal(modelUsed, "claude-haiku-test-model", "should pass claudeCommitModel to claude CLI");
+      assert.equal(stdinState, "eof", "should close stdin for non-interactive Claude runs");
+      assert.equal(tokenEnv, "unset|unset|unset", "should strip GitHub token env vars from Claude");
     } finally {
-      if (previousRemote === undefined) {
-        delete process.env.VIBRATOR_TEST_REMOTE;
-      } else {
-        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
-      }
-      if (previousBranch === undefined) {
-        delete process.env.VIBRATOR_TEST_PR_BRANCH;
-      } else {
-        process.env.VIBRATOR_TEST_PR_BRANCH = previousBranch;
+      for (const [key, value] of Object.entries(previousTokens)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
       }
     }
   } finally {

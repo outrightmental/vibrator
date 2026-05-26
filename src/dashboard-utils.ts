@@ -1,4 +1,5 @@
 import { globalEventEmitter } from "./event-emitter.js";
+import type { GitHubRateLimitHold } from "./github-rate-limit.js";
 import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
 // Issues labelled "manual" are intentionally hidden from the dashboard; the
@@ -20,8 +21,8 @@ export interface LifecyclePair {
    */
   issue: { number: number; title: string; state: string } | null;
   pr: { number: number; title: string; state: string; draft: boolean; checksStatus: string } | null;
-  /** absent=no PR, planning=implementation in plan, active=draft PR open, review=non-draft PR open, completed=PR closed */
-  prPhase: "absent" | "planning" | "active" | "review" | "completed";
+  /** absent=no PR, planning=implementation in plan, active=draft PR open, review=non-draft PR open, completed=PR closed, inactive=skipped due to project status */
+  prPhase: "absent" | "planning" | "active" | "review" | "completed" | "inactive";
   /** Stable color slot index (issue.number % palette length) */
   colorIndex: number;
   /** Issue numbers blocking this issue, if any (populated for pre-implementation issues) */
@@ -31,17 +32,20 @@ export interface LifecyclePair {
    * the PR half is rendered disabled (greyed out, no glow).
    */
   disabled?: boolean;
+  /** Project status label shown on inactive pills (e.g. "Backlog", "Done"). */
+  projectStatus?: string;
 }
 
 function phaseSortPriority(phase: string, isBlocked: boolean): number {
   // review (needs human attention) first, then draft active, then completed,
-  // then planning, then unblocked-absent, then blocked-absent.
+  // then planning, then unblocked-absent, then blocked-absent, then inactive.
   if (phase === "review") return 0;
   if (phase === "active") return 1;
   if (phase === "completed") return 2;
   if (phase === "planning") return 3;
   if (phase === "absent" && !isBlocked) return 4;
-  return 5; // absent && blocked
+  if (phase === "absent") return 5; // absent && blocked
+  return 6; // inactive (non-workable project status)
 }
 
 export function broadcastLifecycleUpdate(
@@ -49,6 +53,7 @@ export function broadcastLifecycleUpdate(
   planningIssueNumbers: ReadonlySet<number> = new Set(),
   completedIssueNumbers: ReadonlySet<number> = new Set(),
   blockedIssueNumbers: Readonly<Record<number, number[]>> = {},
+  projectModeEnabled = false,
 ): void {
   const pairs: LifecyclePair[] = [];
   const pairedIssueNumbers = new Set<number>();
@@ -106,15 +111,29 @@ export function broadcastLifecycleUpdate(
   // Issues not yet paired get an absent or planning right half
   for (const issue of visibleIssues) {
     if (pairedIssueNumbers.has(issue.number)) continue;
-    pairs.push({
-      issue: { number: issue.number, title: issue.title, state: issue.state },
-      pr: null,
-      prPhase: planningIssueNumbers.has(issue.number) ? "planning" : "absent",
-      colorIndex: issue.number % 6,
-      ...(blockedIssueNumbers[issue.number] !== undefined && {
-        blockedByIssueNumbers: blockedIssueNumbers[issue.number],
-      }),
-    });
+    const isInactive =
+      projectModeEnabled &&
+      issue.projectStatus !== undefined &&
+      issue.projectStatus.toLowerCase() !== "ready";
+    if (isInactive) {
+      pairs.push({
+        issue: { number: issue.number, title: issue.title, state: issue.state },
+        pr: null,
+        prPhase: "inactive",
+        colorIndex: issue.number % 6,
+        projectStatus: issue.projectStatus!,
+      });
+    } else {
+      pairs.push({
+        issue: { number: issue.number, title: issue.title, state: issue.state },
+        pr: null,
+        prPhase: planningIssueNumbers.has(issue.number) ? "planning" : "absent",
+        colorIndex: issue.number % 6,
+        ...(blockedIssueNumbers[issue.number] !== undefined && {
+          blockedByIssueNumbers: blockedIssueNumbers[issue.number],
+        }),
+      });
+    }
   }
 
   // Display order: active → completed → planning → unblocked absent → blocked absent.
@@ -353,6 +372,31 @@ export function emitLogMessage(level: "info" | "success" | "warning" | "error", 
     level,
     message,
   });
+}
+
+export function broadcastGitHubRateLimit(hold: GitHubRateLimitHold): void {
+  globalEventEmitter.emit("github-rate-limit", {
+    kind: hold.kind,
+    api: hold.api,
+    resource: hold.resource ?? null,
+    statusCode: hold.statusCode ?? null,
+    blockedUntilMs: hold.blockedUntilMs,
+    waitMs: hold.waitMs,
+    resetAtMs: hold.snapshot?.resetAtMs ?? null,
+    retryAfterMs: hold.snapshot?.retryAfterMs ?? null,
+    limit: hold.snapshot?.limit ?? null,
+    remaining: hold.snapshot?.remaining ?? null,
+    used: hold.snapshot?.used ?? null,
+    operation: hold.operation ?? null,
+    method: hold.method ?? null,
+    path: hold.path ?? null,
+    attempt: hold.attempt,
+    message: hold.reason,
+  });
+}
+
+export function broadcastGitHubRateLimitCleared(): void {
+  globalEventEmitter.emit("github-rate-limit-cleared", {});
 }
 
 /** Returns true if the PR's observable state has changed relative to a prior snapshot version. */

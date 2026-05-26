@@ -143,6 +143,17 @@ export function buildBlockedIssueIndex(issues: Issue[]): Record<number, number[]
       parentBlockers.add(issue.number);
       blockedIssueIndex.set(issue.parentNumber, parentBlockers);
     }
+
+    // GitHub's native Issue Dependencies feature ("blocked by" configured
+    // via the UI/API). This is distinct from body-text mentions and
+    // sub-issue parent/child links.
+    if (issue.blockedByIssueNumbers && issue.blockedByIssueNumbers.length > 0) {
+      const blockers = blockedIssueIndex.get(issue.number) ?? new Set<number>();
+      for (const blocker of issue.blockedByIssueNumbers) {
+        blockers.add(blocker);
+      }
+      blockedIssueIndex.set(issue.number, blockers);
+    }
   }
 
   return Object.fromEntries(

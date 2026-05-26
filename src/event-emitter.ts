@@ -19,6 +19,8 @@ export type DashboardEventType =
   | "log-message"
   | "claude-thinking"
   | "engine-idle"
+  | "github-rate-limit"
+  | "github-rate-limit-cleared"
   | "shutdown-requested"
   | "engine-shutdown"
   | "app-shutdown";
