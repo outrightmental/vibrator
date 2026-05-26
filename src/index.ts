@@ -743,7 +743,7 @@ async function main(): Promise<void> {
       const gitHubClient = new GitHubClient({
         owner: config.owner,
         repo: config.repo,
-        token: await getGhToken(),
+        token: githubToken,
       });
       projectTitle = await gitHubClient.getProjectTitle(config.projectMode.projectNumber);
     } catch (error) {
