@@ -10,11 +10,6 @@ import {
   getClaudeQuotaBlockedUntilMs,
 } from "./claude-agent.js";
 import {
-  ClaudeAccountManager,
-  defaultAccountStorePath,
-  parseClaudeAccountsEnv,
-} from "./claude-account-manager.js";
-import {
   buildDefaultSessionStorePath,
   getGitHubTokenFromEnv,
   GitHubClient,
@@ -323,10 +318,6 @@ interface Config {
   dryRun: boolean;
   noBrowser: boolean;
   sessionStorePath: string;
-  /** Paths to Claude config directories for multi-account rotation (empty = single account). */
-  claudeAccountDirs: string[];
-  /** File path for persisted Claude account rate-limit state. */
-  claudeAccountStorePath: string;
   /** Human-in-the-Loop project mode config. Undefined = standard auto-merge mode. */
   projectMode: ProjectModeConfig | undefined;
 }
@@ -365,11 +356,6 @@ function parseArgs(argv: string[]): Config {
   const dashboardTitle = process.env.DASHBOARD_TITLE ?? "Vibrator";
   const claudeModel = process.env.CLAUDE_MODEL;
   const claudeCommitModel = process.env.CLAUDE_COMMIT_MODEL;
-  const claudeAccountDirs = process.env.CLAUDE_ACCOUNTS
-    ? parseClaudeAccountsEnv(process.env.CLAUDE_ACCOUNTS)
-    : [];
-  const claudeAccountStorePath =
-    process.env.CLAUDE_ACCOUNTS_STORE_PATH ?? defaultAccountStorePath();
 
   const projectNumberRaw = process.env.GITHUB_PROJECT_NUMBER;
   const projectNumber = projectNumberRaw
@@ -397,8 +383,6 @@ function parseArgs(argv: string[]): Config {
     dryRun,
     noBrowser,
     sessionStorePath,
-    claudeAccountDirs,
-    claudeAccountStorePath,
     projectMode,
   };
 }
@@ -419,19 +403,9 @@ async function runEngineLoop(
   });
   const sessionStore = new FileSessionStore(config.sessionStorePath);
 
-  let accountManager: ClaudeAccountManager | undefined;
-  if (config.claudeAccountDirs.length > 0) {
-    accountManager = new ClaudeAccountManager(
-      config.claudeAccountDirs,
-      config.claudeAccountStorePath,
-    );
-    await accountManager.load();
-  }
-
   const claudeAgentClient = createClaudeAgentClient({
     ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
     ...(config.claudeCommitModel !== undefined ? { claudeCommitModel: config.claudeCommitModel } : {}),
-    ...(accountManager !== undefined ? { accountManager } : {}),
     engineIndex,
   });
 
@@ -662,8 +636,7 @@ async function runEngineLoop(
       } catch (error) {
         const errorMessage = (error as Error).message;
         if (isClaudeUsageLimitMessage(errorMessage)) {
-          cycleRateLimitedUntilMs =
-            getClaudeQuotaBlockedUntilMs() ?? accountManager?.earliestAvailableMs();
+          cycleRateLimitedUntilMs = getClaudeQuotaBlockedUntilMs();
         }
         globalEventEmitter.emit("action-error", {
           actionIndex: engineIndex + 1,
