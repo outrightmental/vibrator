@@ -96,7 +96,7 @@ This mode is ideal for personal projects, greenfield work, and any context where
 
 Enable Project SDLC by setting `GITHUB_PROJECT_NUMBER` to a GitHub Projects v2 board number. This mode adds a human review gate before any merge:
 
-1. Only issues in **Ready** status on the project board are picked up.
+1. Issues in **Ready** status are picked up, and issues already in **In Progress** are also picked up if they have no open PR linked.
 2. When work starts on a Ready issue, it moves to **In Progress**.
 3. After one clean self-review, Vibrator marks the PR ready-for-review, requests human review, and moves the issue to **In Review** — it never auto-merges.
 4. Vibrator resumes work automatically if:

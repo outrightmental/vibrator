@@ -81,7 +81,7 @@ const projectMode: ProjectModeConfig = { projectNumber: 1, reviewers: ["alice"] 
 
 // ─── issue filtering ─────────────────────────────────────────────────────────
 
-test("buildPlan (project mode) only picks up issues in Ready status", () => {
+test("buildPlan (project mode) picks up Ready and In Progress issues without PRs", () => {
   const snapshot: RepositorySnapshot = {
     issues: [
       createIssue({ number: 1, projectStatus: "Ready" }),
@@ -96,6 +96,21 @@ test("buildPlan (project mode) only picks up issues in Ready status", () => {
 
   assert.deepEqual(plan.actions, [
     { type: "start-implementation", issueNumber: 1 },
+    { type: "start-implementation", issueNumber: 2 },
+  ]);
+});
+
+test("buildPlan (project mode) does not start In Progress issue when an open PR already exists", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 1, projectStatus: "In Progress" })],
+    pullRequests: [createPullRequest({ number: 10, linkedIssueNumbers: [1] })],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3, projectMode);
+
+  assert.deepEqual(plan.actions, [
+    { type: "self-review", issueNumber: 1, pullRequestNumber: 10, pullRequestHeadSha: "sha-10" },
   ]);
 });
 
