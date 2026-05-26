@@ -2,6 +2,7 @@ import { join } from "node:path";
 
 import { parseClosingIssueNumbers, parseLinkedIssueNumbers } from "./orchestrator.js";
 import { FileSessionStore } from "./session-store.js";
+import { GitHubApiGateway } from "./github-gateway.js";
 import type {
   Commit,
   Issue,
@@ -75,11 +76,6 @@ interface GitHubPullRequestReviewResponse {
   commit_id: string | null;
 }
 
-interface GraphQLResponse<T> {
-  data?: T;
-  errors?: Array<{ message: string }>;
-}
-
 interface PullRequestReviewThreadsQueryResponse {
   repository: {
     pullRequest: {
@@ -120,7 +116,8 @@ export function isVibratorReview(body: string | null | undefined): boolean {
 export interface GitHubClientOptions {
   owner: string;
   repo: string;
-  token: string;
+  gateway?: GitHubApiGateway;
+  token?: string;
   apiBaseUrl?: string;
   htmlBaseUrl?: string;
 }
@@ -154,14 +151,19 @@ export interface PullRequestComment {
 export const VIBRATOR_COMMENT_MARKER = "<!-- vibrator:automated-comment -->";
 
 export class GitHubClient {
-  private readonly apiBaseUrl: string;
+  private readonly gateway: GitHubApiGateway;
   readonly htmlBaseUrl: string;
   readonly owner: string;
   readonly repo: string;
   private authenticatedLoginCache: Promise<string> | undefined;
 
   constructor(private readonly options: GitHubClientOptions) {
-    this.apiBaseUrl = options.apiBaseUrl ?? "https://api.github.com";
+    this.gateway =
+      options.gateway ??
+      new GitHubApiGateway({
+        token: options.token ?? getGitHubTokenFromEnv(),
+        ...(options.apiBaseUrl !== undefined ? { apiBaseUrl: options.apiBaseUrl } : {}),
+      });
     this.htmlBaseUrl = options.htmlBaseUrl ?? "https://github.com";
     this.owner = options.owner;
     this.repo = options.repo;
@@ -180,135 +182,25 @@ export class GitHubClient {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const url = `${this.apiBaseUrl}${path}`;
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${this.options.token}`,
-        "User-Agent": "vibrator",
-        ...(init?.headers ?? {}),
-      },
-    });
-
-    if (response.status === 404) {
-      throw Object.assign(
-        new Error(`GitHub request failed (404 Not Found) for ${path}`),
-        { statusCode: 404 },
-      );
-    }
-
-    if (response.status === 403) {
-      throw Object.assign(
-        new Error(`GitHub request failed (403 Forbidden) for ${path}`),
-        { statusCode: 403 },
-      );
-    }
-
-    if (!response.ok) {
-      // Read the body for full triage context before throwing.
-      let responseBody: string;
-      try {
-        responseBody = await response.text();
-      } catch {
-        responseBody = "(could not read response body)";
-      }
-
-      // Redact auth from request headers for safe logging.
-      const requestHeaders: Record<string, string> = {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "vibrator",
-        ...(init?.headers as Record<string, string> ?? {}),
-      };
-      delete requestHeaders["Authorization"];
-
-      let requestBodySummary: string;
-      if (typeof init?.body === "string") {
-        try {
-          // Pretty-print JSON bodies for readability.
-          requestBodySummary = JSON.stringify(JSON.parse(init.body), null, 2);
-        } catch {
-          requestBodySummary = init.body;
-        }
-      } else {
-        requestBodySummary = "(no body)";
-      }
-
-      console.error(
-        `[vibrator] GitHub ${response.status} ${response.statusText} — full triage context:\n` +
-        `  Method : ${init?.method ?? "GET"}\n` +
-        `  URL    : ${url}\n` +
-        `  Request headers (redacted): ${JSON.stringify(requestHeaders)}\n` +
-        `  Request body:\n${requestBodySummary}\n` +
-        `  Response body:\n${responseBody}`,
-      );
-
-      throw Object.assign(
-        new Error(
-          `GitHub request failed (${response.status} ${response.statusText}) for ${path}. ` +
-          `Response body: ${responseBody}`,
-        ),
-        { statusCode: response.status },
-      );
-    }
-
-    if (response.status === 204) {
-      return undefined as T;
-    }
-
-    return (await response.json()) as T;
+    return this.gateway.request<T>(path, init);
   }
 
   private async graphqlRequest<T>(
     query: string,
     variables: Record<string, unknown>,
   ): Promise<T> {
-    const response = await fetch(`${this.apiBaseUrl}/graphql`, {
-      method: "POST",
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${this.options.token}`,
-        "Content-Type": "application/json",
-        "User-Agent": "vibrator",
-      },
-      body: JSON.stringify({ query, variables }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`GitHub request failed (${response.status} ${response.statusText}) for /graphql`);
-    }
-
-    const payload = (await response.json()) as GraphQLResponse<T>;
-    if (!payload.data) {
-      const messages = payload.errors?.map((error) => error.message).join("; ") ?? "Unknown GraphQL error";
-      throw new Error(`GitHub GraphQL request failed: ${messages}`);
-    }
-
-    return payload.data;
+    return this.gateway.graphql<T>(query, variables);
   }
 
   private async getAllPages<T>(path: string): Promise<T[]> {
-    const results: T[] = [];
-    let page = 1;
-    while (true) {
-      const separator = path.includes("?") ? "&" : "?";
-      let response: T[];
-      try {
-        response = await this.request<T[]>(
-          `${path}${separator}per_page=100&page=${page}`,
-        );
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
-          console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check GitHub token permissions or repository slug).`);
-          return results;
-        }
-        throw error;
+    try {
+      return await this.gateway.getAllPages<T>(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404) {
+        console.warn(`[vibrator] WARNING: 404 for ${path} — skipping (check GitHub token permissions or repository slug).`);
+        return [];
       }
-      results.push(...response);
-      if (response.length < 100) {
-        return results;
-      }
-      page += 1;
+      throw error;
     }
   }
 

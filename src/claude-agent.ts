@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { globalEventEmitter } from "./event-emitter.js";
 import type { ClaudeAccountManager } from "./claude-account-manager.js";
 import { getGitHubTokenFromEnv } from "./github.js";
+import { GitHubApiGateway } from "./github-gateway.js";
 
 
 
@@ -309,6 +310,8 @@ interface ClaudeAgentClientOptions {
   githubToken?: string;
   /** GitHub REST API base URL. */
   githubApiBaseUrl?: string;
+  /** Shared GitHub API gateway for all REST/GraphQL calls. */
+  githubGateway?: GitHubApiGateway;
   /** Override repository clone URLs in tests or enterprise deployments. */
   repositoryCloneUrl?: string | ((owner: string, repo: string) => string);
   /** Model to pass to the claude CLI via --model. When omitted, falls back to CLAUDE_MODEL env. */
@@ -948,6 +951,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly claudeCommand: string;
   private readonly githubToken: string;
   private readonly githubApiBaseUrl: string;
+  private readonly githubGateway: GitHubApiGateway;
   private readonly repositoryCloneUrl:
     | string
     | ((owner: string, repo: string) => string)
@@ -964,6 +968,12 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     this.claudeCommand = options.claudeCommand ?? "claude";
     this.githubToken = options.githubToken ?? getGitHubTokenFromEnv();
     this.githubApiBaseUrl = options.githubApiBaseUrl ?? "https://api.github.com";
+    this.githubGateway =
+      options.githubGateway ??
+      new GitHubApiGateway({
+        token: this.githubToken,
+        apiBaseUrl: this.githubApiBaseUrl,
+      });
     this.repositoryCloneUrl = options.repositoryCloneUrl;
     this.gitAuth = new GitAuth(this.githubToken);
     this.claudeModel = options.claudeModel ?? process.env.CLAUDE_MODEL;
@@ -1244,28 +1254,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       };
     };
   }> {
-    const response = await fetch(
-      `${this.githubApiBaseUrl}/repos/${owner}/${repo}/pulls/${pullRequestNumber}`,
-      {
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: "Bearer " + this.githubToken,
-          "User-Agent": "vibrator",
-        },
-      },
-    );
-    if (!response.ok) {
-      let responseBody = "";
-      try {
-        responseBody = await response.text();
-      } catch {
-        responseBody = "(could not read response body)";
-      }
-      throw new Error(
-        `GitHub request failed (${response.status} ${response.statusText}) for PR checkout metadata. Response body: ${responseBody}`,
-      );
-    }
-    return (await response.json()) as {
+    return this.githubGateway.request<{
       head: {
         ref: string;
         sha: string;
@@ -1274,7 +1263,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           full_name: string;
         };
       };
-    };
+    }>(`/repos/${owner}/${repo}/pulls/${pullRequestNumber}`, {
+      operation: "fetch-pr-checkout-metadata",
+    });
   }
 
   private async checkoutBaseBranch(params: {

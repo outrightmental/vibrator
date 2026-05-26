@@ -1,4 +1,5 @@
 import { globalEventEmitter } from "./event-emitter.js";
+import type { GitHubRateLimitHold } from "./github-rate-limit.js";
 import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
 // Issues labelled "manual" are intentionally hidden from the dashboard; the
@@ -371,6 +372,31 @@ export function emitLogMessage(level: "info" | "success" | "warning" | "error", 
     level,
     message,
   });
+}
+
+export function broadcastGitHubRateLimit(hold: GitHubRateLimitHold): void {
+  globalEventEmitter.emit("github-rate-limit", {
+    kind: hold.kind,
+    api: hold.api,
+    resource: hold.resource ?? null,
+    statusCode: hold.statusCode ?? null,
+    blockedUntilMs: hold.blockedUntilMs,
+    waitMs: hold.waitMs,
+    resetAtMs: hold.snapshot?.resetAtMs ?? null,
+    retryAfterMs: hold.snapshot?.retryAfterMs ?? null,
+    limit: hold.snapshot?.limit ?? null,
+    remaining: hold.snapshot?.remaining ?? null,
+    used: hold.snapshot?.used ?? null,
+    operation: hold.operation ?? null,
+    method: hold.method ?? null,
+    path: hold.path ?? null,
+    attempt: hold.attempt,
+    message: hold.reason,
+  });
+}
+
+export function broadcastGitHubRateLimitCleared(): void {
+  globalEventEmitter.emit("github-rate-limit-cleared", {});
 }
 
 /** Returns true if the PR's observable state has changed relative to a prior snapshot version. */
