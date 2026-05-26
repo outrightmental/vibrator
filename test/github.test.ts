@@ -860,3 +860,37 @@ test("loadSnapshot (project mode) skips comment fetch when pr.updatedAt is not n
   const pr = snapshot.pullRequests.find((p) => p.number === 10);
   assert.equal(pr?.hasNewCommentsSinceLastRead, undefined);
 });
+
+test("loadSnapshot does not throw when listing open issues fails", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const store = new FileSessionStore(join(dir, "sessions.json"));
+  const client = new GitHubClient({ owner: "owner", repo: "repo", token: "fake" });
+  t.mock.method(client, "listOpenIssues", async () => {
+    throw new Error("GitHub request failed (403 Forbidden) for /issues");
+  });
+  t.mock.method(client, "listOpenPullRequests", async () => [makePr()]);
+
+  const snapshot = await loadSnapshot(client, store);
+
+  assert.deepEqual(snapshot.issues, []);
+  assert.equal(snapshot.pullRequests.length, 1);
+});
+
+test("loadSnapshot does not throw when listing open pull requests fails", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "vibrator-snapshot-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const store = new FileSessionStore(join(dir, "sessions.json"));
+  const client = new GitHubClient({ owner: "owner", repo: "repo", token: "fake" });
+  t.mock.method(client, "listOpenIssues", async () => []);
+  t.mock.method(client, "listOpenPullRequests", async () => {
+    throw new Error("GitHub request failed (403 Forbidden) for /pulls?state=open");
+  });
+
+  const snapshot = await loadSnapshot(client, store);
+
+  assert.deepEqual(snapshot.pullRequests, []);
+  assert.equal(snapshot.issues.length, 0);
+});

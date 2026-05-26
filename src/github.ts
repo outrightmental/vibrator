@@ -1652,8 +1652,14 @@ export async function loadSnapshot(
   projectConfig?: { projectNumber: number },
 ): Promise<RepositorySnapshot> {
   const [issues, pullRequests, agentSessions] = await Promise.all([
-    gitHubClient.listOpenIssues(),
-    gitHubClient.listOpenPullRequests(),
+    gitHubClient.listOpenIssues().catch((error) => {
+      console.warn(`[vibrator] Could not list open issues: ${String(error)}`);
+      return [];
+    }),
+    gitHubClient.listOpenPullRequests().catch((error) => {
+      console.warn(`[vibrator] Could not list open pull requests: ${String(error)}`);
+      return [];
+    }),
     sessionStore.load(),
   ]);
 
