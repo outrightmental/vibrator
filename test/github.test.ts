@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   getGitHubTokenFromEnv,
   GitHubClient,
+  isReviewBot,
   isVibratorReview,
   loadSnapshot,
   VIBRATOR_COMMENT_MARKER,
@@ -636,6 +637,61 @@ test("listPullRequestComments includes PR reviews and inline review-thread comme
   );
   assert.equal(comments[1]?.body, "You haven't implemented the favicon yet.");
   assert.equal(comments[1]?.kind, "review");
+});
+
+test("isReviewBot recognizes Copilot and CodeRabbit logins but not noise bots", () => {
+  assert.equal(isReviewBot("Copilot"), true);
+  assert.equal(isReviewBot("copilot-pull-request-reviewer[bot]"), true);
+  assert.equal(isReviewBot("coderabbitai[bot]"), true);
+  assert.equal(isReviewBot("github-actions[bot]"), false);
+  assert.equal(isReviewBot("dependabot[bot]"), false);
+  assert.equal(isReviewBot("charneykaye"), false);
+  assert.equal(isReviewBot(null), false);
+  assert.equal(isReviewBot(undefined), false);
+});
+
+test("listPullRequestComments keeps Copilot review-bot feedback but drops noise bots", async (t) => {
+  // GitHub Copilot posts its review summary under `copilot-pull-request-reviewer[bot]`
+  // and its inline comments under `Copilot` — both `Bot`-type accounts. That
+  // feedback must reach Vibrator, while CI noise bots stay excluded.
+  mockPrCommentEndpoints(t, 74, {
+    issueComments: [
+      {
+        user: { login: "github-actions[bot]", type: "Bot" },
+        body: "Visit the preview URL for this PR",
+        created_at: "2026-05-29T01:00:00Z",
+        html_url: "https://github.com/o/r/pull/74#issuecomment-1",
+      },
+    ],
+    reviews: [
+      {
+        user: { login: "copilot-pull-request-reviewer[bot]", type: "Bot" },
+        body: "## Pull request overview\n\nReplaces the legacy UI.",
+        submitted_at: "2026-05-29T01:58:25Z",
+        html_url: "https://github.com/o/r/pull/74#pullrequestreview-1",
+      },
+    ],
+    reviewThreadComments: [
+      {
+        user: { login: "Copilot", type: "Bot" },
+        body: "This variable name is unclear.",
+        created_at: "2026-05-29T01:58:30Z",
+        html_url: "https://github.com/o/r/pull/74#discussion_r1",
+      },
+    ],
+  });
+
+  const client = new GitHubClient({ owner: "outrightmental", repo: "testrepo", token: "token" });
+  const comments = await client.listPullRequestComments(74);
+
+  // The Copilot review summary and inline comment survive; the github-actions
+  // preview comment is dropped.
+  assert.deepEqual(
+    comments.map((c) => c.kind),
+    ["review", "review-thread"],
+  );
+  assert.equal(comments[0]?.author, "copilot-pull-request-reviewer[bot]");
+  assert.equal(comments[1]?.author, "Copilot");
 });
 
 test("listPullRequestComments returns empty array when there is no human feedback", async (t) => {
