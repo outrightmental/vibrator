@@ -244,7 +244,8 @@ export class GitHubClient {
   }
 
   /**
-   * Lists feedback left on a pull request by humans. This spans all three
+   * Lists feedback left on a pull request by humans and recognized code-review
+   * bots. This spans all three
    * places GitHub stores PR feedback:
    *   - issue "conversation" comments (`/issues/{n}/comments`)
    *   - review summaries, e.g. "Request changes" (`/pulls/{n}/reviews`)
