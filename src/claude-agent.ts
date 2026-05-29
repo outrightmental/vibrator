@@ -846,6 +846,15 @@ export function isNonFastForwardPushError(message: string): boolean {
   );
 }
 
+function isCommandLengthError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  return /ENAMETOOLONG|E2BIG/i.test(`${message} ${code}`);
+}
+
 export function parseOriginHeadBranch(symbolicRef: string): string | undefined {
   const trimmed = symbolicRef.trim();
   if (!trimmed) {
@@ -1543,8 +1552,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
 
     const slotId = statusBoard.allocate(modelDisplay);
 
-    try {
-      const result = await runCommand(
+    const runClaudeCli = (useStdinPrompt: boolean): Promise<string> =>
+      runCommand(
         this.claudeCommand,
         [
           "--print",
@@ -1552,7 +1561,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           "--permission-mode",
           "bypassPermissions",
           ...modelArgs,
-          prompt,
+          ...(useStdinPrompt ? [] : [prompt]),
         ],
         {
           cwd,
@@ -1560,6 +1569,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           captureStderr: true,
           env,
           timeoutMs: this.claudeTimeoutMs,
+          ...(useStdinPrompt ? { input: prompt } : {}),
           onStderrChunk: (chunk: string) => {
             const preview = extractThinkingPreview(chunk);
             if (preview) {
@@ -1573,6 +1583,20 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           },
         },
       );
+
+    try {
+      let result: string;
+      try {
+        result = await runClaudeCli(false);
+      } catch (error) {
+        if (!isCommandLengthError(error)) {
+          throw error;
+        }
+        console.warn(
+          `[vibrator] Claude prompt exceeded command-line length limits; retrying via stdin.`,
+        );
+        result = await runClaudeCli(true);
+      }
 
       statusBoard.free(slotId, `Claude [${modelDisplay}] done [${formatElapsed()}]`);
       return result;
