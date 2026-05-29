@@ -150,6 +150,24 @@ export interface PullRequestComment {
  */
 export const VIBRATOR_COMMENT_MARKER = "<!-- vibrator:automated-comment -->";
 
+/**
+ * Login substrings (lowercased) identifying third-party code-review bots whose
+ * feedback Vibrator should treat as actionable, even though they post under a
+ * `Bot` account. GitHub Copilot reviews appear under `Copilot` (inline
+ * comments) and `copilot-pull-request-reviewer[bot]` (review summaries);
+ * CodeRabbit posts as `coderabbitai[bot]`. Matched as substrings so the
+ * `[bot]` suffix and login variants are all covered. Noise bots that are NOT
+ * listed here (e.g. `github-actions[bot]`, `dependabot[bot]`) remain excluded.
+ */
+export const REVIEW_BOT_LOGIN_PATTERNS: readonly string[] = ["copilot", "coderabbit"];
+
+/** True when `login` belongs to a recognized code-review bot (see {@link REVIEW_BOT_LOGIN_PATTERNS}). */
+export function isReviewBot(login: string | null | undefined): boolean {
+  if (!login) return false;
+  const lower = login.toLowerCase();
+  return REVIEW_BOT_LOGIN_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
 export class GitHubClient {
   private readonly gateway: GitHubApiGateway;
   readonly htmlBaseUrl: string;
@@ -236,8 +254,10 @@ export class GitHubClient {
    * the hidden {@link VIBRATOR_COMMENT_MARKER} (login can't be used because
    * Vibrator may run under the same GitHub account as a human reviewer), and
    * by skipping any comment id in `options.excludeCommentIds` — the persisted
-   * set of ids Vibrator has posted. Comments authored by other bot accounts
-   * (e.g. `github-actions[bot]`) are also excluded.
+   * set of ids Vibrator has posted. Comments authored by noise bot accounts
+   * (e.g. `github-actions[bot]`) are also excluded — but feedback from
+   * recognized code-review bots (GitHub Copilot, CodeRabbit; see
+   * {@link isReviewBot}) is kept and treated exactly like human feedback.
    *
    * Comments that already carry a 👀 ("eyes") reaction are also excluded:
    * Vibrator reacts 👀 to every comment it consumes (see {@link addEyesReaction}),
@@ -282,17 +302,18 @@ export class GitHubClient {
     const alreadyRead = (reactions?: { eyes?: number }): boolean =>
       (reactions?.eyes ?? 0) > 0;
 
-    // A comment counts as human feedback unless it was posted by a bot
-    // account, carries one of Vibrator's own markers (the automated-comment
-    // marker for issue comments, or the review marker for posted reviews), or
-    // its id is in the persisted set of comments Vibrator has posted.
-    const isHumanFeedback = (
+    // A comment counts as actionable feedback unless it was posted by a noise
+    // bot account (a bot that is not a recognized code reviewer), carries one
+    // of Vibrator's own markers (the automated-comment marker for issue
+    // comments, or the review marker for posted reviews), or its id is in the
+    // persisted set of comments Vibrator has posted.
+    const isActionableFeedback = (
       id: number,
-      user: { type?: string } | null,
+      user: { login?: string; type?: string } | null,
       body: string | null,
     ): boolean => {
       if (excluded.has(id)) return false;
-      if (user?.type === "Bot") return false;
+      if (user?.type === "Bot" && !isReviewBot(user.login)) return false;
       if (body === null) return true;
       if (body.includes(VIBRATOR_COMMENT_MARKER)) return false;
       if (body.includes(VIBRATOR_REVIEW_MARKER)) return false;
@@ -302,7 +323,7 @@ export class GitHubClient {
     const result: PullRequestComment[] = [];
 
     for (const comment of issueComments) {
-      if (!isHumanFeedback(comment.id, comment.user, comment.body)) continue;
+      if (!isActionableFeedback(comment.id, comment.user, comment.body)) continue;
       if (alreadyRead(comment.reactions)) continue;
       result.push({
         id: comment.id,
@@ -320,7 +341,7 @@ export class GitHubClient {
       // those inline comments are fetched separately below).
       if (review.submitted_at === null) continue;
       if (review.body === null || review.body.trim() === "") continue;
-      if (!isHumanFeedback(review.id, review.user, review.body)) continue;
+      if (!isActionableFeedback(review.id, review.user, review.body)) continue;
       result.push({
         id: review.id,
         author: review.user?.login ?? "unknown",
@@ -332,7 +353,7 @@ export class GitHubClient {
     }
 
     for (const comment of reviewThreadComments) {
-      if (!isHumanFeedback(comment.id, comment.user, comment.body)) continue;
+      if (!isActionableFeedback(comment.id, comment.user, comment.body)) continue;
       if (alreadyRead(comment.reactions)) continue;
       result.push({
         id: comment.id,
