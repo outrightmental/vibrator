@@ -424,6 +424,18 @@ class GitAuth {
   }
 }
 
+/**
+ * Upper bound on retained child-process stderr. Only the trailing ~1.5 KB is
+ * ever surfaced (in error summaries), so a generous tail is kept and older
+ * output is discarded. This prevents a verbose, long-running child — notably
+ * `claude --verbose`, which streams its whole transcript to stderr — from
+ * accumulating unbounded memory over a run that can last up to an hour.
+ */
+const MAX_CAPTURED_STDERR_BYTES = 256 * 1024;
+
+/** Minimum spacing between live "claude-thinking" dashboard events per run. */
+const THINKING_EMIT_THROTTLE_MS = 100;
+
 function runCommand(
   command: string,
   args: readonly string[],
@@ -455,7 +467,18 @@ function runCommand(
     }
 
     const stdoutChunks: Buffer[] = [];
+    // Retain only a bounded tail of stderr: it is only ever read back as a
+    // short trailing summary, yet the source can emit far more than fits in
+    // memory. Older chunks are dropped once the cap is exceeded.
     const stderrChunks: Buffer[] = [];
+    let stderrBytes = 0;
+    const captureStderrTail = (chunk: Buffer): void => {
+      stderrChunks.push(chunk);
+      stderrBytes += chunk.length;
+      while (stderrBytes > MAX_CAPTURED_STDERR_BYTES && stderrChunks.length > 1) {
+        stderrBytes -= stderrChunks.shift()!.length;
+      }
+    };
     if (options.captureStdout && child.stdout) {
       child.stdout.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
@@ -469,7 +492,7 @@ function runCommand(
           options.onStderrChunk(chunk.toString("utf8"));
         }
         if (options.captureStderr) {
-          stderrChunks.push(chunk);
+          captureStderrTail(chunk);
         }
       });
     }
@@ -1505,6 +1528,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const modelArgs = effectiveModel ? ["--model", effectiveModel] : [];
 
     const startTime = Date.now();
+    // Timestamp of the last live thinking event broadcast to the dashboard,
+    // used to throttle the high-frequency stderr stream (see onStderrChunk).
+    let lastThinkingEmitMs = 0;
 
     // Short display name for the model: strip the leading "claude-" prefix so
     // "claude-sonnet-4-5" becomes "sonnet-4-5" and bare names are shown as-is.
@@ -1572,14 +1598,20 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           ...(useStdinPrompt ? { input: prompt } : {}),
           onStderrChunk: (chunk: string) => {
             const preview = extractThinkingPreview(chunk);
-            if (preview) {
-              statusBoard.update(slotId, preview);
-              globalEventEmitter.emit("claude-thinking", {
-                model: modelDisplay,
-                excerpt: preview,
-                ...(this.engineIndex !== undefined ? { engineIndex: this.engineIndex } : {}),
-              });
-            }
+            if (!preview) return;
+            // Keep the terminal status board current on every chunk (cheap),
+            // but throttle the dashboard broadcast: a verbose run can emit many
+            // chunks per second, and fanning every one out to WebSocket clients
+            // is what lets a slow browser balloon the server's send buffer.
+            statusBoard.update(slotId, preview);
+            const nowMs = Date.now();
+            if (nowMs - lastThinkingEmitMs < THINKING_EMIT_THROTTLE_MS) return;
+            lastThinkingEmitMs = nowMs;
+            globalEventEmitter.emit("claude-thinking", {
+              model: modelDisplay,
+              excerpt: preview,
+              ...(this.engineIndex !== undefined ? { engineIndex: this.engineIndex } : {}),
+            });
           },
         },
       );

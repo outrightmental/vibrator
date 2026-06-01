@@ -3,6 +3,15 @@ import { WebSocketServer, type WebSocket } from "ws";
 import open from "open";
 import { globalEventEmitter, type DashboardEvent } from "./event-emitter.js";
 
+/**
+ * Per-client cap on buffered (un-flushed) WebSocket data. A backgrounded or
+ * slow browser cannot drain the high-frequency event stream as fast as it is
+ * produced; without this guard `ws` queues every message in memory, which can
+ * exhaust the process. Once a client is this far behind, droppable live events
+ * are skipped for it until it catches up.
+ */
+const MAX_CLIENT_BUFFER_BYTES = 1024 * 1024;
+
 interface DashboardServerConfig {
   port: number;
   host?: string;
@@ -106,11 +115,19 @@ export class DashboardServer {
   private broadcastEvent(event: DashboardEvent): void {
     this.updateStateCache(event);
     const message = JSON.stringify(event);
+    // High-frequency, ephemeral events (the live Claude thinking stream and log
+    // lines) are skipped for any client that has fallen behind, so a slow or
+    // backgrounded browser cannot make ws buffer them without bound. Infrequent
+    // state events are always delivered and are replayed from the cache on
+    // reconnect, so the dashboard still converges to the correct state.
+    const droppableUnderBackpressure =
+      event.type === "claude-thinking" || event.type === "log-message";
     for (const client of this.wss.clients) {
-      if (client.readyState === 1) {
-        // OPEN state
-        client.send(message);
+      if (client.readyState !== 1) continue; // not OPEN
+      if (droppableUnderBackpressure && client.bufferedAmount > MAX_CLIENT_BUFFER_BYTES) {
+        continue;
       }
+      client.send(message);
     }
   }
 
