@@ -1177,6 +1177,7 @@ class DashboardUI {
     this.BROADCAST_MAX_ITEMS = 15;
     this.workerColors = CYLINDER_COLORS.slice();
     this.workerMap = {};
+    this.ws = null;
     this.shutdownRequested = false;
     this.appShutdown = false;
     this.init();
