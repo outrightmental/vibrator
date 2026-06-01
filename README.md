@@ -50,8 +50,8 @@ flowchart TD
     DEPS -->|No| MODE{"Project\nmode?"}
 
     MODE -->|"Simple SDLC\n(default)"| IMPLEMENT
-    MODE -->|"Project SDLC\n(GITHUB_PROJECT_NUMBER set)"| READY{"Issue status\n= Ready?"}
-    READY -->|No| SKIP_READY["⏭ Skipped — not Ready\non project board"]
+    MODE -->|"Project SDLC\n(GITHUB_PROJECT_NUMBER set)"| READY{"Issue status = Ready,\nor In Progress with\nno open PR?"}
+    READY -->|No| SKIP_READY["⏭ Skipped — not Ready,\nand not In Progress\nwithout open PR"]
     READY -->|Yes| IMPLEMENT
 
     IMPLEMENT["⚙ Claude: Implement issue\nin fresh local checkout\ncommit + push branch"]
