@@ -17,7 +17,6 @@ export type DashboardEventType =
   | "broadcast-issue-update"
   | "lifecycle-update"
   | "log-message"
-  | "claude-thinking"
   | "engine-idle"
   | "github-rate-limit"
   | "github-rate-limit-cleared"

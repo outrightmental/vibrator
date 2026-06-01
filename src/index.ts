@@ -413,7 +413,6 @@ async function runEngineLoop(
     githubToken,
     ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
     ...(config.claudeCommitModel !== undefined ? { claudeCommitModel: config.claudeCommitModel } : {}),
-    engineIndex,
   });
 
   let iterationNumber = 0;

@@ -10,7 +10,6 @@ import {
   extractFinalDescription,
   extractImplementationPayload,
   extractSelfReviewPayload,
-  extractThinkingPreview,
   FINAL_DESCRIPTION_END_MARKER,
   FINAL_DESCRIPTION_START_MARKER,
   IMPLEMENTATION_PAYLOAD_END_MARKER,
@@ -188,38 +187,6 @@ test("sanitizePullRequestTitle removes breaking-change prefix (type!:)", () => {
 
 test("sanitizePullRequestTitle removes breaking-change prefix with scope (type(scope)!:)", () => {
   assert.equal(sanitizePullRequestTitle("feat(auth)!: require MFA"), "Require MFA");
-});
-
-test("extractThinkingPreview returns all non-empty lines joined with newlines", () => {
-  const chunk = "Reading file\nAnalyzing code\nFound the issue";
-  assert.equal(extractThinkingPreview(chunk), "Reading file\nAnalyzing code\nFound the issue");
-});
-
-test("extractThinkingPreview strips ANSI escape sequences", () => {
-  // ESC codes on the last (only) line -- stripping must fire for the assertion to hold.
-  const chunk = "\x1b[32mGreen text\x1b[0m";
-  assert.equal(extractThinkingPreview(chunk), "Green text");
-});
-
-test("extractThinkingPreview strips carriage returns", () => {
-  const chunk = "line one\r\nline two\r\n";
-  assert.equal(extractThinkingPreview(chunk), "line one\nline two");
-});
-
-test("extractThinkingPreview returns empty string for empty input", () => {
-  assert.equal(extractThinkingPreview(""), "");
-});
-
-test("extractThinkingPreview returns empty string for whitespace-only input", () => {
-  assert.equal(extractThinkingPreview("   \n   \n"), "");
-});
-
-test("extractThinkingPreview truncates individual lines longer than 200 characters", () => {
-  const longLine = "x".repeat(250);
-  const result = extractThinkingPreview(longLine);
-  // 197 kept chars + 1 ellipsis char = 198
-  assert.equal(result.length, 198);
-  assert.ok(result.endsWith("…"));
 });
 
 test("isClaudeUsageLimitMessage detects out-of-extra-usage text", () => {
