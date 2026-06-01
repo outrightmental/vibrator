@@ -78,6 +78,17 @@ export class DashboardServer {
       // Connection closed
     });
 
+    ws.on("message", (data: Buffer) => {
+      try {
+        const message = JSON.parse(data.toString()) as { type: string; engineIndex?: number };
+        if (message.type === "cylinder-cancel-request" && typeof message.engineIndex === "number") {
+          globalEventEmitter.emit("cylinder-cancel", { engineIndex: message.engineIndex });
+        }
+      } catch {
+        // Ignore malformed messages from clients
+      }
+    });
+
     // Immediately replay current state so a reloaded browser sees live data
     // without waiting for the next state-change event.
     this.sendCachedState(ws);
@@ -681,6 +692,34 @@ body {
   100% { transform: rotate(360deg); }
 }
 
+.cylinder-cancel-btn {
+  display: none;
+  margin-top: auto;
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.5);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  border-radius: 2px;
+  text-transform: uppercase;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.cylinder-row.active .cylinder-cancel-btn {
+  display: block;
+}
+
+.cylinder-cancel-btn:hover {
+  background: rgba(255, 0, 85, 0.15);
+  border-color: #ff0055;
+  color: #ff0055;
+}
+
 .cylinder-info {
   flex: 1;
   min-width: 0;
@@ -1138,6 +1177,7 @@ class DashboardUI {
     this.BROADCAST_MAX_ITEMS = 15;
     this.workerColors = CYLINDER_COLORS.slice();
     this.workerMap = {};
+    this.ws = null;
     this.shutdownRequested = false;
     this.appShutdown = false;
     this.init();
@@ -1303,6 +1343,7 @@ class DashboardUI {
           <div class="cylinder-info">
             <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
             <div class="cylinder-status-text">\${statusHTML}</div>
+            <button class="cylinder-cancel-btn" onclick="dashboard.cancelCylinder(\${i})">Cancel</button>
           </div>
           <div class="cylinder-spinner"></div>
         \`;
@@ -1489,15 +1530,15 @@ class DashboardUI {
   // ── WebSocket ───────────────────────────────────────────────────────────
   connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(\`\${protocol}//\${window.location.host}\`);
+    this.ws = new WebSocket(\`\${protocol}//\${window.location.host}\`);
 
-    ws.onopen = () => {
+    this.ws.onopen = () => {
       this.connected = true;
       this.updateConnectionStatus(true);
       this.addEventToStream('Connected to vibrator dashboard', -1, 'success');
     };
 
-    ws.onmessage = (event) => {
+    this.ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
         this.handleMessage(message);
@@ -1506,13 +1547,19 @@ class DashboardUI {
       }
     };
 
-    ws.onerror = () => this.updateConnectionStatus(false);
+    this.ws.onerror = () => this.updateConnectionStatus(false);
 
-    ws.onclose = () => {
+    this.ws.onclose = () => {
       this.connected = false;
       this.updateConnectionStatus(false);
       setTimeout(() => this.connectWebSocket(), 3000);
     };
+  }
+
+  cancelCylinder(engineIndex) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'cylinder-cancel-request', engineIndex }));
+    }
   }
 
   handleMessage(message) {
@@ -1556,6 +1603,9 @@ class DashboardUI {
         break;
       case 'app-shutdown':
         this.handleAppShutdown(message);
+        break;
+      case 'cylinder-cancel':
+        this.handleCylinderCancel(message);
         break;
       default:
         this.addEventToStream(\`[EVENT] \${message.type}\`, -1, 'info');
@@ -1748,6 +1798,18 @@ class DashboardUI {
       textEl.textContent = '⏹ SHUTDOWN';
     }
     this.addEventToStream('⏹ Vibrator shutdown complete', -1, 'warning');
+  }
+
+  handleCylinderCancel(message) {
+    const engineIndex = message.data.engineIndex;
+    if (engineIndex !== undefined && this.cylinders[engineIndex]) {
+      const cyl = this.cylinders[engineIndex];
+      cyl.nextCycleAtMs = null;
+      cyl.idleStatusText = 'cancelling…';
+      this.renderPanelA();
+    }
+    const idx = typeof engineIndex === 'number' ? engineIndex : -1;
+    this.addEventToStream(\`⊗ Engine \${idx + 1} cancel requested\`, idx, 'warning');
   }
 
   handleWorkflowApproval(message) {

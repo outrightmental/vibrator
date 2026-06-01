@@ -399,6 +399,7 @@ async function runEngineLoop(
   claimedActions: Set<string>,
   pollingState: PollingState,
   shutdownSignal: { requested: boolean },
+  cancelSignal: { requested: boolean },
 ): Promise<void> {
   const repo = `${config.owner}/${config.repo}`;
   const gitHubClient = new GitHubClient({
@@ -424,6 +425,7 @@ async function runEngineLoop(
       return;
     }
 
+    cancelSignal.requested = false;
     const cycleStart = Date.now();
     iterationNumber++;
 
@@ -706,7 +708,7 @@ async function runEngineLoop(
 
       const pollIntervalMs = 10000;
       const waitStart = Date.now();
-      while (Date.now() - waitStart < remainingMs && !shutdownSignal.requested) {
+      while (Date.now() - waitStart < remainingMs && !shutdownSignal.requested && !cancelSignal.requested) {
         const timeLeft = remainingMs - (Date.now() - waitStart);
         if (timeLeft <= 0) break;
 
@@ -842,6 +844,17 @@ async function main(): Promise<void> {
     seenCommitHashes: new Set<string>(),
   };
   const shutdownSignal = { requested: false };
+  const cancelSignals = Array.from({ length: config.maxConcurrency }, () => ({ requested: false }));
+
+  globalEventEmitter.subscribe((event) => {
+    if (event.type === "cylinder-cancel") {
+      const engineIndex = event.data.engineIndex as number;
+      if (typeof engineIndex === "number" && engineIndex >= 0 && engineIndex < cancelSignals.length) {
+        const signal = cancelSignals[engineIndex];
+        if (signal) signal.requested = true;
+      }
+    }
+  });
 
   // Listen for Escape key on the console to trigger graceful shutdown
   if (process.stdin.isTTY) {
@@ -873,6 +886,7 @@ async function main(): Promise<void> {
       claimedActions,
       pollingState,
       shutdownSignal,
+      cancelSignals[i]!,
     ),
   );
 
