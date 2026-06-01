@@ -22,7 +22,8 @@ export type DashboardEventType =
   | "github-rate-limit-cleared"
   | "shutdown-requested"
   | "engine-shutdown"
-  | "app-shutdown";
+  | "app-shutdown"
+  | "cylinder-cancel";
 
 export interface DashboardEvent {
   type: DashboardEventType;

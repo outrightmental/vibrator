@@ -340,3 +340,37 @@ test("DashboardServer caches and replays shutdown-requested and app-shutdown", a
   assert.ok(types.includes("shutdown-requested"), "should replay shutdown-requested");
   assert.ok(types.includes("app-shutdown"), "should replay app-shutdown");
 });
+
+test("DashboardServer broadcasts cylinder-cancel when a client sends cylinder-cancel-request", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 10,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  // Observer client: receives broadcasts
+  const observer = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 10}`);
+  const received: DashboardEvent[] = [];
+  observer.on("message", (data: Buffer) => {
+    received.push(JSON.parse(data.toString()) as DashboardEvent);
+  });
+  await new Promise<void>((resolve) => observer.once("open", resolve));
+
+  // Sender client: sends a cancel request for engine 1
+  const sender = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 10}`);
+  await new Promise<void>((resolve) => sender.once("open", resolve));
+  sender.send(JSON.stringify({ type: "cylinder-cancel-request", engineIndex: 1 }));
+
+  // Wait for the broadcast to arrive
+  await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  observer.close();
+  sender.close();
+
+  const cancelMsg = received.find((m) => m.type === "cylinder-cancel");
+  assert.ok(cancelMsg !== undefined, "observer should receive cylinder-cancel broadcast");
+  assert.equal(cancelMsg?.data.engineIndex, 1, "cylinder-cancel should carry the correct engineIndex");
+});
