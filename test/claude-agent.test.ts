@@ -710,6 +710,124 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
   }
 });
 
+test("implementIssue force-pushes when remote branch is created after a fresh start", async () => {
+  // Scenario: the feature branch does NOT exist when implementIssue begins
+  // (branchAlreadyExistsRemotely = false), so we start fresh from origin/main.
+  // Mid-way through Claude's work a race process creates the remote branch with
+  // a different commit.  Our push is rejected as non-fast-forward.  Because we
+  // started fresh, our implementation is authoritative: we should force-push and
+  // overwrite the stale race commit rather than merging it in.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-force-push-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const verifyDir = join(root, "verify");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const issueNumber = 174;
+  const issueTitle = "Force Push Test";
+  const branch = "vibrator/issue-174-force-push-test";
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    // Remote starts with only a main branch — no feature branch yet.
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+    // Intentionally NOT pushing the feature branch — it must not exist yet.
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"fresh implementation\" > implementation.txt",
+        "git add implementation.txt",
+        "git commit -m \"fresh agent implementation commit\"",
+        // Race: a concurrent process creates the feature branch on remote from
+        // main with a completely different commit.  This makes our upcoming push
+        // a non-fast-forward.
+        "RACE_DIR=\"$(mktemp -d \"${TMPDIR:-/tmp}/vibrator-force-push-race-XXXXXX\")\"",
+        "git clone \"$VIBRATOR_TEST_REMOTE\" \"$RACE_DIR/repo\" >/dev/null 2>&1",
+        "cd \"$RACE_DIR/repo\"",
+        "git checkout -b \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        "git config user.name \"Race Writer\"",
+        "git config user.email \"race@example.com\"",
+        "echo \"stale content\" > stale.txt",
+        "git add stale.txt",
+        "git commit -m \"stale race commit that should be overwritten\" >/dev/null 2>&1",
+        "git push origin \"$VIBRATOR_TEST_BRANCH\" >/dev/null 2>&1",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test PR\",\"body\":\"Closes #174\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const previousRemote = process.env.VIBRATOR_TEST_REMOTE;
+    const previousBranch = process.env.VIBRATOR_TEST_BRANCH;
+    process.env.VIBRATOR_TEST_REMOTE = remoteDir;
+    process.env.VIBRATOR_TEST_BRANCH = branch;
+
+    try {
+      const client = createClaudeAgentClient({
+        checkoutRootDir,
+        claudeCommand: claudeStubPath,
+        githubToken: "test-token",
+        repositoryCloneUrl: remoteDir,
+        claudeTimeoutMs: 120000,
+      });
+
+      const result = await client.implementIssue({
+        owner: "example",
+        repo: "repo",
+        issueNumber,
+        issueTitle,
+        issueBody: "Implement the force-push test feature.",
+        baseBranch: "main",
+      });
+
+      assert.equal(result.branch, branch);
+
+      runOrThrow("git", ["clone", remoteDir, verifyDir], root);
+      runOrThrow("git", ["checkout", branch], verifyDir);
+      const history = runOrThrow("git", ["log", "--format=%s", "-n", "20"], verifyDir);
+      const remoteHeadSha = runOrThrow("git", ["rev-parse", "HEAD"], verifyDir);
+
+      // Our fresh implementation commit must be present on the remote.
+      assert.match(history, /fresh agent implementation commit/);
+      // The stale race commit must have been overwritten by the force-push.
+      assert.doesNotMatch(history, /stale race commit/);
+      assert.equal(result.headSha, remoteHeadSha);
+    } finally {
+      if (previousRemote === undefined) {
+        delete process.env.VIBRATOR_TEST_REMOTE;
+      } else {
+        process.env.VIBRATOR_TEST_REMOTE = previousRemote;
+      }
+      if (previousBranch === undefined) {
+        delete process.env.VIBRATOR_TEST_BRANCH;
+      } else {
+        process.env.VIBRATOR_TEST_BRANCH = previousBranch;
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("generateFinalDescription passes claudeCommitModel to claude CLI and closes stdin", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "vibrator-commit-model-test-"));
   const remoteDir = join(root, "remote.git");
