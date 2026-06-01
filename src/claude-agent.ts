@@ -2,37 +2,16 @@ import { spawn } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { globalEventEmitter } from "./event-emitter.js";
 import { getGitHubTokenFromEnv } from "./github.js";
 import { GitHubApiGateway } from "./github-gateway.js";
 
 
-
-// ─── Thinking-preview extractor ─────────────────────────────────────────────
-
-/**
- * Extracts readable lines from a raw verbose chunk emitted by the Claude CLI
- * stderr stream. Strips ANSI codes and returns all non-empty lines joined with
- * newlines, truncating any individual line that exceeds 200 characters.
- */
-export function extractThinkingPreview(chunk: string): string {
-  const plain = chunk
-    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "") // strip ANSI escape sequences
-    .replace(/\r/g, "");
-  const lines = plain
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    .map((l) => (l.length > 200 ? `${l.slice(0, 197)}…` : l));
-  return lines.join("\n");
-}
 
 // ─── Multi-run terminal status board ────────────────────────────────────────
 
 interface StatusSlot {
   label: string;
   startTime: number;
-  thinking: string;
 }
 
 /**
@@ -52,7 +31,7 @@ class StatusBoard {
 
   allocate(label: string): number {
     const id = this.nextId++;
-    this.slots.set(id, { label, startTime: Date.now(), thinking: "" });
+    this.slots.set(id, { label, startTime: Date.now() });
     if (this.tty) {
       // Reserve a blank terminal line for this slot.
       process.stderr.write("\n");
@@ -63,13 +42,6 @@ class StatusBoard {
       process.stderr.write(`Claude [${label}] starting…\n`);
     }
     return id;
-  }
-
-  update(id: number, thinking: string): void {
-    const slot = this.slots.get(id);
-    if (slot && thinking) {
-      slot.thinking = thinking;
-    }
   }
 
   free(id: number, doneMessage: string): void {
@@ -111,8 +83,7 @@ class StatusBoard {
 
   private renderSlot(slot: StatusSlot): string {
     const elapsed = this.fmtElapsed(slot.startTime);
-    const tail = slot.thinking ? ` ▌ ${slot.thinking.slice(0, 80)}` : "";
-    return `[${elapsed}] Claude [${slot.label}]${tail}`;
+    return `[${elapsed}] Claude [${slot.label}]`;
   }
 
   private redraw(): void {
@@ -322,8 +293,6 @@ interface ClaudeAgentClientOptions {
    * Defaults to CLAUDE_TIMEOUT_MS env var, or 30 minutes if unset.
    */
   claudeTimeoutMs?: number;
-  /** Zero-based index of the engine loop that owns this client instance. Used to route live thinking events to the correct dashboard cylinder. */
-  engineIndex?: number;
 }
 
 function defaultCheckoutRootDir(): string {
@@ -360,12 +329,6 @@ interface RunCommandOptions {
   captureStderr?: boolean;
   /** Called with each decoded stdout chunk as it arrives (requires captureStdout: true). */
   onStdoutChunk?: (chunk: string) => void;
-  /**
-   * Called with each decoded stderr chunk as it arrives. When set, stderr is
-   * piped (rather than inherited) and each chunk is forwarded to
-   * process.stderr so nothing is lost.
-   */
-  onStderrChunk?: (chunk: string) => void;
   env?: NodeJS.ProcessEnv;
   /**
    * If set, the child process is killed with SIGTERM (then SIGKILL after 5 s)
@@ -427,14 +390,10 @@ class GitAuth {
 /**
  * Upper bound on retained child-process stderr. Only the trailing ~1.5 KB is
  * ever surfaced (in error summaries), so a generous tail is kept and older
- * output is discarded. This prevents a verbose, long-running child — notably
- * `claude --verbose`, which streams its whole transcript to stderr — from
- * accumulating unbounded memory over a run that can last up to an hour.
+ * output is discarded. This prevents a long-running child from accumulating
+ * unbounded memory over a run that can last up to an hour.
  */
 const MAX_CAPTURED_STDERR_BYTES = 256 * 1024;
-
-/** Minimum spacing between live "claude-thinking" dashboard events per run. */
-const THINKING_EMIT_THROTTLE_MS = 100;
 
 function runCommand(
   command: string,
@@ -448,7 +407,7 @@ function runCommand(
       stdio: [
         options.input !== undefined ? "pipe" : "ignore",
         options.captureStdout ? "pipe" : "inherit",
-        options.onStderrChunk || options.captureStderr ? "pipe" : "inherit",
+        options.captureStderr ? "pipe" : "inherit",
       ],
     });
 
@@ -486,14 +445,9 @@ function runCommand(
       });
     }
 
-    if ((options.onStderrChunk || options.captureStderr) && child.stderr) {
+    if (options.captureStderr && child.stderr) {
       child.stderr.on("data", (chunk: Buffer) => {
-        if (options.onStderrChunk) {
-          options.onStderrChunk(chunk.toString("utf8"));
-        }
-        if (options.captureStderr) {
-          captureStderrTail(chunk);
-        }
+        captureStderrTail(chunk);
       });
     }
 
@@ -985,7 +939,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly claudeModel: string | undefined;
   private readonly claudeCommitModel: string;
   private readonly claudeTimeoutMs: number;
-  private readonly engineIndex: number | undefined;
 
   constructor(options: ClaudeAgentClientOptions = {}) {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
@@ -1007,7 +960,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     this.claudeTimeoutMs =
       options.claudeTimeoutMs ??
       (envTimeout !== undefined ? Number.parseInt(envTimeout, 10) : DEFAULT_CLAUDE_TIMEOUT_MS);
-    this.engineIndex = options.engineIndex;
   }
 
   async implementIssue(params: ImplementIssueParams): Promise<ImplementIssueResult> {
@@ -1528,9 +1480,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     const modelArgs = effectiveModel ? ["--model", effectiveModel] : [];
 
     const startTime = Date.now();
-    // Timestamp of the last live thinking event broadcast to the dashboard,
-    // used to throttle the high-frequency stderr stream (see onStderrChunk).
-    let lastThinkingEmitMs = 0;
 
     // Short display name for the model: strip the leading "claude-" prefix so
     // "claude-sonnet-4-5" becomes "sonnet-4-5" and bare names are shown as-is.
@@ -1583,7 +1532,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         this.claudeCommand,
         [
           "--print",
-          "--verbose",
           "--permission-mode",
           "bypassPermissions",
           ...modelArgs,
@@ -1596,23 +1544,6 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           env,
           timeoutMs: this.claudeTimeoutMs,
           ...(useStdinPrompt ? { input: prompt } : {}),
-          onStderrChunk: (chunk: string) => {
-            const preview = extractThinkingPreview(chunk);
-            if (!preview) return;
-            // Keep the terminal status board current on every chunk (cheap),
-            // but throttle the dashboard broadcast: a verbose run can emit many
-            // chunks per second, and fanning every one out to WebSocket clients
-            // is what lets a slow browser balloon the server's send buffer.
-            statusBoard.update(slotId, preview);
-            const nowMs = Date.now();
-            if (nowMs - lastThinkingEmitMs < THINKING_EMIT_THROTTLE_MS) return;
-            lastThinkingEmitMs = nowMs;
-            globalEventEmitter.emit("claude-thinking", {
-              model: modelDisplay,
-              excerpt: preview,
-              ...(this.engineIndex !== undefined ? { engineIndex: this.engineIndex } : {}),
-            });
-          },
         },
       );
 

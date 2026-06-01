@@ -115,13 +115,13 @@ export class DashboardServer {
   private broadcastEvent(event: DashboardEvent): void {
     this.updateStateCache(event);
     const message = JSON.stringify(event);
-    // High-frequency, ephemeral events (the live Claude thinking stream and log
-    // lines) are skipped for any client that has fallen behind, so a slow or
-    // backgrounded browser cannot make ws buffer them without bound. Infrequent
-    // state events are always delivered and are replayed from the cache on
-    // reconnect, so the dashboard still converges to the correct state.
+    // High-frequency, ephemeral events (log lines) are skipped for any client
+    // that has fallen behind, so a slow or backgrounded browser cannot make ws
+    // buffer them without bound. Infrequent state events are always delivered
+    // and are replayed from the cache on reconnect, so the dashboard still
+    // converges to the correct state.
     const droppableUnderBackpressure =
-      event.type === "claude-thinking" || event.type === "log-message";
+      event.type === "log-message";
     for (const client of this.wss.clients) {
       if (client.readyState !== 1) continue; // not OPEN
       if (droppableUnderBackpressure && client.bufferedAmount > MAX_CLIENT_BUFFER_BYTES) {
@@ -710,33 +710,6 @@ body {
   color: rgba(255, 255, 255, 0.8);
 }
 
-.cylinder-thinking-stream {
-  margin-top: 6px;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  font-size: 9px;
-  font-family: monospace;
-  color: rgba(0, 255, 136, 0.25);
-  line-height: 1.4;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-.cylinder-thinking-stream.active {
-  color: rgba(0, 255, 136, 0.65);
-}
-
-.cylinder-thinking-stream::-webkit-scrollbar {
-  width: 3px;
-}
-
-.cylinder-thinking-stream::-webkit-scrollbar-thumb {
-  background: rgba(0, 255, 136, 0.3);
-  border-radius: 2px;
-}
-
 .phase-section.active .phase-title {
   color: #ffff00;
   text-shadow: 0 0 10px rgba(255, 255, 0, 1);
@@ -1193,7 +1166,6 @@ class DashboardUI {
         prNumber: null,
         model: null,
         iterationNumber: 0,
-        thinkingLines: [],
         actionStartedAt: null,
         nextCycleAtMs: null,
         rateLimitedUntilMs: null,
@@ -1317,10 +1289,7 @@ class DashboardUI {
         ? 'Idle'
         : (formatModelName(cyl.model) || \`CYL \${cyl.index}\`);
       const cycleLabel = cyl.iterationNumber > 0 ? \` #\${cyl.iterationNumber}\` : '';
-      const thinkingLines = cyl.thinkingLines || [];
-      const hasThinking = isActive && thinkingLines.length > 0;
       const dotClass = isActive ? 'cylinder-dot pulsing' : 'cylinder-dot';
-      const thinkingClass = \`cylinder-thinking-stream\${hasThinking ? ' active' : ''}\`;
 
       let row = document.getElementById(rowId);
       if (!row) {
@@ -1334,7 +1303,6 @@ class DashboardUI {
           <div class="cylinder-info">
             <div class="cylinder-label">\${escHtml(modelLabel)}\${cycleLabel}</div>
             <div class="cylinder-status-text">\${statusHTML}</div>
-            <div class="\${thinkingClass}" id="thinking-stream-\${i}">\${thinkingLines.map(escHtml).join('\\n')}</div>
           </div>
           <div class="cylinder-spinner"></div>
         \`;
@@ -1354,13 +1322,6 @@ class DashboardUI {
 
         const statusEl = row.querySelector('.cylinder-status-text');
         if (statusEl && statusEl.innerHTML !== statusHTML) statusEl.innerHTML = statusHTML;
-
-        const thinkingEl = document.getElementById(\`thinking-stream-\${i}\`);
-        if (thinkingEl) {
-          if (thinkingEl.className !== thinkingClass) thinkingEl.className = thinkingClass;
-          const newContent = thinkingLines.join('\\n');
-          if (thinkingEl.textContent !== newContent) thinkingEl.textContent = newContent;
-        }
       }
     }
 
@@ -1584,9 +1545,6 @@ class DashboardUI {
       case 'log-message':
         this.handleLogMessage(message);
         break;
-      case 'claude-thinking':
-        this.handleClaudeThinking(message);
-        break;
       case 'engine-idle':
         this.handleEngineIdle(message);
         break;
@@ -1631,7 +1589,6 @@ class DashboardUI {
       cyl.prNumber = null;
       cyl.actionType = null;
       cyl.idleStatusText = 'idle';
-      cyl.thinkingLines = [];
       cyl.actionStartedAt = null;
       cyl.nextCycleAtMs = null;
       cyl.rateLimitedUntilMs = null;
@@ -1669,7 +1626,6 @@ class DashboardUI {
       cyl.issueNumber = message.data.issueNumber ?? null;
       cyl.prNumber = message.data.pullRequestNumber ?? null;
       cyl.model = message.data.model ?? null;
-      cyl.thinkingLines = [];
       cyl.actionStartedAt = typeof message.data.startedAt === 'number' ? message.data.startedAt : Date.now();
       cyl.nextCycleAtMs = null;
       cyl.rateLimitedUntilMs = null;
@@ -1693,7 +1649,6 @@ class DashboardUI {
     const idx = (message.data.actionIndex || 1) - 1;
     if (idx >= 0 && idx < this.cylinders.length) {
       this.cylinders[idx].status = 'done';
-      this.cylinders[idx].thinkingLines = [];
       this.renderPanelA();
     }
     this.addEventToStream(
@@ -1705,35 +1660,12 @@ class DashboardUI {
     const idx = (message.data.actionIndex || 1) - 1;
     if (idx >= 0 && idx < this.cylinders.length) {
       this.cylinders[idx].status = 'error';
-      this.cylinders[idx].thinkingLines = [];
       this.renderPanelA();
     }
     this.addEventToStream(
       \`✗ action [\${message.data.actionIndex}/\${message.data.totalActions}] failed: \${message.data.error || ''}\`,
       idx, 'error'
     );
-  }
-
-  handleClaudeThinking(message) {
-    const engineIndex = message.data.engineIndex;
-    const excerpt = message.data.excerpt || '';
-    if (engineIndex !== undefined && this.cylinders[engineIndex]) {
-      const cyl = this.cylinders[engineIndex];
-      const MAX_LINES = 200;
-      cyl.thinkingLines = cyl.thinkingLines || [];
-      const newLines = excerpt.split('\\n').filter(l => l.trim().length > 0);
-      cyl.thinkingLines.push(...newLines);
-      if (cyl.thinkingLines.length > MAX_LINES) {
-        cyl.thinkingLines = cyl.thinkingLines.slice(-MAX_LINES);
-      }
-      // Update the stream element in-place rather than re-rendering the whole panel
-      const el = document.getElementById(\`thinking-stream-\${engineIndex}\`);
-      if (el) {
-        el.textContent = cyl.thinkingLines.join('\\n');
-        el.classList.add('active');
-        el.scrollTop = el.scrollHeight;
-      }
-    }
   }
 
   handleEngineIdle(message) {
@@ -1761,7 +1693,6 @@ class DashboardUI {
       cyl.prNumber = null;
       cyl.actionType = null;
       cyl.actionStartedAt = null;
-      cyl.thinkingLines = [];
 
       this.renderPanelA();
       this.recolorAllPills();
@@ -1794,7 +1725,6 @@ class DashboardUI {
       cyl.actionType = null;
       cyl.actionStartedAt = null;
       cyl.idleStatusText = null;
-      cyl.thinkingLines = [];
 
       this.renderPanelA();
       this.recolorAllPills();
