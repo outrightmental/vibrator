@@ -38,6 +38,7 @@ const LINKED_ISSUE_PATTERN = new RegExp(
 );
 
 const ACTIVE_STATUSES = new Set(["in_progress"]);
+const PROJECT_START_STATUSES = new Set(["ready", "in progress", "in_progress"]);
 
 /** The label that opts an issue or PR out of automated work. */
 const MANUAL_LABEL = "manual";
@@ -521,8 +522,12 @@ export function buildPlan(
       return false;
     }
 
-    // In project mode, only pick up issues that are in "Ready" state.
-    if (projectMode && issue.projectStatus?.toLowerCase() !== "ready") {
+    // In project mode, pick up "Ready" issues and also "In Progress" issues
+    // that have no linked open PR/session (guarded above by unavailableIssueNumbers).
+    if (
+      projectMode &&
+      !PROJECT_START_STATUSES.has((issue.projectStatus ?? "").trim().toLowerCase())
+    ) {
       return false;
     }
 

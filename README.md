@@ -50,8 +50,8 @@ flowchart TD
     DEPS -->|No| MODE{"Project\nmode?"}
 
     MODE -->|"Simple SDLC\n(default)"| IMPLEMENT
-    MODE -->|"Project SDLC\n(GITHUB_PROJECT_NUMBER set)"| READY{"Issue status\n= Ready?"}
-    READY -->|No| SKIP_READY["⏭ Skipped — not Ready\non project board"]
+    MODE -->|"Project SDLC\n(GITHUB_PROJECT_NUMBER set)"| READY{"Issue status = Ready,\nor In Progress with\nno open PR?"}
+    READY -->|No| SKIP_READY["⏭ Skipped — not Ready,\nand not In Progress\nwithout open PR"]
     READY -->|Yes| IMPLEMENT
 
     IMPLEMENT["⚙ Claude: Implement issue\nin fresh local checkout\ncommit + push branch"]
@@ -96,7 +96,7 @@ This mode is ideal for personal projects, greenfield work, and any context where
 
 Enable Project SDLC by setting `GITHUB_PROJECT_NUMBER` to a GitHub Projects v2 board number. This mode adds a human review gate before any merge:
 
-1. Only issues in **Ready** status on the project board are picked up.
+1. Issues in **Ready** status are picked up, and issues already in **In Progress** are also picked up if they have no open PR linked and no active agent session already running.
 2. When work starts on a Ready issue, it moves to **In Progress**.
 3. After one clean self-review, Vibrator marks the PR ready-for-review, requests human review, and moves the issue to **In Review** — it never auto-merges.
 4. Vibrator resumes work automatically if:
