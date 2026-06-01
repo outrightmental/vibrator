@@ -1031,8 +1031,14 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       throw new Error(`Failed to merge latest from base branch before push: ${error}`);
     }
 
-    // Push the branch and capture the head SHA (never force-push).
-    await this.pushWithRemoteBranchMergeRetry(repoDir, ["push", "origin", branch], branch);
+    // Push the branch and capture the head SHA.
+    // If this is a fresh start from the base branch (branchAlreadyExistsRemotely
+    // was false), force-push on a non-fast-forward rejection: our new commits
+    // represent a complete implementation and should replace any stale remote
+    // state that appeared between our initial fetch and this push.
+    await this.pushWithRemoteBranchMergeRetry(repoDir, ["push", "origin", branch], branch, {
+      allowForcePush: !branchAlreadyExistsRemotely,
+    });
     const headSha = (
       await runCommand("git", ["rev-parse", "HEAD"], { cwd: repoDir, captureStdout: true })
     ).trim();
@@ -1404,6 +1410,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     repoDir: string,
     pushArgs: readonly string[],
     branch: string,
+    options: { allowForcePush?: boolean } = {},
   ): Promise<void> {
     try {
       await this.runAuthenticatedGit(pushArgs, { cwd: repoDir, captureStderr: true });
@@ -1417,6 +1424,14 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
 
     const backupBranch = buildPushRecoveryBackupBranchName(branch);
     await runCommand("git", ["branch", backupBranch, "HEAD"], { cwd: repoDir });
+
+    if (options.allowForcePush) {
+      console.warn(
+        `[vibrator] Push for ${branch} was rejected as non-fast-forward. Preserved recovery point at ${backupBranch}; force-pushing because this branch was started fresh and our implementation is authoritative.`,
+      );
+      await this.runAuthenticatedGit([...pushArgs, "--force"], { cwd: repoDir, captureStderr: true });
+      return;
+    }
 
     console.warn(
       `[vibrator] Push for ${branch} was rejected as non-fast-forward. Preserved recovery point at ${backupBranch}; integrating origin/${branch} before retrying.`,
