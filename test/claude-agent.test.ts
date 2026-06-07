@@ -23,6 +23,7 @@ import {
   isNonFastForwardPushError,
   parseOriginHeadBranch,
   parseUsageResetTimeMs,
+  runCommand,
   sanitizePullRequestTitle,
 } from "../src/claude-agent.js";
 
@@ -1015,4 +1016,51 @@ test("extractSelfReviewPayload returns an empty array for missing or malformed p
     ].join("\n"),
   );
   assert.deepEqual(partial, [{ index: 2, response: "kept" }]);
+});
+
+test("runCommand kills the entire child process group on timeout, not just the direct child", async () => {
+  // Spawn a shell that launches a detached grandchild sleeper and prints its
+  // pid, then sleeps itself. The OLD behavior (child.kill on the direct child
+  // only) left the grandchild alive after the timeout fired; the fix kills the
+  // whole process group, so the grandchild must be gone.
+  const script =
+    "sleep 30 & " + // grandchild — outlives the direct child unless the group is killed
+    'echo "GRANDCHILD:$!"; ' +
+    "wait";
+
+  let captured = "";
+  await assert.rejects(
+    runCommand("sh", ["-c", script], {
+      captureStdout: true,
+      onStdoutChunk: (chunk) => {
+        captured += chunk;
+      },
+      timeoutMs: 300,
+    }),
+    /timed out/,
+  );
+
+  const match = captured.match(/GRANDCHILD:(\d+)/);
+  assert.ok(match, `expected to capture grandchild pid, got: ${JSON.stringify(captured)}`);
+  const grandchildPid = Number.parseInt(match![1]!, 10);
+
+  // Give the SIGTERM→SIGKILL escalation a moment to tear the group down.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // Signal 0 only checks for existence; ESRCH means the process is gone.
+  let stillAlive = true;
+  try {
+    process.kill(grandchildPid, 0);
+  } catch (error) {
+    stillAlive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+  if (stillAlive) {
+    // Don't leak the sleeper if the assertion is about to fail.
+    try {
+      process.kill(grandchildPid, "SIGKILL");
+    } catch {
+      /* ignore */
+    }
+  }
+  assert.equal(stillAlive, false, `grandchild pid ${grandchildPid} survived the timeout`);
 });
