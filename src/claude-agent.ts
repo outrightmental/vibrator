@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -395,32 +395,102 @@ class GitAuth {
  */
 const MAX_CAPTURED_STDERR_BYTES = 256 * 1024;
 
-function runCommand(
+/**
+ * Every child is spawned `detached: true` so it leads its own process group
+ * (whose group id equals the child's pid). The `claude` CLI in turn spawns a
+ * whole tree of node workers / MCP servers; signalling only the direct child
+ * (`child.kill(...)`) leaves that tree orphaned and reparented to launchd,
+ * where it keeps holding ~1 GB of RAM apiece. Killing the *group* (a negative
+ * pid) takes down the entire subtree, so timeouts and shutdowns never leak
+ * processes. This registry tracks every live child so a process-exit or
+ * termination signal can reap them all before vibrator goes away.
+ */
+const liveChildren = new Set<ChildProcess>();
+
+/**
+ * Signal a child's entire process group. Falls back to the direct child if the
+ * group send fails (e.g. the group is already gone, or the platform rejects the
+ * negative-pid form), so we always make a best effort to tear the child down.
+ */
+function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // Already dead — nothing to do.
+    }
+  }
+}
+
+let childCleanupInstalled = false;
+
+/**
+ * Install one-time handlers that reap every live child process group when
+ * vibrator exits or is asked to terminate. Without this, a graceful shutdown
+ * (`process.exit(0)` after Escape/Ctrl-C) and an out-of-band `kill <pid>` both
+ * orphan whatever `claude` trees are mid-run. `exit` does only synchronous work
+ * (`process.kill` is synchronous), which is exactly what that handler allows.
+ */
+function ensureChildCleanupHandlers(): void {
+  if (childCleanupInstalled) return;
+  childCleanupInstalled = true;
+
+  const reapAll = (): void => {
+    for (const child of liveChildren) {
+      killProcessTree(child, "SIGKILL");
+    }
+    liveChildren.clear();
+  };
+
+  process.on("exit", reapAll);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => {
+      reapAll();
+      // Re-raise the default disposition by exiting; 128 + signal number is the
+      // conventional code (SIGINT = 2 → 130).
+      process.exit(signal === "SIGINT" ? 130 : 0);
+    });
+  }
+}
+
+export function runCommand(
   command: string,
   args: readonly string[],
   options: RunCommandOptions = {},
 ): Promise<string> {
+  ensureChildCleanupHandlers();
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
+      // Lead our own process group so the whole subtree (claude + its node
+      // workers / MCP servers) can be signalled at once — see killProcessTree.
+      detached: true,
       stdio: [
         options.input !== undefined ? "pipe" : "ignore",
         options.captureStdout ? "pipe" : "inherit",
         options.captureStderr ? "pipe" : "inherit",
       ],
     });
+    liveChildren.add(child);
 
     let timedOut = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
 
     if (options.timeoutMs !== undefined) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
+        // Kill the entire process group, not just the direct child, so the
+        // node worker tree claude spawned underneath dies with it.
+        killProcessTree(child, "SIGTERM");
         // Escalate to SIGKILL after 5 s if SIGTERM did not work.
-        setTimeout(() => {
-          child.kill("SIGKILL");
+        sigkillTimer = setTimeout(() => {
+          killProcessTree(child, "SIGKILL");
         }, 5000);
       }, options.timeoutMs);
     }
@@ -453,11 +523,15 @@ function runCommand(
 
     child.on("error", (error) => {
       clearTimeout(killTimer);
+      clearTimeout(sigkillTimer);
+      liveChildren.delete(child);
       reject(error);
     });
 
     child.on("close", (code) => {
       clearTimeout(killTimer);
+      clearTimeout(sigkillTimer);
+      liveChildren.delete(child);
       const stdoutText = Buffer.concat(stdoutChunks).toString("utf8");
       const stderrText = Buffer.concat(stderrChunks).toString("utf8");
 
