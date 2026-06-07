@@ -1064,3 +1064,44 @@ test("runCommand kills the entire child process group on timeout, not just the d
   }
   assert.equal(stillAlive, false, `grandchild pid ${grandchildPid} survived the timeout`);
 });
+
+test("runCommand reaps process-group stragglers when the direct child exits normally", async () => {
+  // The direct shell exits cleanly (no `wait`) but leaves a detached sleeper
+  // behind. Before the fix, the normal-completion path only deleted the child
+  // from the registry and never group-killed, so the sleeper reparented to
+  // launchd and lived on — the exact ~1 GB-apiece orphan that exhausted memory
+  // over an overnight run. The sleeper's stdio is redirected away from our
+  // capture pipe so `close` fires promptly either way: this isolates the group
+  // reap (without the fix the sleeper is plainly still alive when the promise
+  // resolves; with it, the group SIGKILL has taken it down).
+  const script =
+    "sleep 30 >/dev/null 2>&1 & " + // straggler — outlives the leader unless the group is reaped
+    'echo "GRANDCHILD:$!"';
+
+  const stdout = await runCommand("sh", ["-c", script], {
+    captureStdout: true,
+    // No timeout: this is the happy path, not the timeout path.
+  });
+
+  const match = stdout.match(/GRANDCHILD:(\d+)/);
+  assert.ok(match, `expected to capture grandchild pid, got: ${JSON.stringify(stdout)}`);
+  const grandchildPid = Number.parseInt(match![1]!, 10);
+
+  // Give the SIGKILL a moment to land.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  let stillAlive = true;
+  try {
+    process.kill(grandchildPid, 0);
+  } catch (error) {
+    stillAlive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+  if (stillAlive) {
+    try {
+      process.kill(grandchildPid, "SIGKILL");
+    } catch {
+      /* ignore */
+    }
+  }
+  assert.equal(stillAlive, false, `straggler pid ${grandchildPid} survived normal completion`);
+});

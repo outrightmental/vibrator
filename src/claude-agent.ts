@@ -521,10 +521,36 @@ export function runCommand(
       });
     }
 
+    // Reap any process-group stragglers the direct child left behind. `claude`
+    // normally tears down its own node-worker / MCP-server tree on exit, but
+    // when it doesn't, those grandchildren reparent to launchd and hold ~1 GB
+    // apiece (see the killProcessTree note above). Timeouts and vibrator
+    // shutdown already group-kill; the *normal completion* and *error* paths
+    // did not, so a long overnight run accumulated orphans until the machine
+    // ran out of memory. The leader is already gone by the time these fire, so
+    // a group SIGKILL only touches surviving members (a no-op when there are
+    // none).
+    let groupReaped = false;
+    const reapGroup = (): void => {
+      if (groupReaped) return;
+      groupReaped = true;
+      killProcessTree(child, "SIGKILL");
+    };
+
+    // The leader exiting does not imply its group is empty: a straggler that
+    // inherited our stdout/stderr pipe keeps `close` from firing (it holds the
+    // FD open), so reap as soon as the direct child is gone. That kills the
+    // pipe-holder, which in turn lets `close` fire and the promise settle —
+    // instead of hanging until the run-level timeout.
+    child.on("exit", () => {
+      reapGroup();
+    });
+
     child.on("error", (error) => {
       clearTimeout(killTimer);
       clearTimeout(sigkillTimer);
       liveChildren.delete(child);
+      reapGroup();
       reject(error);
     });
 
@@ -532,6 +558,7 @@ export function runCommand(
       clearTimeout(killTimer);
       clearTimeout(sigkillTimer);
       liveChildren.delete(child);
+      reapGroup();
       const stdoutText = Buffer.concat(stdoutChunks).toString("utf8");
       const stderrText = Buffer.concat(stderrChunks).toString("utf8");
 
