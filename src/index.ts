@@ -16,7 +16,7 @@ import {
   loadSnapshot,
 } from "./github.js";
 import { GitHubApiGateway } from "./github-gateway.js";
-import { buildPlan, type ProjectModeConfig } from "./orchestrator.js";
+import { buildPlan, FOCUS_LABEL, type ProjectModeConfig } from "./orchestrator.js";
 import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
@@ -191,7 +191,7 @@ async function broadcastBetweenCycleActivity(
     if (snapshotChanged) {
       broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
     }
-    const { blockedIssueNumbers } = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
+    const { blockedIssueNumbers } = buildPlan(snapshot, config.maxConcurrency, config.projectMode, config.focusMode);
     // Include in-flight implementations (claimed but not yet completed) so
     // their pills keep pulsing "implementing…" between cycles instead of
     // dropping back to absent. See `claimedImplementationIssueNumbers` for
@@ -323,6 +323,8 @@ interface Config {
   sessionStorePath: string;
   /** Human-in-the-Loop project mode config. Undefined = standard auto-merge mode. */
   projectMode: ProjectModeConfig | undefined;
+  /** Focus mode: when true, only issues labelled "focus" are picked up. */
+  focusMode: boolean;
 }
 
 function parseRepositorySlug(repository: string): { owner: string; repo: string } {
@@ -354,6 +356,7 @@ function parseArgs(argv: string[]): Config {
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
   const noBrowser = argv.includes("--no-browser");
+  const focusMode = argv.some((a) => a === "--mode=focus");
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
   const dashboardTitle = process.env.DASHBOARD_TITLE;
@@ -387,6 +390,7 @@ function parseArgs(argv: string[]): Config {
     noBrowser,
     sessionStorePath,
     projectMode,
+    focusMode,
   };
 }
 
@@ -539,7 +543,7 @@ async function runEngineLoop(
         }
       }
 
-      const plan = buildPlan(snapshot, config.maxConcurrency, config.projectMode);
+      const plan = buildPlan(snapshot, config.maxConcurrency, config.projectMode, config.focusMode);
 
       // Refresh the lifecycle pane on every engine's planning pass, not just
       // engine 0's. Gating it to engine 0 froze the pane while engine 0 was
@@ -800,6 +804,7 @@ async function main(): Promise<void> {
   if (config.once) modeNotes.push("--once");
   if (config.dryRun) modeNotes.push("--dry-run");
   if (config.noBrowser) modeNotes.push("--no-browser");
+  if (config.focusMode) modeNotes.push("--mode=focus");
   write(
     `cycle-minimum: ${formatDuration(config.cycleMinimumMs)} · concurrency: ${config.maxConcurrency}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
@@ -833,6 +838,27 @@ async function main(): Promise<void> {
     bullet("\"manual\" label is present");
   } catch (error) {
     bullet(`could not ensure "manual" label exists: ${(error as Error).message}`);
+  }
+
+  // In focus mode, ensure the "focus" label exists so users can apply it
+  // to the issues they want vibrator to work on.
+  if (config.focusMode) {
+    note(`ensuring the "${FOCUS_LABEL}" label exists on the repository…`);
+    try {
+      const startupGitHubClient = new GitHubClient({
+        owner: config.owner,
+        repo: config.repo,
+        gateway: githubGateway,
+      });
+      await startupGitHubClient.ensureLabelExists(
+        FOCUS_LABEL,
+        "0075ca",
+        "Vibrator will only work on issues with this label in focus mode",
+      );
+      bullet(`"${FOCUS_LABEL}" label is present`);
+    } catch (error) {
+      bullet(`could not ensure "${FOCUS_LABEL}" label exists: ${(error as Error).message}`);
+    }
   }
 
   // ── Launch N independent engine loops ─────────────────────────────────────
