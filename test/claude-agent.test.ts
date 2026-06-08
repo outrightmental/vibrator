@@ -1105,3 +1105,77 @@ test("runCommand reaps process-group stragglers when the direct child exits norm
   }
   assert.equal(stillAlive, false, `straggler pid ${grandchildPid} survived normal completion`);
 });
+
+test("runCommand kills a grandchild that left the process group (setsid escape)", async () => {
+  // This is the leak that group-only killing could not reach: `claude` spawns
+  // its Bash tool calls / MCP servers / node workers in their OWN process
+  // groups, so `kill(-leaderPid)` never signals them — they survive, reparent
+  // to launchd, and hold ~1 GB apiece. Here a perl grandchild calls setsid() to
+  // become its own session/group leader (ppid still points at the shell while
+  // it lives, but its pgid is its own pid). The fix walks the descendant tree
+  // by pid, so it must take the grandchild down even though it escaped the
+  // group.
+  // The grandchild's stdio is redirected to /dev/null so it does NOT hold our
+  // capture pipe open — otherwise `close` would not fire until the sleeper ends
+  // on its own (30 s), and the assertion would check a process that already
+  // exited naturally rather than one our teardown had to kill. The shell echoes
+  // the grandchild pid ($!) so we learn it without the grandchild touching the
+  // pipe. With stdio detached, `close` fires as soon as the leader is killed,
+  // so a surviving out-of-group grandchild is plainly still alive at check time.
+  const script =
+    "perl -e 'use POSIX (); POSIX::setsid(); sleep 30' >/dev/null 2>&1 & " +
+    'echo "GRANDCHILD:$!"; ' +
+    "wait";
+
+  let captured = "";
+  await assert.rejects(
+    runCommand("sh", ["-c", script], {
+      captureStdout: true,
+      onStdoutChunk: (chunk) => {
+        captured += chunk;
+      },
+      timeoutMs: 400,
+    }),
+    /timed out/,
+  );
+
+  const match = captured.match(/GRANDCHILD:(\d+)/);
+  assert.ok(match, `expected to capture grandchild pid, got: ${JSON.stringify(captured)}`);
+  const grandchildPid = Number.parseInt(match![1]!, 10);
+
+  // Confirm the grandchild really did leave the leader's process group, so this
+  // test exercises the descendant-by-pid path rather than the group kill.
+  const psOut = spawnSync("ps", ["-o", "pid=,pgid=", "-p", String(grandchildPid)], {
+    encoding: "utf8",
+  }).stdout.trim();
+  const pgidMatch = /^(\d+)\s+(\d+)$/.exec(psOut);
+  if (pgidMatch) {
+    assert.equal(
+      pgidMatch[1],
+      pgidMatch[2],
+      "expected the setsid grandchild to lead its own process group",
+    );
+  }
+
+  // Give the SIGTERM→SIGKILL escalation a moment to land.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  let stillAlive = true;
+  try {
+    process.kill(grandchildPid, 0);
+  } catch (error) {
+    stillAlive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+  if (stillAlive) {
+    try {
+      process.kill(grandchildPid, "SIGKILL");
+    } catch {
+      /* ignore */
+    }
+  }
+  assert.equal(
+    stillAlive,
+    false,
+    `out-of-group grandchild pid ${grandchildPid} survived — group-only kill missed it`,
+  );
+});

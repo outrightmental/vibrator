@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -398,23 +398,132 @@ const MAX_CAPTURED_STDERR_BYTES = 256 * 1024;
 /**
  * Every child is spawned `detached: true` so it leads its own process group
  * (whose group id equals the child's pid). The `claude` CLI in turn spawns a
- * whole tree of node workers / MCP servers; signalling only the direct child
- * (`child.kill(...)`) leaves that tree orphaned and reparented to launchd,
- * where it keeps holding ~1 GB of RAM apiece. Killing the *group* (a negative
- * pid) takes down the entire subtree, so timeouts and shutdowns never leak
- * processes. This registry tracks every live child so a process-exit or
- * termination signal can reap them all before vibrator goes away.
+ * whole tree of node workers / MCP servers / Bash tool calls — but it spawns
+ * *those* detached too, so each grandchild leads its OWN process group rather
+ * than joining claude's. That means signalling claude's group (`kill(-pid)`)
+ * does NOT reach them: they survive, reparent to launchd, and keep holding
+ * ~1 GB of RAM apiece until the machine runs out of memory. The only reliable
+ * teardown is to kill the whole descendant tree by pid.
+ *
+ * Because a descendant that has already reparented to launchd can no longer be
+ * found by walking down from claude's pid, we snapshot each live child's
+ * descendant pids on a periodic sweep *while they are still alive* and union
+ * them into `childDescendants`. At teardown we SIGKILL every pid we ever saw
+ * (a pid stays valid across reparenting), plus a final fresh snapshot, plus
+ * claude's own group as a backstop. This registry tracks every live child so a
+ * process-exit or termination signal can reap them all before vibrator exits.
  */
 const liveChildren = new Set<ChildProcess>();
 
+/** Maps a live child's pid → every descendant pid observed while it ran. */
+const childDescendants = new Map<number, Set<number>>();
+let descendantSweepTimer: ReturnType<typeof setInterval> | undefined;
+
 /**
- * Signal a child's entire process group. Falls back to the direct child if the
- * group send fails (e.g. the group is already gone, or the platform rejects the
- * negative-pid form), so we always make a best effort to tear the child down.
+ * Read the whole process table once and return a parent→children adjacency map.
+ * Uses `ps` synchronously so this is safe to call from a `process.on("exit")`
+ * handler (which may only do synchronous work).
+ */
+function readProcessTree(): Map<number, number[]> {
+  const childrenByParent = new Map<number, number[]>();
+  let stdout: string;
+  try {
+    const result = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8" });
+    stdout = result.stdout ?? "";
+  } catch {
+    return childrenByParent;
+  }
+  for (const line of stdout.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (!match) continue;
+    const pid = Number.parseInt(match[1]!, 10);
+    const ppid = Number.parseInt(match[2]!, 10);
+    const siblings = childrenByParent.get(ppid) ?? [];
+    siblings.push(pid);
+    childrenByParent.set(ppid, siblings);
+  }
+  return childrenByParent;
+}
+
+/** Breadth-first collection of every descendant pid of `rootPid`. */
+function descendantsOf(rootPid: number, tree: Map<number, number[]>): number[] {
+  const out: number[] = [];
+  const seen = new Set<number>([rootPid]);
+  const stack = [rootPid];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    for (const child of tree.get(current) ?? []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      out.push(child);
+      stack.push(child);
+    }
+  }
+  return out;
+}
+
+/** One-shot descendant snapshot for a single root pid. */
+function collectDescendantPids(rootPid: number): number[] {
+  return descendantsOf(rootPid, readProcessTree());
+}
+
+/**
+ * Periodically record the descendants of every live child so we still know
+ * their pids after they detach and reparent to launchd. One `ps` per tick
+ * covers all live children at once.
+ */
+function sweepDescendants(): void {
+  if (childDescendants.size === 0) return;
+  const tree = readProcessTree();
+  for (const [rootPid, observed] of childDescendants) {
+    for (const descendant of descendantsOf(rootPid, tree)) {
+      observed.add(descendant);
+    }
+  }
+}
+
+function startTrackingChild(pid: number): void {
+  childDescendants.set(pid, new Set());
+  if (!descendantSweepTimer) {
+    descendantSweepTimer = setInterval(sweepDescendants, 5000);
+    // Never let the sweep keep the event loop (and thus the process) alive.
+    descendantSweepTimer.unref?.();
+  }
+}
+
+function stopTrackingChild(pid: number): void {
+  childDescendants.delete(pid);
+  if (childDescendants.size === 0 && descendantSweepTimer) {
+    clearInterval(descendantSweepTimer);
+    descendantSweepTimer = undefined;
+  }
+}
+
+/**
+ * Tear a child down completely: SIGKILL every descendant pid we ever observed
+ * (plus a fresh snapshot taken now, in case the child is still alive), then the
+ * child's own process group as a backstop. Killing grandchildren by pid is what
+ * actually stops the ~1 GB-apiece orphans — claude spawns them in their own
+ * process groups, so the group-only kill below never reaches them.
  */
 function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
   if (pid === undefined) return;
+
+  const targets = new Set<number>(childDescendants.get(pid));
+  for (const descendant of collectDescendantPids(pid)) {
+    targets.add(descendant);
+  }
+  // Kill descendants first so a surviving parent cannot keep spawning more, and
+  // before any of them notice the parent is gone and reparent away.
+  for (const descendant of targets) {
+    try {
+      process.kill(descendant, signal);
+    } catch {
+      // Already gone — nothing to do.
+    }
+  }
+
   try {
     process.kill(-pid, signal);
   } catch {
@@ -477,6 +586,7 @@ export function runCommand(
       ],
     });
     liveChildren.add(child);
+    if (child.pid !== undefined) startTrackingChild(child.pid);
 
     let timedOut = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -535,6 +645,7 @@ export function runCommand(
       if (groupReaped) return;
       groupReaped = true;
       killProcessTree(child, "SIGKILL");
+      if (child.pid !== undefined) stopTrackingChild(child.pid);
     };
 
     // The leader exiting does not imply its group is empty: a straggler that
