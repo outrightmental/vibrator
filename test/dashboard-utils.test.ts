@@ -532,6 +532,65 @@ test("broadcastLifecycleUpdate: excludes issues labelled 'manual'", async () => 
   assert.deepEqual(pairs.map((p) => p.issue.number), [2]);
 });
 
+test("broadcastLifecycleUpdate (focus mode): shows only issues labelled 'focus'", async () => {
+  const issues = [
+    makeIssue({ number: 1, labels: ["focus"] }),
+    makeIssue({ number: 2 }),
+    makeIssue({ number: 3, labels: ["focus", "bug"] }),
+  ];
+  const snapshot = { issues, pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, false, true);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } }>;
+  assert.deepEqual(pairs.map((p) => p.issue.number), [1, 3]);
+});
+
+test("broadcastLifecycleUpdate (focus mode): drops a PR pair when its linked issue lacks 'focus'", async () => {
+  const issues = [
+    makeIssue({ number: 1, labels: ["focus"] }),
+    makeIssue({ number: 2 }),
+  ];
+  const pullRequests = [
+    makePR({ number: 10, closingIssueNumbers: [1], draft: false }),
+    makePR({ number: 20, closingIssueNumbers: [2], draft: false }),
+  ];
+  const snapshot = { issues, pullRequests, agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, false, true);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } | null; pr: { number: number } | null }>;
+  assert.deepEqual(pairs.map((p) => p.issue?.number), [1]);
+  assert.deepEqual(pairs.map((p) => p.pr?.number), [10]);
+});
+
+test("broadcastLifecycleUpdate (focus mode): hides orphan PRs with no linked issue", async () => {
+  const issues = [makeIssue({ number: 1, labels: ["focus"] })];
+  const pullRequests = [
+    makePR({ number: 30, closingIssueNumbers: [], linkedIssueNumbers: [], draft: false }),
+  ];
+  const snapshot = { issues, pullRequests, agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot, new Set(), new Set(), {}, false, true);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } | null }>;
+  // Only the focus issue remains; the orphan PR is gone.
+  assert.deepEqual(pairs.map((p) => p.issue?.number), [1]);
+});
+
+test("broadcastLifecycleUpdate: without focus mode, non-focus issues still appear", async () => {
+  const issues = [
+    makeIssue({ number: 1, labels: ["focus"] }),
+    makeIssue({ number: 2 }),
+  ];
+  const snapshot = { issues, pullRequests: [], agentSessions: [] };
+  const dataPromise = captureNextEvent("lifecycle-update");
+  broadcastLifecycleUpdate(snapshot);
+  const data = await dataPromise;
+  const pairs = data.pairs as Array<{ issue: { number: number } }>;
+  assert.deepEqual(pairs.map((p) => p.issue.number), [1, 2]);
+});
+
 test("broadcastLifecycleUpdate: marks the pair disabled when the PR is labelled 'manual'", async () => {
   const issue = makeIssue({ number: 5 });
   const pr = makePR({ number: 50, closingIssueNumbers: [5], labels: ["manual"], draft: false });
