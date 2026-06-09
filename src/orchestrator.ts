@@ -433,6 +433,16 @@ export function buildPlan(
     snapshot.pullRequests.filter((pullRequest) => pullRequest.state === "open"),
   );
   const openIssueNumbers = new Set(issues.map((issue) => issue.number));
+  // In focus mode, the only issues in scope are open issues carrying the
+  // "focus" label. A pull request is in scope only when it advances one of
+  // these issues; otherwise vibrator would keep reviewing/merging PRs for
+  // non-focus issues, defeating focus mode (the bug where focus mode still
+  // worked on every issue that already had a PR).
+  const focusIssueNumbers = new Set(
+    issues.filter((issue) => issue.labels.includes(FOCUS_LABEL)).map((issue) => issue.number),
+  );
+  const isFocusPullRequest = (pullRequest: PullRequest): boolean =>
+    pullRequest.linkedIssueNumbers.some((issueNumber) => focusIssueNumbers.has(issueNumber));
   const blockedIssueIndex = buildBlockedIssueIndex(issues);
 
   // Only expose open blockers to the dashboard — a closed issue no longer blocks anything.
@@ -467,6 +477,12 @@ export function buildPlan(
     // does not count them against concurrency. Their linked issues are still
     // marked unavailable below, so the issue is not re-implemented.
     if (isManualPullRequest(pullRequest)) {
+      continue;
+    }
+    // In focus mode, PRs that don't advance a focus-labelled issue are out of
+    // scope: plan no action and don't count them against concurrency, so
+    // cylinders stay free for focus work.
+    if (focusMode && !isFocusPullRequest(pullRequest)) {
       continue;
     }
     const hasActiveSession = getRelevantSessions(

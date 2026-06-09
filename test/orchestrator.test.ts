@@ -1170,6 +1170,52 @@ test("buildPlan (focus mode) still skips issues labelled 'manual' even when also
   ]);
 });
 
+test("buildPlan (focus mode) skips PRs whose linked issue lacks the 'focus' label", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, labels: ["focus"] }),
+      createIssue({ number: 2 }),
+    ],
+    pullRequests: [
+      createPullRequest({ number: 10, linkedIssueNumbers: [1] }),
+      createPullRequest({ number: 20, linkedIssueNumbers: [2] }),
+    ],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3, undefined, true);
+
+  // Only the focus issue's PR is self-reviewed; the non-focus PR #20 is
+  // parked and does not consume a cylinder.
+  assert.deepEqual(plan.actions, [
+    {
+      type: "self-review",
+      issueNumber: 1,
+      pullRequestNumber: 10,
+      pullRequestHeadSha: "sha-10",
+    },
+  ]);
+});
+
+test("buildPlan (focus mode) self-reviews PRs whose linked issue has the 'focus' label", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 1, labels: ["focus"] })],
+    pullRequests: [createPullRequest({ number: 10, linkedIssueNumbers: [1] })],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3, undefined, true);
+
+  assert.deepEqual(plan.actions, [
+    {
+      type: "self-review",
+      issueNumber: 1,
+      pullRequestNumber: 10,
+      pullRequestHeadSha: "sha-10",
+    },
+  ]);
+});
+
 test("buildPlan without focus mode picks up issues regardless of 'focus' label", () => {
   const snapshot: RepositorySnapshot = {
     issues: [
