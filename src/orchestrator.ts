@@ -522,7 +522,7 @@ export function buildPlan(
     }
 
     // Issues labelled "manual" are never picked up automatically.
-    if (issue.labels.includes("manual")) {
+    if (issue.labels.includes(MANUAL_LABEL)) {
       return false;
     }
 
