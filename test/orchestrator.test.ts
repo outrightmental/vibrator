@@ -1116,3 +1116,74 @@ test("buildPlan still respects blockers regardless of milestone ordering", () =>
     "Issue 2 must not start while blocked by #1",
   );
 });
+
+// ─── focus mode ───────────────────────────────────────────────────────────────
+
+test("buildPlan (focus mode) only picks up issues with the 'focus' label", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, labels: ["focus"] }),
+      createIssue({ number: 2 }),
+      createIssue({ number: 3, labels: ["focus", "bug"] }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3, undefined, true);
+
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+    { type: "start-implementation", issueNumber: 3 },
+  ]);
+});
+
+test("buildPlan (focus mode) skips issues without the 'focus' label", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1 }),
+      createIssue({ number: 2, labels: ["bug"] }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3, undefined, true);
+
+  assert.deepEqual(plan.actions, []);
+});
+
+test("buildPlan (focus mode) still skips issues labelled 'manual' even when also labelled 'focus'", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, labels: ["focus", "manual"] }),
+      createIssue({ number: 2, labels: ["focus"] }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3, undefined, true);
+
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 2 },
+  ]);
+});
+
+test("buildPlan without focus mode picks up issues regardless of 'focus' label", () => {
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1 }),
+      createIssue({ number: 2, labels: ["focus"] }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+
+  assert.deepEqual(plan.actions, [
+    { type: "start-implementation", issueNumber: 1 },
+    { type: "start-implementation", issueNumber: 2 },
+  ]);
+});

@@ -43,6 +43,9 @@ const PROJECT_START_STATUSES = new Set(["ready", "in progress", "in_progress"]);
 /** The label that opts an issue or PR out of automated work. */
 const MANUAL_LABEL = "manual";
 
+/** The label that opts an issue into focus mode work. */
+export const FOCUS_LABEL = "focus";
+
 /**
  * PRs labelled "manual" are never worked on automatically: no self-review,
  * no merge, no conflict resolution. They sit parked, exactly like an issue
@@ -423,6 +426,7 @@ export function buildPlan(
   snapshot: RepositorySnapshot,
   maxConcurrency = 3,
   projectMode?: ProjectModeConfig,
+  focusMode = false,
 ): OrchestratorPlan {
   const issues = sortByCreatedAt(snapshot.issues.filter((issue) => issue.state === "open"));
   const pullRequests = sortByCreatedAt(
@@ -518,7 +522,12 @@ export function buildPlan(
     }
 
     // Issues labelled "manual" are never picked up automatically.
-    if (issue.labels.includes("manual")) {
+    if (issue.labels.includes(MANUAL_LABEL)) {
+      return false;
+    }
+
+    // In focus mode, only issues with the "focus" label are picked up.
+    if (focusMode && !issue.labels.includes(FOCUS_LABEL)) {
       return false;
     }
 
