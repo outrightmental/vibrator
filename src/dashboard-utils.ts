@@ -8,6 +8,13 @@ function isManualIssue(issue: Issue): boolean {
   return issue.labels.includes("manual");
 }
 
+// In focus mode only issues carrying the "focus" label are in scope, so the
+// lifecycle pane hides everything else (matching the orchestrator, which parks
+// non-focus issues and their PRs).
+function isFocusIssue(issue: Issue): boolean {
+  return issue.labels.includes("focus");
+}
+
 // PRs labelled "manual" are never worked on automatically. They still appear
 // on the dashboard paired with their (non-manual) issue, but rendered disabled.
 function isManualPullRequest(pr: PullRequest): boolean {
@@ -54,10 +61,13 @@ export function broadcastLifecycleUpdate(
   completedIssueNumbers: ReadonlySet<number> = new Set(),
   blockedIssueNumbers: Readonly<Record<number, number[]>> = {},
   projectModeEnabled = false,
+  focusMode = false,
 ): void {
   const pairs: LifecyclePair[] = [];
   const pairedIssueNumbers = new Set<number>();
-  const visibleIssues = snapshot.issues.filter((i) => !isManualIssue(i));
+  const visibleIssues = snapshot.issues.filter(
+    (i) => !isManualIssue(i) && (!focusMode || isFocusIssue(i)),
+  );
 
   // Pair each open PR with its closing issues (falling back to linked issues)
   for (const pr of snapshot.pullRequests) {
@@ -93,6 +103,9 @@ export function broadcastLifecycleUpdate(
   for (const pr of snapshot.pullRequests) {
     if (pr.state !== "open") continue;
     if (pr.closingIssueNumbers.length > 0 || pr.linkedIssueNumbers.length > 0) continue;
+    // Orphan PRs advance no focus issue, so the orchestrator parks them in
+    // focus mode — keep them off the lifecycle pane too.
+    if (focusMode) continue;
     pairs.push({
       issue: null,
       pr: {

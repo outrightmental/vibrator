@@ -202,6 +202,7 @@ async function broadcastBetweenCycleActivity(
       new Set(),
       blockedIssueNumbers,
       config.projectMode !== undefined,
+      config.focusMode,
     );
 
     // Broadcast open PRs only when their state has changed since the last poll
@@ -576,6 +577,7 @@ async function runEngineLoop(
             new Set(),
             plan.blockedIssueNumbers,
             config.projectMode !== undefined,
+            config.focusMode,
           );
           return { action: a, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
         }
@@ -586,6 +588,7 @@ async function runEngineLoop(
         new Set(),
         plan.blockedIssueNumbers,
         config.projectMode !== undefined,
+        config.focusMode,
       );
       return { action: null, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
     });
@@ -663,6 +666,7 @@ async function runEngineLoop(
               mergedIssueNumbers,
               planned.blockedIssueNumbers,
               config.projectMode !== undefined,
+              config.focusMode,
             );
           }
         }
