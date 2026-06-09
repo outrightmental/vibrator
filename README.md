@@ -241,6 +241,7 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `VIBRATOR_SESSION_STORE_PATH` | `<cwd>/.vibrator/<owner>-<repo>-sessions.json` | Path for persisted local agent-session state. |
 | `GITHUB_PROJECT_NUMBER` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop). |
 | `VIBRATOR_REVIEWERS` | — | Comma-separated GitHub logins to request review from (Project SDLC only). |
+| `MODE` | — | Set to `focus` (case-insensitive) to activate focus mode. Only issues labelled `focus` will be picked up. |
 
 **CLI flags**
 
@@ -249,6 +250,7 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `--once` | Run a single iteration, then exit. |
 | `--dry-run` | Print the plan without executing any Claude or GitHub actions. |
 | `--no-browser` | Start the Dashboard server but do not auto-open a browser window. |
+| `--mode=focus` | Activate focus mode. Only issues labelled `focus` will be picked up. |
 
 ## Issue language the loop understands
 

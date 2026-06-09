@@ -356,7 +356,9 @@ function parseArgs(argv: string[]): Config {
   const once = argv.includes("--once");
   const dryRun = argv.includes("--dry-run");
   const noBrowser = argv.includes("--no-browser");
-  const focusMode = argv.some((a) => a === "--mode=focus");
+  const focusMode =
+    argv.some((a) => a === "--mode=focus") ||
+    (process.env.MODE ?? "").toLowerCase() === "focus";
   const sessionStorePath =
     process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
   const dashboardTitle = process.env.DASHBOARD_TITLE;
