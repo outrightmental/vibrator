@@ -97,6 +97,7 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'claude-thinking':    return applyClaudeThinking(state, event.data);
     case 'engine-idle':        return applyEngineIdle(state, event.data);
     case 'engine-shutdown':    return applyEngineShutdown(state, event.data);
+    case 'cylinder-cancel':    return applyCylinderCancel(state, event.data);
     case 'shutdown-requested': return addToStream({ ...state, shutdownRequested: true }, '⏹ Shutdown requested — engines will stop after current cycle', -1, 'warning');
     case 'app-shutdown':       return addToStream({ ...state, appShutdown: true }, '⏹ Vibrator shutdown complete', -1, 'warning');
     case 'snapshot-update':    return applySnapshotUpdate(state, event.data);
@@ -288,6 +289,17 @@ function applyEngineShutdown(state: DashboardState, data: Record<string, unknown
     cylinders[engineIndex] = { ...cyl, status: 'shutdown', thinkingLines: [] };
   }
   return addToStream({ ...state, cylinders }, `⏹ Engine ${(engineIndex ?? 0) + 1} shut down`, engineIndex >= 0 ? engineIndex : -1, 'warning');
+}
+
+function applyCylinderCancel(state: DashboardState, data: Record<string, unknown>): DashboardState {
+  const engineIndex = typeof data['engineIndex'] === 'number' ? data['engineIndex'] : -1;
+  let cylinders = state.cylinders;
+  const cyl = engineIndex >= 0 ? cylinders[engineIndex] : undefined;
+  if (cyl !== undefined) {
+    cylinders = [...cylinders];
+    cylinders[engineIndex] = { ...cyl, idleStatusText: 'cancelling…', nextCycleAtMs: null };
+  }
+  return addToStream({ ...state, cylinders }, `⊗ Engine ${engineIndex >= 0 ? engineIndex + 1 : '?'} cancel requested`, engineIndex, 'warning');
 }
 
 function applySnapshotUpdate(state: DashboardState, data: Record<string, unknown>): DashboardState {

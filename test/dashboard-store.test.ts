@@ -181,6 +181,18 @@ test("reducer: workflow-approval adds to broadcastQueue with WORKFLOW label", ()
   assert.equal(s.broadcastQueue[0]?.label, "WORKFLOW");
 });
 
+// ── cylinder-cancel ───────────────────────────────────────────────────────────
+
+test("reducer: cylinder-cancel sets idleStatusText to 'cancelling…' and clears nextCycleAtMs", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, nextCycleAtMs: Date.now() + 30_000 }));
+  s = dashboardReducer(s, makeEvent("cylinder-cancel", { engineIndex: 0 }));
+  assert.equal(s.cylinders[0]?.idleStatusText, "cancelling…");
+  assert.equal(s.cylinders[0]?.nextCycleAtMs, null);
+  assert.ok(s.eventStream.at(-1)?.text.includes("cancel"), "event stream should mention cancel");
+  assert.equal(s.eventStream.at(-1)?.level, "warning");
+});
+
 // ── github-rate-limit / github-rate-limit-cleared ─────────────────────────────
 
 test("reducer: github-rate-limit adds warning to eventStream", () => {
