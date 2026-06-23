@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.json && npm run build:dashboard",
     "build:dashboard": "esbuild src/dashboard/main.ts --bundle --format=esm --sourcemap --outfile=dist/dashboard/bundle.js",
     "watch:dashboard": "esbuild src/dashboard/main.ts --bundle --format=esm --sourcemap --outfile=dist/dashboard/bundle.js --watch",
+    "predev": "npm run build:dashboard",
     "dev": "tsx src/index.ts",
     "start": "npm run build && node dist/src/index.js",
     "test": "node --import tsx --test $(find test -name '*.test.ts' | sort)"
