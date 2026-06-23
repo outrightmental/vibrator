@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import type { CylinderState } from '../store/types.js';
 import { formatDuration, formatModelName } from '../shared/format.js';
 
@@ -146,14 +147,14 @@ export class CylinderRow extends LitElement {
   repo = '';
   tick = 0;
 
-  private _statusHtml(cyl: CylinderState): { html: string; safe: boolean } {
+  private _statusHtml(cyl: CylinderState): string {
     const baseUrl = `https://github.com/${this.owner}/${this.repo}`;
     const isActive   = cyl.status === 'active';
     const isDone     = cyl.status === 'done';
     const isError    = cyl.status === 'error';
     const isShutdown = cyl.status === 'shutdown';
 
-    if (isShutdown) return { html: '⏹ shutdown', safe: true };
+    if (isShutdown) return '⏹ shutdown';
 
     if (isActive || isDone || isError) {
       const issueLink = cyl.issueNumber != null
@@ -175,17 +176,17 @@ export class CylinderRow extends LitElement {
       if (isDone)  s = `✓ ${s}`;
       if (isError) s = `✗ ${s}`;
       if (isActive && cyl.actionStartedAt) s += ` · ${formatDuration(Date.now() - cyl.actionStartedAt)}`;
-      return { html: s, safe: true };
+      return s;
     }
 
     const now = Date.now();
     if (cyl.rateLimitedUntilMs && cyl.rateLimitedUntilMs > now) {
-      return { html: this._esc(`rate limited · ${formatDuration(cyl.rateLimitedUntilMs - now)}`), safe: true };
+      return this._esc(`rate limited · ${formatDuration(cyl.rateLimitedUntilMs - now)}`);
     }
     if (cyl.nextCycleAtMs && cyl.nextCycleAtMs > now) {
-      return { html: this._esc(formatDuration(cyl.nextCycleAtMs - now)), safe: true };
+      return this._esc(formatDuration(cyl.nextCycleAtMs - now));
     }
-    return { html: this._esc(cyl.idleStatusText || 'idle'), safe: true };
+    return this._esc(cyl.idleStatusText || 'idle');
   }
 
   private _esc(text: string): string {
@@ -206,7 +207,6 @@ export class CylinderRow extends LitElement {
     const dotClass = `cylinder-dot${isActive ? ' pulsing' : ''}`;
     const thinkingClass = `cylinder-thinking-stream${hasThinking ? ' active' : ''}`;
     const rowClass = `cylinder-row ${cyl.status}`;
-    const status = this._statusHtml(cyl);
 
     return html`
       <div
@@ -216,8 +216,7 @@ export class CylinderRow extends LitElement {
         <div class="${dotClass}"></div>
         <div class="cylinder-info">
           <div class="cylinder-label">${modelLabel}${cycleLabel}</div>
-          <!-- eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -->
-          <div class="cylinder-status-text" .innerHTML=${status.html}></div>
+          <div class="cylinder-status-text">${unsafeHTML(this._statusHtml(cyl))}</div>
           <div class="${thinkingClass}">${cyl.thinkingLines.join('\n')}</div>
         </div>
         <div class="cylinder-spinner"></div>
