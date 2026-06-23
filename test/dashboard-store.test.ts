@@ -181,6 +181,29 @@ test("reducer: workflow-approval adds to broadcastQueue with WORKFLOW label", ()
   assert.equal(s.broadcastQueue[0]?.label, "WORKFLOW");
 });
 
+// ── github-rate-limit / github-rate-limit-cleared ─────────────────────────────
+
+test("reducer: github-rate-limit adds warning to eventStream", () => {
+  const s = dashboardReducer(initialState(), makeEvent("github-rate-limit", {
+    kind: "secondary",
+    api: "rest",
+    message: "secondary rate limited",
+    waitMs: 60000,
+  }));
+  assert.equal(s.eventCount, 1);
+  assert.ok(s.eventStream[0]?.text.includes("rate limit"), "should mention rate limit");
+  assert.equal(s.eventStream[0]?.level, "warning");
+});
+
+test("reducer: github-rate-limit-cleared adds success message to eventStream", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("github-rate-limit", { message: "limited" }));
+  s = dashboardReducer(s, makeEvent("github-rate-limit-cleared", {}));
+  assert.equal(s.eventCount, 2);
+  assert.ok(s.eventStream[1]?.text.includes("cleared"), "should mention cleared");
+  assert.equal(s.eventStream[1]?.level, "success");
+});
+
 // ── claude-thinking ───────────────────────────────────────────────────────────
 
 test("reducer: claude-thinking appends thinking lines up to 200", () => {

@@ -103,6 +103,12 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'phase-update':       return addToStream(state, `📍 Phase: ${event.data['phase'] as string ?? ''}`, -1, 'info');
     case 'log-message':        return addToStream(state, (event.data['message'] as string) ?? '', -1, (event.data['level'] as string) ?? 'info');
     case 'workflow-approval':  return applyWorkflowApproval(state, event.data);
+    case 'github-rate-limit': {
+      const msg = (event.data['message'] as string) || 'rate limited';
+      return addToStream(state, `⚠ GitHub rate limited: ${msg}`, -1, 'warning');
+    }
+    case 'github-rate-limit-cleared':
+      return addToStream(state, '✓ GitHub rate limit cleared', -1, 'success');
     case 'broadcast-github-activity':
     case 'broadcast-commit':
     case 'broadcast-pr-update':
