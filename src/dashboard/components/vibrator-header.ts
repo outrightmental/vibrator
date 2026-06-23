@@ -7,12 +7,14 @@ export class VibratorHeader extends LitElement {
     repo: { type: String },
     iteration: { type: Number },
     nextCycleAtMs: { type: Number },
+    tick: { type: Number },
   };
 
   owner = '';
   repo = '';
   iteration = 0;
   nextCycleAtMs: number | null = null;
+  tick = 0;
 
   protected override createRenderRoot() { return this; }
 

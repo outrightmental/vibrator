@@ -59,6 +59,7 @@ export class VibratorApp extends LitElement {
         .repo=${s.repo}
         .iteration=${latestIteration}
         .nextCycleAtMs=${nextCycleAtMs}
+        .tick=${this._tick}
       ></vibrator-header>
       <div class="main-content">
         <cylinder-engine
