@@ -70,12 +70,14 @@ test("GET /api/state returns cached events as JSON after emissions", async (t) =
     version: number;
     owner: string;
     repo: string;
+    dashboardTitle: string;
     maxConcurrency: number;
     cachedEvents: DashboardEvent[];
   };
   assert.equal(data.version, 1, "version should be 1");
   assert.equal(data.owner, "test", "owner should match config");
   assert.equal(data.repo, "repo", "repo should match config");
+  assert.ok(typeof data.dashboardTitle === "string" && data.dashboardTitle.length > 0, "dashboardTitle should be present");
   assert.equal(typeof data.maxConcurrency, "number", "maxConcurrency should be a number");
   const types = data.cachedEvents.map((e) => e.type);
   assert.ok(types.includes("lifecycle-update"), "should include lifecycle-update");

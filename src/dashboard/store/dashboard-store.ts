@@ -84,6 +84,7 @@ export function initialState(): DashboardState {
     appShutdown: false,
     owner: '',
     repo: '',
+    title: '',
   };
 }
 
@@ -430,6 +431,7 @@ export class DashboardStore {
       const data = await res.json() as {
         owner?: string;
         repo?: string;
+        dashboardTitle?: string;
         maxConcurrency?: number;
         cachedEvents?: DashboardEvent[];
       };
@@ -437,6 +439,7 @@ export class DashboardStore {
       let state = initialState();
       state.owner = data.owner ?? '';
       state.repo = data.repo ?? '';
+      state.title = data.dashboardTitle ?? data.repo ?? '';
       if (typeof data.maxConcurrency === 'number') {
         state.maxConcurrency = data.maxConcurrency;
         state.cylinders = initCylinders(data.maxConcurrency);

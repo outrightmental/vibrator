@@ -5,6 +5,7 @@ export class VibratorHeader extends LitElement {
   static override properties = {
     owner: { type: String },
     repo: { type: String },
+    title: { type: String },
     iteration: { type: Number },
     nextCycleAtMs: { type: Number },
     tick: { type: Number },
@@ -12,6 +13,7 @@ export class VibratorHeader extends LitElement {
 
   owner = '';
   repo = '';
+  title = '';
   iteration = 0;
   nextCycleAtMs: number | null = null;
   tick = 0;
@@ -32,7 +34,7 @@ export class VibratorHeader extends LitElement {
       <div class="header">
         <div>
           <div class="header-title">
-            <a class="gh-link" href="${baseUrl}" target="_blank" rel="noopener noreferrer">⚡ VIBRATOR</a>
+            <a class="gh-link" href="${baseUrl}" target="_blank" rel="noopener noreferrer">⚡ ${(this.title || 'VIBRATOR').toUpperCase()}</a>
             <span>AI SDLC BROADCAST</span>
           </div>
         </div>

@@ -86,4 +86,5 @@ export interface DashboardState {
   appShutdown: boolean;
   owner: string;
   repo: string;
+  title: string;
 }

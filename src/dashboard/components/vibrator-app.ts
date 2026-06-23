@@ -57,6 +57,7 @@ export class VibratorApp extends LitElement {
       <vibrator-header
         .owner=${s.owner}
         .repo=${s.repo}
+        .title=${s.title}
         .iteration=${latestIteration}
         .nextCycleAtMs=${nextCycleAtMs}
         .tick=${this._tick}

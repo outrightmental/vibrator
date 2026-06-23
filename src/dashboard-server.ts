@@ -133,6 +133,7 @@ export class DashboardServer {
         version: 1,
         owner: this.owner,
         repo: this.repo,
+        dashboardTitle: this.dashboardTitle,
         maxConcurrency: this.maxConcurrency,
         cachedEvents: Array.from(this.cachedEvents.values()),
       });
