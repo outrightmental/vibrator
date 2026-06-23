@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -626,7 +626,8 @@ test("implementIssue resolves merge conflicts during non-fast-forward push recov
         "set -eu",
         "git config user.name \"Claude Stub\"",
         "git config user.email \"claude-stub@example.com\"",
-        "if [ -f .git/MERGE_HEAD ]; then",
+        "GIT_DIR=$(git rev-parse --absolute-git-dir 2>/dev/null || echo \".git\")",
+        "if [ -f \"$GIT_DIR/MERGE_HEAD\" ]; then",
         "  echo \"resolved by claude\" > shared.txt",
         "  git add shared.txt",
         "  git commit -m \"resolve push conflict\"",
@@ -1104,6 +1105,104 @@ test("runCommand reaps process-group stragglers when the direct child exits norm
     }
   }
   assert.equal(stillAlive, false, `straggler pid ${grandchildPid} survived normal completion`);
+});
+
+test("implementIssue creates a canonical clone and uses linked worktrees for task directories", async () => {
+  // Verifies that the new optimized checkout strategy:
+  // 1. Clones the repo once into a shared `_main` canonical directory.
+  // 2. Creates task directories as linked git worktrees (`.git` is a file, not
+  //    a directory), avoiding a full network clone per issue.
+  // 3. Reuses the canonical clone without re-cloning for a second task.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-canonical-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"implementation\" >> impl.txt",
+        "git add impl.txt",
+        "git commit -m \"agent commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test\",\"body\":\"Closes #1\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+    });
+
+    // First task implementation.
+    await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 1,
+      issueTitle: "First task",
+      issueBody: "Do something.",
+      baseBranch: "main",
+    });
+
+    // Verify that the canonical clone was created.
+    const canonicalDir = join(checkoutRootDir, "example-repo", "_main");
+    const canonicalGitStat = await stat(join(canonicalDir, ".git"));
+    assert.ok(canonicalGitStat.isDirectory(), "canonical _main/.git should be a directory");
+
+    // Verify that the first task directory uses a linked worktree.
+    const taskDir1 = join(checkoutRootDir, "example-repo", "issue-1");
+    const taskGitStat1 = await stat(join(taskDir1, ".git"));
+    assert.ok(taskGitStat1.isFile(), "task directory .git should be a file (linked worktree)");
+
+    // Second task — should reuse the canonical clone, not clone again.
+    await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 2,
+      issueTitle: "Second task",
+      issueBody: "Do something else.",
+      baseBranch: "main",
+    });
+
+    // Verify that the second task directory is also a linked worktree.
+    const taskDir2 = join(checkoutRootDir, "example-repo", "issue-2");
+    const taskGitStat2 = await stat(join(taskDir2, ".git"));
+    assert.ok(taskGitStat2.isFile(), "second task directory .git should be a file (linked worktree)");
+
+    // Both tasks should share the same canonical clone's git objects directory.
+    const canonicalObjectsPath = join(canonicalDir, ".git", "objects");
+    const canonicalObjStat = await stat(canonicalObjectsPath);
+    assert.ok(canonicalObjStat.isDirectory(), "canonical objects directory should exist");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("runCommand kills a grandchild that left the process group (setsid escape)", async () => {

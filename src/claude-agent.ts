@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getGitHubTokenFromEnv } from "./github.js";
@@ -314,10 +314,11 @@ async function pathExists(path: string): Promise<boolean> {
 export async function isRebaseInProgress(
   repoDir: string,
   pathExistsFn: (path: string) => Promise<boolean> = pathExists,
+  gitDir: string = join(repoDir, ".git"),
 ): Promise<boolean> {
   return (
-    (await pathExistsFn(join(repoDir, ".git", "rebase-merge"))) ||
-    (await pathExistsFn(join(repoDir, ".git", "rebase-apply")))
+    (await pathExistsFn(join(gitDir, "rebase-merge"))) ||
+    (await pathExistsFn(join(gitDir, "rebase-apply")))
   );
 }
 
@@ -706,6 +707,25 @@ export function runCommand(
       child.stdin.end(options.input);
     }
   });
+}
+
+/**
+ * Resolves the actual git directory for a repo or linked worktree.
+ * In a regular clone, this is `<repoDir>/.git`. In a linked worktree,
+ * `.git` is a file so the actual git dir is elsewhere; git resolves it
+ * via `--absolute-git-dir`. Falls back to the conventional path on error.
+ */
+async function getGitDir(repoDir: string): Promise<string> {
+  try {
+    return (
+      await runCommand("git", ["rev-parse", "--absolute-git-dir"], {
+        cwd: repoDir,
+        captureStdout: true,
+      })
+    ).trim();
+  } catch {
+    return join(repoDir, ".git");
+  }
 }
 
 function extractBetweenMarkers(
@@ -1328,7 +1348,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         baseBranch: params.baseRefName,
       });
     } catch (error) {
-      const rebaseInProgress = await isRebaseInProgress(repoDir);
+      const rebaseInProgress = await isRebaseInProgress(repoDir, pathExists, await getGitDir(repoDir));
       if (!rebaseInProgress) {
         throw new Error(
           `Failed to rebase PR #${params.pullRequestNumber} onto origin/${params.baseRefName}: ${(error as Error).message}`,
@@ -1461,6 +1481,25 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     });
   }
 
+  private async ensureCanonicalClone(owner: string, repo: string): Promise<string> {
+    const canonicalDir = join(this.checkoutRootDir, `${owner}-${repo}`, "_main");
+    await mkdir(canonicalDir, { recursive: true });
+    if (!(await pathExists(join(canonicalDir, ".git")))) {
+      await this.runAuthenticatedGit([
+        "clone",
+        this.getRepositoryCloneUrl(owner, repo),
+        canonicalDir,
+      ]);
+    }
+    await runCommand(
+      "git",
+      ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+      { cwd: canonicalDir },
+    );
+    await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: canonicalDir });
+    return canonicalDir;
+  }
+
   private async checkoutBaseBranch(params: {
     owner: string;
     repo: string;
@@ -1469,26 +1508,41 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
      *  implementation gets its own directory to avoid git ref-lock races. */
     identifier: string;
   }): Promise<string> {
+    const canonicalDir = await this.ensureCanonicalClone(params.owner, params.repo);
+
     const repoDir = join(
       this.checkoutRootDir,
       `${params.owner}-${params.repo}`,
       params.identifier,
     );
-    await mkdir(repoDir, { recursive: true });
-    const gitDir = join(repoDir, ".git");
-    if (!(await pathExists(gitDir))) {
-      await this.runAuthenticatedGit([
-        "clone",
-        this.getRepositoryCloneUrl(params.owner, params.repo),
-        repoDir,
-      ]);
+
+    const gitPath = join(repoDir, ".git");
+    if (await pathExists(gitPath)) {
+      // Existing checkout. Regular clones (.git is a directory) keep their own
+      // remote-tracking refs and need a separate fetch. Linked worktrees (.git
+      // is a file) share the canonical clone's refs, which were already updated.
+      if ((await stat(gitPath)).isDirectory()) {
+        await runCommand(
+          "git",
+          ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+          { cwd: repoDir },
+        );
+        await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
+      }
+    } else {
+      // No existing checkout: add a linked worktree from the canonical clone.
+      // This shares git objects with _main and avoids a full network clone.
+      if (await pathExists(repoDir)) {
+        await rm(repoDir, { recursive: true, force: true });
+      }
+      await runCommand("git", ["worktree", "prune"], { cwd: canonicalDir });
+      await runCommand(
+        "git",
+        ["worktree", "add", "--detach", repoDir, `origin/${params.baseBranch}`],
+        { cwd: canonicalDir },
+      );
     }
-    await runCommand(
-      "git",
-      ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
-      { cwd: repoDir },
-    );
-    await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
+
     // A previous run may have been interrupted after Claude edited files but
     // before they were committed or pushed. Discard any leftover state so the
     // subsequent `git checkout -B` can switch branches cleanly.
@@ -1497,13 +1551,13 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   }
 
   private async resetWorkingTreeToClean(repoDir: string): Promise<void> {
-    if (
-      (await pathExists(join(repoDir, ".git", "rebase-merge"))) ||
-      (await pathExists(join(repoDir, ".git", "rebase-apply")))
-    ) {
+    // Resolve the actual git directory — in a linked worktree `.git` is a file
+    // pointing elsewhere, so we cannot construct paths under `<repoDir>/.git`.
+    const gitDir = await getGitDir(repoDir);
+    if (await isRebaseInProgress(repoDir, pathExists, gitDir)) {
       await runCommand("git", ["rebase", "--abort"], { cwd: repoDir });
     }
-    if (await pathExists(join(repoDir, ".git", "MERGE_HEAD"))) {
+    if (await pathExists(join(gitDir, "MERGE_HEAD"))) {
       await runCommand("git", ["merge", "--abort"], { cwd: repoDir });
     }
     await runCommand("git", ["reset", "--hard", "HEAD"], { cwd: repoDir });
@@ -1517,29 +1571,40 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     repo: string;
     pullRequestNumber: number;
   }): Promise<string> {
+    const canonicalDir = await this.ensureCanonicalClone(params.owner, params.repo);
+
     const repoDir = join(
       this.checkoutRootDir,
       `${params.owner}-${params.repo}`,
       `pr-${params.pullRequestNumber}`,
     );
 
-    await mkdir(repoDir, { recursive: true });
-
-    const gitDir = join(repoDir, ".git");
-    if (!(await pathExists(gitDir))) {
-      await this.runAuthenticatedGit([
-        "clone",
-        this.getRepositoryCloneUrl(params.owner, params.repo),
-        repoDir,
-      ]);
+    const gitPath = join(repoDir, ".git");
+    if (await pathExists(gitPath)) {
+      // Existing checkout. Regular clones (.git is a directory) keep their own
+      // remote-tracking refs and need a separate fetch. Linked worktrees (.git
+      // is a file) share the canonical clone's refs, which were already updated.
+      if ((await stat(gitPath)).isDirectory()) {
+        await runCommand(
+          "git",
+          ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+          { cwd: repoDir },
+        );
+        await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
+      }
+    } else {
+      // No existing checkout: add a linked worktree from the canonical clone.
+      // This shares git objects with _main and avoids a full network clone.
+      if (await pathExists(repoDir)) {
+        await rm(repoDir, { recursive: true, force: true });
+      }
+      await runCommand("git", ["worktree", "prune"], { cwd: canonicalDir });
+      await runCommand(
+        "git",
+        ["worktree", "add", "--detach", repoDir, "HEAD"],
+        { cwd: canonicalDir },
+      );
     }
-
-    await runCommand(
-      "git",
-      ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
-      { cwd: repoDir },
-    );
-    await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
 
     await this.resetWorkingTreeToClean(repoDir);
 
@@ -1659,7 +1724,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           captureStderr: true,
         });
       } catch (error) {
-        const mergeInProgress = await pathExists(join(repoDir, ".git", "MERGE_HEAD"));
+        // Resolve the git dir here to correctly check MERGE_HEAD in linked worktrees
+        // (where `.git` is a file rather than a directory).
+        const gitDir = await getGitDir(repoDir);
+        const mergeInProgress = await pathExists(join(gitDir, "MERGE_HEAD"));
         if (!mergeInProgress) {
           throw new Error(
             `Push rejected as non-fast-forward and merge of origin/${branch} failed before retry: ${error}`,
@@ -1671,7 +1739,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         );
         await this.runClaude(buildPushConflictResolutionPrompt(branch), repoDir);
 
-        const stillMerging = await pathExists(join(repoDir, ".git", "MERGE_HEAD"));
+        const stillMerging = await pathExists(join(gitDir, "MERGE_HEAD"));
         if (stillMerging) {
           throw new Error(
             `Claude did not complete merge-conflict resolution for ${branch}; merge is still in progress. Recovery branch: ${backupBranch}`,
