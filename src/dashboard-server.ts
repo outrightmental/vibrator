@@ -164,9 +164,6 @@ export class DashboardServer {
       }
     });
 
-    ws.on("close", () => {
-      // Connection closed
-    });
   }
 
   private updateStateCache(event: DashboardEvent): void {
