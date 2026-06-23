@@ -381,6 +381,32 @@ test("DashboardServer defaults to repository name when no dashboardTitle is prov
   assert.ok(html.includes("repo"), "HTML should contain the default repository title");
 });
 
+test("DashboardServer caches github-rate-limit event", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 17,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  globalEventEmitter.emit("github-rate-limit", {
+    kind: "secondary",
+    api: "rest",
+    blockedUntilMs: Date.now() + 60_000,
+    waitMs: 60_000,
+    message: "limited",
+    attempt: 1,
+  });
+
+  const res = await httpGet(`http://127.0.0.1:${TEST_PORT + 17}/api/state`);
+  const data = JSON.parse(res.body) as { cachedEvents: DashboardEvent[] };
+  const rateLimitMsg = data.cachedEvents.find((m) => m.type === "github-rate-limit");
+  assert.ok(rateLimitMsg !== undefined, "should cache github-rate-limit so reconnecting clients see active rate limits");
+});
+
 test("DashboardServer clears cached github-rate-limit on github-rate-limit-cleared", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 16,

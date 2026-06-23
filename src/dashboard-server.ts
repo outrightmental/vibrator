@@ -22,13 +22,13 @@ interface DashboardServerConfig {
   dashboardTitle?: string;
 }
 
+const ROOT_DIR = process.cwd();
+
 let APP_VERSION = "unknown";
 try {
-  const pkgText = fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8");
+  const pkgText = fs.readFileSync(path.join(ROOT_DIR, "package.json"), "utf-8");
   APP_VERSION = (JSON.parse(pkgText) as { version: string }).version;
 } catch { /* ignore */ }
-
-const ROOT_DIR = process.cwd();
 const STATIC_INDEX = path.join(ROOT_DIR, "src", "dashboard", "index.html");
 const STATIC_BUNDLE_JS = path.join(ROOT_DIR, "dist", "dashboard", "bundle.js");
 const STATIC_BUNDLE_CSS = path.join(ROOT_DIR, "dist", "dashboard", "bundle.css");
@@ -185,6 +185,10 @@ export class DashboardServer {
     } else if (type === "engine-shutdown") {
       const engineIndex = (data["engineIndex"] as number) ?? 0;
       this.cachedEvents.set(`cylinder-${engineIndex}`, event);
+    } else if (type === "github-rate-limit") {
+      this.cachedEvents.set(type, event);
+    } else if (type === "github-rate-limit-cleared") {
+      this.cachedEvents.delete("github-rate-limit");
     } else if (type === "shutdown-requested" || type === "app-shutdown") {
       this.cachedEvents.set(type, event);
     }
