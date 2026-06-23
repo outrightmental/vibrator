@@ -65,10 +65,22 @@ export class LifecyclePill extends LitElement {
       50%       { opacity: 1; }
     }
 
+    .pill-pr-half.review {
+      border: 2px solid var(--pill-color);
+      border-left: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(var(--pill-rgb), 0.25);
+      box-shadow: 0 0 10px rgba(var(--pill-rgb), 0.35);
+    }
+
     .pill-pr-half.active {
       border: 2px solid var(--pill-color);
       border-left: 1px solid rgba(255, 255, 255, 0.12);
       background: rgba(var(--pill-rgb), 0.14);
+    }
+
+    .pill-pr-half.inactive {
+      border: 2px dashed rgba(120, 120, 135, 0.4);
+      opacity: 0.55;
     }
 
     .pill-pr-half.completed {
@@ -139,6 +151,11 @@ export class LifecyclePill extends LitElement {
       color: rgba(255, 130, 110, 1);
     }
 
+    .pill-badge-inactive {
+      border-color: rgba(160, 160, 175, 0.55);
+      color: rgba(185, 185, 200, 0.85);
+    }
+
     a.gh-link { color: inherit; text-decoration: none; cursor: pointer; }
     a.gh-link:hover { text-decoration: underline; filter: brightness(1.4); }
   `;
@@ -171,6 +188,13 @@ export class LifecyclePill extends LitElement {
             <div class="pill-row"><span class="pill-title">implementing…</span></div>
           </div>`;
       }
+      if (pair.prPhase === 'inactive' && pair.projectStatus) {
+        return html`
+          <div class="${prClass}">
+            <div class="pill-label">Status</div>
+            <div class="pill-row"><span class="pill-badge pill-badge-inactive">${pair.projectStatus}</span></div>
+          </div>`;
+      }
       if (isBlocked) {
         return html`
           <div class="${prClass}">
@@ -196,6 +220,7 @@ export class LifecyclePill extends LitElement {
     const badges: string[] = [];
     if (pair.disabled) badges.push('MANUAL');
     if (pr.draft) badges.push('DRAFT');
+    if (pair.prPhase === 'review') badges.push('READY');
     if (pair.prPhase === 'completed') badges.push('MERGED');
     const checksIcon = pr.checksStatus === 'success' ? '✓' : pr.checksStatus === 'failure' ? '✗' : pr.checksStatus === 'pending' ? '…' : '';
     if (checksIcon) badges.push(checksIcon);

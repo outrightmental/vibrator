@@ -4,11 +4,13 @@ import { CYLINDER_COLORS, CYLINDER_COLORS_RGB } from '../shared/cylinder-palette
 import './lifecycle-pill.js';
 
 function lifecycleTier(pair: LifecyclePair): number {
-  if (pair.prPhase === 'active') return 0;
-  if (pair.prPhase === 'completed') return 1;
-  if (pair.prPhase === 'planning') return 2;
+  if (pair.prPhase === 'review') return 0;
+  if (pair.prPhase === 'active') return 1;
+  if (pair.prPhase === 'completed') return 2;
+  if (pair.prPhase === 'planning') return 3;
+  if (pair.prPhase === 'inactive') return 6;
   const blocked = (pair.blockedByIssueNumbers?.length ?? 0) > 0;
-  return blocked ? 4 : 3;
+  return blocked ? 5 : 4;
 }
 
 function compareLifecyclePairs(

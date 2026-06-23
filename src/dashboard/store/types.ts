@@ -39,6 +39,8 @@ export interface LifecyclePair {
   colorIndex?: number;
   blockedByIssueNumbers?: number[];
   disabled?: boolean;
+  /** Project status label for inactive pills (e.g. "Backlog", "Done"). */
+  projectStatus?: string;
 }
 
 export interface BroadcastEventData {
