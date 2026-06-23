@@ -60,7 +60,6 @@ export class LifecycleList extends LitElement {
 
   override render() {
     const sorted = [...this.pairs].sort((a, b) => compareLifecyclePairs(a, b, this.cylinderByIssue));
-    const visible = sorted.slice(0, 20);
 
     const active = this.pairs.filter(p => p.prPhase === 'active' || p.prPhase === 'planning').length;
     const subtitle = this.pairs.length === 0
@@ -75,9 +74,9 @@ export class LifecycleList extends LitElement {
         </div>
         <div class="panel-body">
           <div class="lifecycle-content">
-            ${visible.length === 0
+            ${sorted.length === 0
               ? html`<div class="lifecycle-empty">Connecting to vibrator…</div>`
-              : visible.map((pair) => {
+              : sorted.map((pair) => {
                   const issueNum = pair.issue?.number ?? null;
                   const color = resolvePillColor(issueNum, this.cylinderByIssue);
                   const key = pair.issue ? String(pair.issue.number) : `pr-${pair.pr?.number ?? '?'}`;
