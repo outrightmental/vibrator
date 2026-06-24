@@ -374,3 +374,32 @@ test("DashboardServer broadcasts cylinder-cancel when a client sends cylinder-ca
   assert.ok(cancelMsg !== undefined, "observer should receive cylinder-cancel broadcast");
   assert.equal(cancelMsg?.data.engineIndex, 1, "cylinder-cancel should carry the correct engineIndex");
 });
+
+test("DashboardServer serves HTML with modulo-based cylinder color cycling (no gray fallback)", async (t) => {
+  const server = new DashboardServer({
+    port: TEST_PORT + 20,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(() => server.close());
+
+  const html = await new Promise<string>((resolve, reject) => {
+    http.get(`http://127.0.0.1:${TEST_PORT + 20}/`, (res) => {
+      let body = "";
+      res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      res.on("end", () => resolve(body));
+    }).on("error", reject);
+  });
+
+  assert.ok(
+    html.includes("CYLINDER_COLORS.length"),
+    "generated HTML should use CYLINDER_COLORS.length for modulo cycling",
+  );
+  assert.ok(
+    !html.includes("'#888888'"),
+    "generated HTML must not use hardcoded gray fallback for cylinder colors",
+  );
+});

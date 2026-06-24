@@ -1196,9 +1196,9 @@ class DashboardUI {
     for (let i = 0; i < n; i++) {
       this.cylinders.push({
         index: i + 1,
-        color: CYLINDER_COLORS[i] || '#888888',
-        colorRgb: CYLINDER_COLORS_RGB[i] || '136,136,136',
-        colorName: CYLINDER_COLOR_NAMES[i] || \`CYL-\${i + 1}\`,
+        color: CYLINDER_COLORS[i % CYLINDER_COLORS.length],
+        colorRgb: CYLINDER_COLORS_RGB[i % CYLINDER_COLORS_RGB.length],
+        colorName: CYLINDER_COLOR_NAMES[i % CYLINDER_COLOR_NAMES.length],
         status: 'idle',
         idleStatusText: 'idle',
         actionType: null,
@@ -1446,7 +1446,7 @@ class DashboardUI {
     }
 
     const color = cylinderIdx >= 0
-      ? (CYLINDER_COLORS[cylinderIdx] || '#00ff88')
+      ? CYLINDER_COLORS[cylinderIdx % CYLINDER_COLORS.length]
       : 'rgba(0, 255, 136, 0.22)';
 
     card.className = \`lifecycle-card\${cylinderIdx >= 0 ? ' active' : ''}\`;
@@ -1489,8 +1489,8 @@ class DashboardUI {
     if (!stream) return;
 
     const color =
-      cylinderIdx >= 0 && cylinderIdx < CYLINDER_COLORS.length
-        ? CYLINDER_COLORS[cylinderIdx]
+      cylinderIdx >= 0
+        ? CYLINDER_COLORS[cylinderIdx % CYLINDER_COLORS.length]
         : null;
 
     const line = document.createElement('div');
@@ -2271,8 +2271,8 @@ class DashboardUI {
     const cylIdx = this.cylinderByIssue.get(issueNumber);
     if (cylIdx !== undefined) {
       return {
-        hex: CYLINDER_COLORS[cylIdx] || '#00ffff',
-        rgb: CYLINDER_COLORS_RGB[cylIdx] || '0,255,255',
+        hex: CYLINDER_COLORS[cylIdx % CYLINDER_COLORS.length],
+        rgb: CYLINDER_COLORS_RGB[cylIdx % CYLINDER_COLORS_RGB.length],
       };
     }
     return { hex: '#555577', rgb: '85,85,119' };
