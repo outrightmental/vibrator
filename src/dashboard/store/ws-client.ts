@@ -11,6 +11,7 @@ export class WsClient {
   private _onConnectionChange: ((connected: boolean) => void) | null;
   private _ws: WebSocket | null = null;
   private _intentionallyClosed = false;
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     url: string,
@@ -63,7 +64,8 @@ export class WsClient {
       clearTimeout(connectTimeoutId);
       this._onConnectionChange?.(false);
       if (!this._intentionallyClosed) {
-        setTimeout(async () => {
+        this._reconnectTimer = setTimeout(async () => {
+          this._reconnectTimer = null;
           if (this._onReconnect) await this._onReconnect();
           this.connect();
         }, 3000);
@@ -73,6 +75,10 @@ export class WsClient {
 
   close(): void {
     this._intentionallyClosed = true;
+    if (this._reconnectTimer !== null) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     this._ws?.close();
   }
 }

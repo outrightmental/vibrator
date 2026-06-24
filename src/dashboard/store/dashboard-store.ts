@@ -400,10 +400,20 @@ export class DashboardStore {
   private _listeners: Set<Listener> = new Set();
   private _broadcastProcessing = false;
   private _wsClient: WsClient | null = null;
+  private _notifyTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this._state = initialState();
-    setInterval(() => this._notify(), 1000);
+    this._notifyTimer = setInterval(() => this._notify(), 1000);
+  }
+
+  disconnect(): void {
+    if (this._notifyTimer !== null) {
+      clearInterval(this._notifyTimer);
+      this._notifyTimer = null;
+    }
+    this._wsClient?.close();
+    this._wsClient = null;
   }
 
   getState(): DashboardState { return this._state; }
@@ -476,9 +486,10 @@ export class DashboardStore {
     }
   }
 
-  connectLive(): void {
+  connectLive(wsUrl?: string): void {
+    const url = wsUrl ?? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/ws`;
     const client = new WsClient(
-      `ws://${location.host}/api/ws`,
+      url,
       (event) => {
         if (event.type === 'css-reload') {
           const link = document.querySelector<HTMLLinkElement>('link[rel="stylesheet"]');
