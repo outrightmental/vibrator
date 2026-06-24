@@ -1328,7 +1328,7 @@ class DashboardUI {
       const modelLabel = isIdle
         ? 'Idle'
         : (formatModelName(cyl.model) || \`CYL \${cyl.index}\`);
-      const cycleLabel = cyl.iterationNumber > 0 ? \` #\${cyl.iterationNumber}\` : '';
+      const cycleLabel = (isActive || isDone || isError) && cyl.iterationNumber > 0 ? \` #\${cyl.iterationNumber}\` : '';
       const dotClass = isActive ? 'cylinder-dot pulsing' : 'cylinder-dot';
 
       let row = document.getElementById(rowId);
