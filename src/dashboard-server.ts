@@ -1446,7 +1446,7 @@ class DashboardUI {
     }
 
     const color = cylinderIdx >= 0
-      ? (CYLINDER_COLORS[cylinderIdx] || '#00ff88')
+      ? CYLINDER_COLORS[cylinderIdx % CYLINDER_COLORS.length]
       : 'rgba(0, 255, 136, 0.22)';
 
     card.className = \`lifecycle-card\${cylinderIdx >= 0 ? ' active' : ''}\`;
@@ -1489,8 +1489,8 @@ class DashboardUI {
     if (!stream) return;
 
     const color =
-      cylinderIdx >= 0 && cylinderIdx < CYLINDER_COLORS.length
-        ? CYLINDER_COLORS[cylinderIdx]
+      cylinderIdx >= 0
+        ? CYLINDER_COLORS[cylinderIdx % CYLINDER_COLORS.length]
         : null;
 
     const line = document.createElement('div');
