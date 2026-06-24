@@ -530,8 +530,8 @@ test("DashboardServer broadcasts css-reload when bundle.css changes on disk", as
   const bundleDir = path.join(process.cwd(), "dist", "dashboard");
   const cssPath = path.join(bundleDir, "bundle.css");
   await fs.promises.mkdir(bundleDir, { recursive: true });
-  const alreadyExists = fs.existsSync(cssPath);
-  if (!alreadyExists) {
+  const originalContent = await fs.promises.readFile(cssPath, "utf-8").catch(() => null);
+  if (originalContent === null) {
     await fs.promises.writeFile(cssPath, "/* initial */");
   }
 
@@ -545,8 +545,10 @@ test("DashboardServer broadcasts css-reload when bundle.css changes on disk", as
   await server.start();
   t.after(async () => {
     server.close();
-    if (!alreadyExists) {
-      await fs.promises.unlink(cssPath).catch(() => { /* already gone */ });
+    if (originalContent !== null) {
+      await fs.promises.writeFile(cssPath, originalContent).catch(() => {});
+    } else {
+      await fs.promises.unlink(cssPath).catch(() => {});
     }
   });
 
