@@ -62,6 +62,7 @@ export class DashboardServer {
   private cachedEvents: Map<string, DashboardEvent> = new Map();
   private cssWatcher: ReturnType<typeof fs.watch> | null = null;
   private cssReloadDebounce: ReturnType<typeof setTimeout> | null = null;
+  private unsubscribeFromEvents: () => void;
 
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
@@ -98,7 +99,7 @@ export class DashboardServer {
       console.error("[Dashboard] WebSocket server error:", error);
     });
 
-    globalEventEmitter.subscribe((event) => {
+    this.unsubscribeFromEvents = globalEventEmitter.subscribe((event) => {
       this.broadcastEvent(event);
     });
   }
@@ -2450,6 +2451,7 @@ const dashboard = new DashboardUI();
   }
 
   close(): void {
+    this.unsubscribeFromEvents();
     if (this.cssReloadDebounce !== null) {
       clearTimeout(this.cssReloadDebounce);
       this.cssReloadDebounce = null;
@@ -2458,6 +2460,7 @@ const dashboard = new DashboardUI();
     this.cssWatcher = null;
     for (const client of this.wss.clients) client.terminate();
     this.wss.close();
+    this.server.closeAllConnections();
     this.server.close();
   }
 }

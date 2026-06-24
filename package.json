@@ -10,7 +10,7 @@
     "predev": "npm run build:dashboard",
     "dev": "tsx src/index.ts",
     "start": "npm run build && node dist/src/index.js",
-    "test": "node --import tsx --test $(find test -name '*.test.ts' | sort)"
+    "test": "node --import tsx --test --test-force-exit $(find test -name '*.test.ts' | sort)"
   },
   "repository": {
     "type": "git",
