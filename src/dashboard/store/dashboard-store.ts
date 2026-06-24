@@ -18,23 +18,28 @@ const BROADCAST_FANFARE_MS = 3000;
 const BROADCAST_MAX_ITEMS = 15;
 
 function initCylinders(n: number): CylinderState[] {
-  return Array.from({ length: n }, (_, i) => ({
-    index: i + 1,
-    color: CYLINDER_COLORS[i] ?? '#888888',
-    colorRgb: CYLINDER_COLORS_RGB[i] ?? '136,136,136',
-    colorName: CYLINDER_COLOR_NAMES[i] ?? `CYL-${i + 1}`,
-    status: 'idle' as const,
-    idleStatusText: 'idle',
-    actionType: null,
-    issueNumber: null,
-    prNumber: null,
-    model: null,
-    iterationNumber: 0,
-    thinkingLines: [],
-    actionStartedAt: null,
-    nextCycleAtMs: null,
-    rateLimitedUntilMs: null,
-  }));
+  return Array.from({ length: n }, (_, i) => {
+    // Cycle through the palette via modulo so any number of cylinders gets a
+    // stable neon identity instead of falling back to gray (issue #21).
+    const c = i % CYLINDER_COLORS.length;
+    return {
+      index: i + 1,
+      color: CYLINDER_COLORS[c] ?? '#888888',
+      colorRgb: CYLINDER_COLORS_RGB[c] ?? '136,136,136',
+      colorName: CYLINDER_COLOR_NAMES[c] ?? `CYL-${i + 1}`,
+      status: 'idle' as const,
+      idleStatusText: 'idle',
+      actionType: null,
+      issueNumber: null,
+      prNumber: null,
+      model: null,
+      iterationNumber: 0,
+      thinkingLines: [],
+      actionStartedAt: null,
+      nextCycleAtMs: null,
+      rateLimitedUntilMs: null,
+    };
+  });
 }
 
 function makeEventLine(text: string, cylinderIdx: number, level: string): EventLine {
