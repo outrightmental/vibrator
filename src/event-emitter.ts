@@ -23,7 +23,8 @@ export type DashboardEventType =
   | "shutdown-requested"
   | "engine-shutdown"
   | "app-shutdown"
-  | "cylinder-cancel";
+  | "cylinder-cancel"
+  | "css-reload";
 
 export interface DashboardEvent {
   type: DashboardEventType;
