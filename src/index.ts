@@ -2,8 +2,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import "dotenv/config";
-
 import { executeAction, type ExecuteActionResult } from "./actions.js";
 import {
   createClaudeAgentClient,
@@ -11,9 +9,9 @@ import {
   isClaudeUsageLimitMessage,
   getClaudeQuotaBlockedUntilMs,
 } from "./claude-agent.js";
+import { loadEnvConfig, resolveGitHubToken, type EnvConfig, type ProjectEnvConfig } from "./env-config.js";
 import {
   buildDefaultSessionStorePath,
-  getGitHubTokenFromEnv,
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
@@ -345,57 +343,49 @@ function parseRepositorySlug(repository: string): { owner: string; repo: string 
   return { owner, repo };
 }
 
-function parseArgs(argv: string[]): Config {
-  const repositoryArgument = argv.find((argument) => !argument.startsWith("--"));
-  const repository = repositoryArgument ?? process.env.GITHUB_REPOSITORY;
-  if (!repository) {
-    throw new Error("Provide a repository slug such as owner/repo.");
-  }
+function buildProjectConfig(
+  projectEnvConfig: ProjectEnvConfig,
+  envConfig: EnvConfig,
+  runtimeFlags: { once: boolean; dryRun: boolean; noBrowser: boolean; dashboardPort: number },
+): Config {
+  const { owner, repo } = parseRepositorySlug(projectEnvConfig.github_repository);
 
-  const { owner, repo } = parseRepositorySlug(repository);
-  const maxConcurrency = Number.parseInt(process.env.MAX_CONCURRENCY ?? "3", 10);
-  const cycleMinimumSeconds = Number.parseFloat(process.env.CYCLE_MINIMUM_SECONDS ?? "60");
-  const dashboardPort = Number.parseInt(process.env.DASHBOARD_PORT ?? "3000", 10);
-  const once = argv.includes("--once");
-  const dryRun = argv.includes("--dry-run");
-  const noBrowser = argv.includes("--no-browser");
-  const focusMode =
-    argv.some((a) => a === "--mode=focus") ||
-    (process.env.MODE ?? "").toLowerCase() === "focus";
-  const sessionStorePath =
-    process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
-  const dashboardTitle = process.env.DASHBOARD_TITLE;
-  const claudeModel = process.env.CLAUDE_MODEL;
-  const claudeCommitModel = process.env.CLAUDE_COMMIT_MODEL;
+  const globalMaxConcurrency = envConfig.max_concurrency ?? 3;
+  const projectMaxConcurrency = projectEnvConfig.max_concurrency !== undefined
+    ? Math.min(projectEnvConfig.max_concurrency, globalMaxConcurrency)
+    : globalMaxConcurrency;
 
-  const projectNumberRaw = process.env.GITHUB_PROJECT_NUMBER;
-  const projectNumber = projectNumberRaw
-    ? Number.parseInt(projectNumberRaw, 10)
-    : undefined;
-  const reviewersRaw = process.env.VIBRATOR_REVIEWERS;
-  const reviewers = reviewersRaw
-    ? reviewersRaw.split(",").map((r) => r.trim()).filter(Boolean)
-    : [];
+  const cycleMinimumSeconds =
+    projectEnvConfig.cycle_minimum_seconds ?? envConfig.cycle_minimum_seconds ?? 60;
+
+  const claudeModel = projectEnvConfig.claude_code_model ?? envConfig.claude_code_model;
+  const claudeCommitModel = projectEnvConfig.claude_describe_model ?? envConfig.claude_describe_model;
+
+  const projectNumber = projectEnvConfig.github_project_number;
+  const reviewers = projectEnvConfig.reviewers ?? [];
   const projectMode: ProjectModeConfig | undefined =
-    projectNumber !== undefined && !Number.isNaN(projectNumber)
-      ? { projectNumber, reviewers }
-      : undefined;
+    projectNumber !== undefined ? { projectNumber, reviewers } : undefined;
+
+  const sessionStorePath =
+    projectEnvConfig.session_store_path ?? buildDefaultSessionStorePath(owner, repo);
+
+  const dashboardPort = projectEnvConfig.dashboard_port ?? runtimeFlags.dashboardPort;
 
   return {
     owner,
     repo,
     claudeModel,
     claudeCommitModel,
-    maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
-    cycleMinimumMs: Number.isNaN(cycleMinimumSeconds) ? 60000 : Math.round(cycleMinimumSeconds * 1000),
-    dashboardPort: Number.isNaN(dashboardPort) ? 3000 : dashboardPort,
-    dashboardTitle,
-    once,
-    dryRun,
-    noBrowser,
+    maxConcurrency: projectMaxConcurrency,
+    cycleMinimumMs: Math.round(cycleMinimumSeconds * 1000),
+    dashboardPort,
+    dashboardTitle: projectEnvConfig.dashboard_title,
+    once: runtimeFlags.once,
+    dryRun: runtimeFlags.dryRun,
+    noBrowser: runtimeFlags.noBrowser,
     sessionStorePath,
     projectMode,
-    focusMode,
+    focusMode: projectEnvConfig.focus_mode ?? false,
   };
 }
 
@@ -747,16 +737,20 @@ async function runEngineLoop(
   } while (true);
 }
 
-async function main(): Promise<void> {
-  const config = parseArgs(process.argv.slice(2));
-  const githubToken = getGitHubTokenFromEnv();
+async function startProject(
+  config: Config,
+  envConfig: EnvConfig,
+  githubToken: string,
+  shutdownSignal: { requested: boolean },
+): Promise<DashboardServer | null> {
   const githubGateway = new GitHubApiGateway({
     token: githubToken,
-    apiBaseUrl: process.env.GITHUB_API_BASE_URL ?? "https://api.github.com",
-    apiVersion: process.env.GITHUB_API_VERSION ?? "2022-11-28",
+    apiBaseUrl: envConfig.github_api_base_url ?? "https://api.github.com",
+    apiVersion: envConfig.github_api_version ?? "2022-11-28",
     userAgent: "vibrator",
   });
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
+
   let projectTitle: string | undefined;
   if (config.dashboardTitle === undefined && config.projectMode) {
     try {
@@ -796,7 +790,7 @@ async function main(): Promise<void> {
     dashboardReady = true;
   } catch (error) {
     console.error(
-      `[Dashboard] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
+      `[Dashboard] Failed to start for ${config.owner}/${config.repo}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
@@ -819,7 +813,7 @@ async function main(): Promise<void> {
   if (config.once) modeNotes.push("--once");
   if (config.dryRun) modeNotes.push("--dry-run");
   if (config.noBrowser) modeNotes.push("--no-browser");
-  if (config.focusMode) modeNotes.push("--mode=focus");
+  if (config.focusMode) modeNotes.push("focus");
   write(
     `cycle-minimum: ${formatDuration(config.cycleMinimumMs)} · concurrency: ${config.maxConcurrency}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
@@ -884,7 +878,6 @@ async function main(): Promise<void> {
     lastSnapshot: null,
     seenCommitHashes: new Set<string>(),
   };
-  const shutdownSignal = { requested: false };
   const cancelSignals = Array.from({ length: config.maxConcurrency }, () => ({ requested: false }));
 
   globalEventEmitter.subscribe((event) => {
@@ -896,6 +889,35 @@ async function main(): Promise<void> {
       }
     }
   });
+
+  const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
+    runEngineLoop(
+      config,
+      githubGateway,
+      githubToken,
+      i,
+      planningMutex,
+      claimedActions,
+      pollingState,
+      shutdownSignal,
+      cancelSignals[i]!,
+    ),
+  );
+
+  await Promise.all(engines);
+
+  return dashboardReady ? dashboard : null;
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const once = argv.includes("--once");
+  const dryRun = argv.includes("--dry-run");
+  const noBrowser = argv.includes("--no-browser");
+
+  const envConfig = loadEnvConfig();
+
+  const shutdownSignal = { requested: false };
 
   // Listen for Escape key on the console to trigger graceful shutdown
   if (process.stdin.isTTY) {
@@ -917,21 +939,21 @@ async function main(): Promise<void> {
     });
   }
 
-  const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
-    runEngineLoop(
-      config,
-      githubGateway,
-      githubToken,
-      i,
-      planningMutex,
-      claimedActions,
-      pollingState,
-      shutdownSignal,
-      cancelSignals[i]!,
-    ),
-  );
+  let nextDefaultDashboardPort = 3000;
+  const projectRuns: Promise<DashboardServer | null>[] = [];
 
-  await Promise.all(engines);
+  for (const projectEnvConfig of envConfig.projects) {
+    const githubToken = resolveGitHubToken(envConfig, projectEnvConfig.github_token_name);
+    const config = buildProjectConfig(projectEnvConfig, envConfig, {
+      once,
+      dryRun,
+      noBrowser,
+      dashboardPort: nextDefaultDashboardPort++,
+    });
+    projectRuns.push(startProject(config, envConfig, githubToken, shutdownSignal));
+  }
+
+  const dashboards = (await Promise.all(projectRuns)).filter(Boolean) as DashboardServer[];
 
   blank();
   if (shutdownSignal.requested) {
@@ -946,7 +968,7 @@ async function main(): Promise<void> {
       process.stdin.setRawMode(false);
     }
   }
-  if (dashboardReady) {
+  for (const dashboard of dashboards) {
     dashboard.close();
   }
   process.exit(0);

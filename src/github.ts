@@ -10,21 +10,6 @@ import type {
   RepositorySnapshot,
 } from "./types.js";
 
-/**
- * Returns the GitHub token configured for Vibrator.
- * Prefers the app-specific variable, then common GitHub token variables.
- */
-export function getGitHubTokenFromEnv(): string {
-  for (const name of ["VIBRATOR_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"] as const) {
-    const token = process.env[name]?.trim();
-    if (token) {
-      return token;
-    }
-  }
-  throw new Error(
-    "Missing GitHub token. Set VIBRATOR_GITHUB_TOKEN or GITHUB_TOKEN to a GitHub PAT with access to the target repository.",
-  );
-}
 
 interface PullRequestInlineComment {
   path: string;
@@ -176,10 +161,13 @@ export class GitHubClient {
   private authenticatedLoginCache: Promise<string> | undefined;
 
   constructor(private readonly options: GitHubClientOptions) {
+    if (!options.gateway && !options.token) {
+      throw new Error("GitHubClient requires either a gateway or a token.");
+    }
     this.gateway =
       options.gateway ??
       new GitHubApiGateway({
-        token: options.token ?? getGitHubTokenFromEnv(),
+        token: options.token!,
         ...(options.apiBaseUrl !== undefined ? { apiBaseUrl: options.apiBaseUrl } : {}),
       });
     this.htmlBaseUrl = options.htmlBaseUrl ?? "https://github.com";
