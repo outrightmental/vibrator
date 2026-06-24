@@ -384,3 +384,87 @@ test("DashboardStore.bootstrap() preserves 'disconnected' status during reconnec
       "bootstrap() must not reset 'disconnected' to 'connecting' during reconnect");
   });
 });
+
+// ── multi-project labeling (one shared dashboard across projects) ───────────────
+
+test("reducer: action-start records the cylinder's project repo; engine-idle clears it", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("action-start", {
+    actionIndex: 1, totalActions: 4, type: "start-implementation",
+    issueNumber: 210, repo: "outrightmental/vibrator", description: "d",
+  }));
+  assert.equal(s.cylinders[0]?.repo, "outrightmental/vibrator");
+
+  s = dashboardReducer(s, makeEvent("engine-idle", { engineIndex: 0, reason: "nothing to do this cycle" }));
+  assert.equal(s.cylinders[0]?.repo, null, "idle cylinder shows no project");
+});
+
+test("reducer: lifecycle-update is scoped per repo and does not clobber other projects", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("lifecycle-update", {
+    repo: "o/a",
+    pairs: [{ issue: { number: 1, title: "A1", state: "open" }, pr: null, prPhase: "absent" }],
+  }));
+  s = dashboardReducer(s, makeEvent("lifecycle-update", {
+    repo: "o/b",
+    pairs: [{ issue: { number: 1, title: "B1", state: "open" }, pr: null, prPhase: "absent" }],
+  }));
+
+  // Both projects' pairs coexist (issue #1 in two different repos).
+  assert.equal(s.lastLifecyclePairs.length, 2);
+  assert.equal(s.lifecycleByRepo.get("o/a")?.length, 1);
+  assert.equal(s.lifecycleByRepo.get("o/b")?.length, 1);
+  // Each pair is tagged with its owning project.
+  const repos = s.lastLifecyclePairs.map((p) => p.repo).sort();
+  assert.deepEqual(repos, ["o/a", "o/b"]);
+});
+
+test("reducer: lifecycle-update replaces only the updated project's slice", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("lifecycle-update", {
+    repo: "o/a",
+    pairs: [{ issue: { number: 1, title: "A1", state: "open" }, pr: null, prPhase: "absent" }],
+  }));
+  s = dashboardReducer(s, makeEvent("lifecycle-update", {
+    repo: "o/b",
+    pairs: [{ issue: { number: 9, title: "B9", state: "open" }, pr: null, prPhase: "absent" }],
+  }));
+  // Re-update only o/a — o/b's slice must survive.
+  s = dashboardReducer(s, makeEvent("lifecycle-update", {
+    repo: "o/a",
+    pairs: [
+      { issue: { number: 1, title: "A1", state: "open" }, pr: null, prPhase: "absent" },
+      { issue: { number: 2, title: "A2", state: "open" }, pr: null, prPhase: "planning" },
+    ],
+  }));
+  assert.equal(s.lifecycleByRepo.get("o/a")?.length, 2);
+  assert.equal(s.lifecycleByRepo.get("o/b")?.length, 1, "o/b slice preserved");
+  assert.equal(s.lastLifecyclePairs.length, 3);
+});
+
+test("reducer: snapshot-update sums session counts across projects", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("snapshot-update", { repo: "o/a", sessionCount: 2, issueCount: 1, prCount: 0 }));
+  assert.equal(s.sessionCount, 2);
+  s = dashboardReducer(s, makeEvent("snapshot-update", { repo: "o/b", sessionCount: 3, issueCount: 1, prCount: 0 }));
+  assert.equal(s.sessionCount, 5, "sessions summed across projects");
+  // Updating one project re-sums rather than double-counting.
+  s = dashboardReducer(s, makeEvent("snapshot-update", { repo: "o/a", sessionCount: 0, issueCount: 1, prCount: 0 }));
+  assert.equal(s.sessionCount, 3);
+});
+
+test("reducer: broadcast events carry their project repo", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("broadcast-commit", {
+    repo: "o/a", hash: "abc1234", author: "Dev", stateBefore: "x", changeHow: "y", stateAfter: "z",
+  }));
+  const item = s.broadcastQueue[s.broadcastQueue.length - 1];
+  assert.equal(item?.repo, "o/a");
+});
+
+test("reducer: log-message carries its project repo onto the event line", () => {
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("log-message", { level: "info", message: "hello", repo: "o/a" }));
+  const line = s.eventStream[s.eventStream.length - 1];
+  assert.equal(line?.repo, "o/a");
+});

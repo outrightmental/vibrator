@@ -26,9 +26,11 @@ export interface ProjectEnvConfig {
   claude_describe_model?: string;
   /** Minimum seconds between engine cycle starts. Defaults to global cycle_minimum_seconds. */
   cycle_minimum_seconds?: number;
-  /** Port for the project dashboard. Defaults to 3000, incrementing per project. */
+  /** @deprecated The dashboard is now global — set `dashboard_port` at the top level.
+   *  Honoured only as a fallback when no global `dashboard_port` is set. */
   dashboard_port?: number;
-  /** Title displayed in the dashboard header. Defaults to repo name. */
+  /** @deprecated The dashboard is now global — set `dashboard_title` at the top level.
+   *  Honoured only (for the single-project case) as a fallback. */
   dashboard_title?: string;
   /** Path for persisted agent-session state. Defaults to .vibrator/<owner>-<repo>-sessions.json. */
   session_store_path?: string;
@@ -39,10 +41,15 @@ export interface EnvConfig {
   claude_code_model?: string;
   /** Claude model for PR descriptions across all projects (default: claude-haiku-4-5). */
   claude_describe_model?: string;
-  /** Global maximum concurrent work items across all engines (default: 3). */
+  /** Total size of the shared cylinder pool across all projects (default: 3). */
   max_concurrency?: number;
   /** Global minimum seconds between engine cycle starts (default: 60). */
   cycle_minimum_seconds?: number;
+  /** Port for the single shared dashboard (default: 3000). */
+  dashboard_port?: number;
+  /** Title shown in the dashboard header. Defaults to the project name in
+   *  single-project mode, or "Vibrator" when multiple projects share the dashboard. */
+  dashboard_title?: string;
   /** GitHub API base URL, for GitHub Enterprise (default: https://api.github.com). */
   github_api_base_url?: string;
   /** GitHub API version header (default: 2022-11-28). */

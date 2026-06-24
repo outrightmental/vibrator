@@ -48,6 +48,7 @@ export class LifecycleList extends LitElement {
     cylinderByPR: { attribute: false },
     owner: { type: String },
     repo: { type: String },
+    multiProject: { type: Boolean },
   };
 
   pairs: LifecyclePair[] = [];
@@ -55,6 +56,7 @@ export class LifecycleList extends LitElement {
   cylinderByPR: Map<number, number> = new Map();
   owner = '';
   repo = '';
+  multiProject = false;
 
   protected override createRenderRoot() { return this; }
 
@@ -79,7 +81,10 @@ export class LifecycleList extends LitElement {
               : sorted.map((pair) => {
                   const issueNum = pair.issue?.number ?? null;
                   const color = resolvePillColor(issueNum, this.cylinderByIssue);
-                  const key = pair.issue ? String(pair.issue.number) : `pr-${pair.pr?.number ?? '?'}`;
+                  // Key includes the repo so pills from different projects that
+                  // happen to share an issue/PR number don't collide in the DOM.
+                  const ident = pair.issue ? `#${pair.issue.number}` : `pr-${pair.pr?.number ?? '?'}`;
+                  const key = `${pair.repo ?? ''}${ident}`;
                   return html`
                     <lifecycle-pill
                       data-key="${key}"
@@ -88,6 +93,7 @@ export class LifecycleList extends LitElement {
                       .colorRgb=${color.rgb}
                       .owner=${this.owner}
                       .repo=${this.repo}
+                      .multiProject=${this.multiProject}
                     ></lifecycle-pill>
                   `;
                 })

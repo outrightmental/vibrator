@@ -10,6 +10,7 @@ export class CylinderEngine extends LitElement {
     appShutdown: { type: Boolean },
     owner: { type: String },
     repo: { type: String },
+    multiProject: { type: Boolean },
     tick: { type: Number },
   };
 
@@ -19,6 +20,7 @@ export class CylinderEngine extends LitElement {
   appShutdown = false;
   owner = '';
   repo = '';
+  multiProject = false;
   tick = 0;
 
   protected override createRenderRoot() { return this; }
@@ -39,6 +41,7 @@ export class CylinderEngine extends LitElement {
               .cylinder=${cyl}
               .owner=${this.owner}
               .repo=${this.repo}
+              .multiProject=${this.multiProject}
               .tick=${this.tick}
             ></cylinder-row>
           `)}

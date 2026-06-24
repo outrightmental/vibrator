@@ -37,6 +37,13 @@ export class EventStream extends LitElement {
       width: 54px;
     }
 
+    .event-repo {
+      flex-shrink: 0;
+      color: rgba(255, 255, 255, 0.3);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
     .event-content {
       flex: 1;
       color: rgba(255, 255, 255, 0.55);
@@ -58,9 +65,11 @@ export class EventStream extends LitElement {
 
   static override properties = {
     events: { type: Array },
+    multiProject: { type: Boolean },
   };
 
   events: EventLine[] = [];
+  multiProject = false;
 
   override updated() {
     const el = this.shadowRoot?.querySelector('.event-stream');
@@ -74,6 +83,7 @@ export class EventStream extends LitElement {
           <div class="event-line">
             <span class="event-dot" style="${line.color ? `color:${line.color};text-shadow:0 0 5px ${line.color}` : ''}">●</span>
             <span class="event-time">${line.time}</span>
+            ${this.multiProject && line.repo ? html`<span class="event-repo">${line.repo}</span>` : ''}
             <span class="event-content" style="${this._contentStyle(line)}">${line.text}</span>
           </div>
         `)}

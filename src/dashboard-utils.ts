@@ -63,6 +63,7 @@ export function broadcastLifecycleUpdate(
   projectModeEnabled = false,
   focusMode = false,
   emitter: EventEmitter = globalEventEmitter,
+  repo = "",
 ): void {
   const pairs: LifecyclePair[] = [];
   const pairedIssueNumbers = new Set<number>();
@@ -165,7 +166,10 @@ export function broadcastLifecycleUpdate(
     return aNum - bNum;
   });
 
-  emitter.emit("lifecycle-update", { pairs });
+  // `repo` scopes this update to one project so the client can keep a separate
+  // lifecycle slice per project — multiple projects share one dashboard and would
+  // otherwise clobber each other's pairs (the whole array is replaced per update).
+  emitter.emit("lifecycle-update", { pairs, repo });
 }
 
 export function broadcastRepositorySnapshot(
@@ -212,7 +216,7 @@ export function broadcastRepositorySnapshot(
   });
 }
 
-export function broadcastPullRequestUpdate(pr: PullRequest, action: string, workerIndex?: number, emitter: EventEmitter = globalEventEmitter): void {
+export function broadcastPullRequestUpdate(pr: PullRequest, action: string, workerIndex?: number, emitter: EventEmitter = globalEventEmitter, repo = ""): void {
   const statusEmoji = pr.draft ? "📝" : "✨";
   const checksEmoji =
     pr.checksStatus === "success"
@@ -268,6 +272,7 @@ export function broadcastPullRequestUpdate(pr: PullRequest, action: string, work
     stateAfter,
     excellence,
     workerIndex,
+    repo,
   });
 }
 
@@ -322,6 +327,7 @@ export function broadcastReviewComment(
   commentCount: number,
   workerIndex?: number,
   emitter: EventEmitter = globalEventEmitter,
+  repo = "",
 ): void {
   emitter.emit("broadcast-review-comment", {
     content: `Review from ${author} on PR #${prNumber}: ${commentCount} comment(s)`,
@@ -333,10 +339,11 @@ export function broadcastReviewComment(
     stateAfter: `PR #${prNumber} has ${commentCount} review comment(s) to address`,
     excellence: "Feedback received — agent will address every comment to improve the code",
     workerIndex,
+    repo,
   });
 }
 
-export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?: number, emitter: EventEmitter = globalEventEmitter): void {
+export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?: number, emitter: EventEmitter = globalEventEmitter, repo = ""): void {
   if (isManualIssue(issue)) return;
 
   const stateEmoji = issue.state === "open" ? "🔴" : "🟢";
@@ -364,10 +371,11 @@ export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?:
     stateAfter,
     excellence,
     workerIndex,
+    repo,
   });
 }
 
-export function broadcastCommit(commit: Commit, workerIndex?: number, emitter: EventEmitter = globalEventEmitter): void {
+export function broadcastCommit(commit: Commit, workerIndex?: number, emitter: EventEmitter = globalEventEmitter, repo = ""): void {
   const shortHash = commit.hash.slice(0, 7);
   const firstLine = commit.message.split('\n')[0];
   emitter.emit("broadcast-commit", {
@@ -380,13 +388,15 @@ export function broadcastCommit(commit: Commit, workerIndex?: number, emitter: E
     stateAfter: `Branch advanced: "${firstLine}"`,
     excellence: "Continuous incremental progress — every commit brings the goal closer",
     workerIndex,
+    repo,
   });
 }
 
-export function emitLogMessage(level: "info" | "success" | "warning" | "error", message: string, emitter: EventEmitter = globalEventEmitter): void {
+export function emitLogMessage(level: "info" | "success" | "warning" | "error", message: string, emitter: EventEmitter = globalEventEmitter, repo = ""): void {
   emitter.emit("log-message", {
     level,
     message,
+    repo,
   });
 }
 

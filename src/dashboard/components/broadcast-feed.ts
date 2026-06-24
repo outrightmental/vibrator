@@ -6,10 +6,12 @@ export class BroadcastFeed extends LitElement {
   static override properties = {
     events: { type: Array },
     baseUrl: { type: String },
+    multiProject: { type: Boolean },
   };
 
   events: BroadcastEventData[] = [];
   baseUrl = '';
+  multiProject = false;
 
   protected override createRenderRoot() { return this; }
 
@@ -22,6 +24,7 @@ export class BroadcastFeed extends LitElement {
             <broadcast-event-card
               .event=${ev}
               .baseUrl=${this.baseUrl}
+              .multiProject=${this.multiProject}
             ></broadcast-event-card>
           `)}
         </div>
