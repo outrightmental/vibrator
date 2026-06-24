@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WebSocketServer } from "ws";
+import { WebSocket as WsWebSocket, WebSocketServer } from "ws";
 import { WsClient } from "../src/dashboard/store/ws-client.js";
+
+// Node.js < 22 does not expose WebSocket as a global; polyfill it from the
+// 'ws' package so ws-client.ts (browser code) works in the test environment.
+if (typeof globalThis.WebSocket === "undefined") {
+  (globalThis as unknown as { WebSocket: typeof WsWebSocket }).WebSocket = WsWebSocket;
+}
 
 const BASE_PORT = 19_700;
 
