@@ -9,7 +9,7 @@ import {
   isClaudeUsageLimitMessage,
   getClaudeQuotaBlockedUntilMs,
 } from "./claude-agent.js";
-import { loadEnvConfig, resolveGitHubToken, type EnvConfig, type ProjectEnvConfig } from "./env-config.js";
+import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "./env-config.js";
 import {
   buildDefaultSessionStorePath,
   GitHubClient,
@@ -347,22 +347,11 @@ function buildProjectConfig(
   runtimeFlags: { once: boolean; dryRun: boolean; noBrowser: boolean; dashboardPort: number },
 ): Config {
   const { owner, repo } = parseRepositorySlug(projectEnvConfig.github_repository);
-
-  const globalMaxConcurrency = envConfig.max_concurrency ?? 3;
-  const projectMaxConcurrency = projectEnvConfig.max_concurrency !== undefined
-    ? Math.min(projectEnvConfig.max_concurrency, globalMaxConcurrency)
-    : globalMaxConcurrency;
-
-  const cycleMinimumSeconds =
-    projectEnvConfig.cycle_minimum_seconds ?? envConfig.cycle_minimum_seconds ?? 60;
-
-  const claudeModel = projectEnvConfig.claude_code_model ?? envConfig.claude_code_model ?? "claude-sonnet-4-6";
-  const claudeCommitModel = projectEnvConfig.claude_describe_model ?? envConfig.claude_describe_model;
+  const resolved = applyProjectDefaults(projectEnvConfig, envConfig);
 
   const projectNumber = projectEnvConfig.github_project_number;
-  const reviewers = projectEnvConfig.reviewers ?? [];
   const projectMode: ProjectModeConfig | undefined =
-    projectNumber !== undefined ? { projectNumber, reviewers } : undefined;
+    projectNumber !== undefined ? { projectNumber, reviewers: resolved.reviewers } : undefined;
 
   const sessionStorePath =
     projectEnvConfig.session_store_path ?? buildDefaultSessionStorePath(owner, repo);
@@ -372,10 +361,10 @@ function buildProjectConfig(
   return {
     owner,
     repo,
-    claudeModel,
-    claudeCommitModel,
-    maxConcurrency: projectMaxConcurrency,
-    cycleMinimumMs: Math.round(cycleMinimumSeconds * 1000),
+    claudeModel: resolved.claude_code_model,
+    claudeCommitModel: resolved.claude_describe_model,
+    maxConcurrency: resolved.max_concurrency,
+    cycleMinimumMs: Math.round(resolved.cycle_minimum_seconds * 1000),
     dashboardPort,
     dashboardTitle: projectEnvConfig.dashboard_title,
     once: runtimeFlags.once,
@@ -383,7 +372,7 @@ function buildProjectConfig(
     noBrowser: runtimeFlags.noBrowser,
     sessionStorePath,
     projectMode,
-    focusMode: projectEnvConfig.focus_mode ?? false,
+    focusMode: resolved.focus_mode,
   };
 }
 

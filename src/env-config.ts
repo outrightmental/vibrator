@@ -100,6 +100,41 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
   return raw as EnvConfig;
 }
 
+export interface ResolvedProjectDefaults {
+  max_concurrency: number;
+  claude_code_model: string;
+  claude_describe_model: string | undefined;
+  cycle_minimum_seconds: number;
+  reviewers: string[];
+  focus_mode: boolean;
+}
+
+/**
+ * Merges per-project overrides with global defaults.
+ * Per-project max_concurrency is additionally capped at the global value.
+ */
+export function applyProjectDefaults(
+  projectConfig: ProjectEnvConfig,
+  globalConfig: EnvConfig,
+): ResolvedProjectDefaults {
+  const globalMax = globalConfig.max_concurrency ?? 3;
+  const maxConcurrency =
+    projectConfig.max_concurrency !== undefined
+      ? Math.min(projectConfig.max_concurrency, globalMax)
+      : globalMax;
+  return {
+    max_concurrency: maxConcurrency,
+    claude_code_model:
+      projectConfig.claude_code_model ?? globalConfig.claude_code_model ?? "claude-sonnet-4-6",
+    claude_describe_model:
+      projectConfig.claude_describe_model ?? globalConfig.claude_describe_model,
+    cycle_minimum_seconds:
+      projectConfig.cycle_minimum_seconds ?? globalConfig.cycle_minimum_seconds ?? 60,
+    reviewers: projectConfig.reviewers ?? [],
+    focus_mode: projectConfig.focus_mode ?? false,
+  };
+}
+
 /**
  * Returns the GitHub token for the given name, or the default token when no
  * name is specified. The default is the first token with `"default": true`, or

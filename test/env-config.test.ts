@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadEnvConfig, resolveGitHubToken, type EnvConfig } from "../src/env-config.js";
+import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "../src/env-config.js";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -217,4 +217,129 @@ test("resolveGitHubToken trims whitespace from token values", () => {
     projects: [],
   };
   assert.equal(resolveGitHubToken(config), "ghp_trimmed");
+});
+
+// ── applyProjectDefaults ──────────────────────────────────────────────────────
+
+const baseEnvConfig: EnvConfig = {
+  github_tokens: [{ name: "default", token: "t" }],
+  projects: [],
+};
+
+test("applyProjectDefaults uses global max_concurrency when project does not override", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r" },
+    { ...baseEnvConfig, max_concurrency: 5 },
+  );
+  assert.equal(result.max_concurrency, 5);
+});
+
+test("applyProjectDefaults caps per-project max_concurrency at the global value", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", max_concurrency: 10 },
+    { ...baseEnvConfig, max_concurrency: 3 },
+  );
+  assert.equal(result.max_concurrency, 3);
+});
+
+test("applyProjectDefaults respects per-project max_concurrency when below global", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", max_concurrency: 2 },
+    { ...baseEnvConfig, max_concurrency: 5 },
+  );
+  assert.equal(result.max_concurrency, 2);
+});
+
+test("applyProjectDefaults defaults max_concurrency to 3 when neither level specifies it", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(result.max_concurrency, 3);
+});
+
+test("applyProjectDefaults uses per-project claude_code_model over global", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", claude_code_model: "claude-opus-4-8" },
+    { ...baseEnvConfig, claude_code_model: "claude-sonnet-4-6" },
+  );
+  assert.equal(result.claude_code_model, "claude-opus-4-8");
+});
+
+test("applyProjectDefaults falls back to global claude_code_model", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r" },
+    { ...baseEnvConfig, claude_code_model: "claude-sonnet-4-6" },
+  );
+  assert.equal(result.claude_code_model, "claude-sonnet-4-6");
+});
+
+test("applyProjectDefaults defaults claude_code_model to claude-sonnet-4-6", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(result.claude_code_model, "claude-sonnet-4-6");
+});
+
+test("applyProjectDefaults uses per-project claude_describe_model over global", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", claude_describe_model: "claude-haiku-4-5" },
+    { ...baseEnvConfig, claude_describe_model: "claude-sonnet-4-6" },
+  );
+  assert.equal(result.claude_describe_model, "claude-haiku-4-5");
+});
+
+test("applyProjectDefaults falls back to global claude_describe_model", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r" },
+    { ...baseEnvConfig, claude_describe_model: "claude-haiku-4-5" },
+  );
+  assert.equal(result.claude_describe_model, "claude-haiku-4-5");
+});
+
+test("applyProjectDefaults returns undefined claude_describe_model when neither level sets it", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(result.claude_describe_model, undefined);
+});
+
+test("applyProjectDefaults uses per-project cycle_minimum_seconds over global", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", cycle_minimum_seconds: 30 },
+    { ...baseEnvConfig, cycle_minimum_seconds: 120 },
+  );
+  assert.equal(result.cycle_minimum_seconds, 30);
+});
+
+test("applyProjectDefaults falls back to global cycle_minimum_seconds", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r" },
+    { ...baseEnvConfig, cycle_minimum_seconds: 90 },
+  );
+  assert.equal(result.cycle_minimum_seconds, 90);
+});
+
+test("applyProjectDefaults defaults cycle_minimum_seconds to 60", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(result.cycle_minimum_seconds, 60);
+});
+
+test("applyProjectDefaults applies focus_mode from project config", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", focus_mode: true },
+    baseEnvConfig,
+  );
+  assert.equal(result.focus_mode, true);
+});
+
+test("applyProjectDefaults defaults focus_mode to false", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(result.focus_mode, false);
+});
+
+test("applyProjectDefaults applies reviewers from project config", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", reviewers: ["alice", "bob"] },
+    baseEnvConfig,
+  );
+  assert.deepEqual(result.reviewers, ["alice", "bob"]);
+});
+
+test("applyProjectDefaults defaults reviewers to empty array", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.deepEqual(result.reviewers, []);
 });
