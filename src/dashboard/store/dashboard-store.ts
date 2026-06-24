@@ -470,9 +470,10 @@ export class DashboardStore {
     }
   }
 
-  connectLive(): void {
+  connectLive(wsUrl?: string): void {
+    const url = wsUrl ?? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/ws`;
     const client = new WsClient(
-      `ws://${location.host}/api/ws`,
+      url,
       (event) => this.applyEvent(event),
       async () => {
         await this.bootstrap();

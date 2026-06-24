@@ -2423,6 +2423,7 @@ const dashboard = new DashboardUI();
   }
 
   close(): void {
+    for (const client of this.wss.clients) client.terminate();
     this.wss.close();
     this.server.close();
   }
