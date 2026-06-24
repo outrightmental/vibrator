@@ -1,4 +1,4 @@
-import { globalEventEmitter } from "./event-emitter.js";
+import { globalEventEmitter, type EventEmitter } from "./event-emitter.js";
 import type { GitHubRateLimitHold } from "./github-rate-limit.js";
 import type { RepositorySnapshot, PullRequest, Issue, Commit } from "./types.js";
 
@@ -62,6 +62,7 @@ export function broadcastLifecycleUpdate(
   blockedIssueNumbers: Readonly<Record<number, number[]>> = {},
   projectModeEnabled = false,
   focusMode = false,
+  emitter: EventEmitter = globalEventEmitter,
 ): void {
   const pairs: LifecyclePair[] = [];
   const pairedIssueNumbers = new Set<number>();
@@ -164,7 +165,7 @@ export function broadcastLifecycleUpdate(
     return aNum - bNum;
   });
 
-  globalEventEmitter.emit("lifecycle-update", { pairs });
+  emitter.emit("lifecycle-update", { pairs });
 }
 
 export function broadcastRepositorySnapshot(
@@ -172,6 +173,7 @@ export function broadcastRepositorySnapshot(
   owner: string,
   repo: string,
   overrideSessionCount?: number,
+  emitter: EventEmitter = globalEventEmitter,
 ): void {
   const openPRs = snapshot.pullRequests.filter((pr) => pr.state === "open");
   const draftPRs = openPRs.filter((pr) => pr.draft);
@@ -194,7 +196,7 @@ export function broadcastRepositorySnapshot(
     ? `${checkStats.failure} failing CI check(s) identified — agent will remediate`
     : "Full repository visibility maintained across all active work";
 
-  globalEventEmitter.emit("broadcast-github-activity", {
+  emitter.emit("broadcast-github-activity", {
     content: `Repository snapshot: ${visibleIssues.length} open issues, ${openPRs.length} PRs (${draftPRs.length} draft, ${readyPRs.length} ready), ${activeSessionCount} active sessions, checks: ${checkStats.success} success, ${checkStats.failure} failed, ${checkStats.pending} pending`,
     repo: `${owner}/${repo}`,
     issueCount: visibleIssues.length,
@@ -210,7 +212,7 @@ export function broadcastRepositorySnapshot(
   });
 }
 
-export function broadcastPullRequestUpdate(pr: PullRequest, action: string, workerIndex?: number): void {
+export function broadcastPullRequestUpdate(pr: PullRequest, action: string, workerIndex?: number, emitter: EventEmitter = globalEventEmitter): void {
   const statusEmoji = pr.draft ? "📝" : "✨";
   const checksEmoji =
     pr.checksStatus === "success"
@@ -253,7 +255,7 @@ export function broadcastPullRequestUpdate(pr: PullRequest, action: string, work
       : "Active iteration — getting closer to done";
   }
 
-  globalEventEmitter.emit("broadcast-pr-update", {
+  emitter.emit("broadcast-pr-update", {
     content: `PR #${pr.number} "${pr.title}" - ${action} ${statusEmoji} [${pr.state.toUpperCase()} ${checksEmoji}]`,
     prNumber: pr.number,
     title: pr.title,
@@ -269,7 +271,7 @@ export function broadcastPullRequestUpdate(pr: PullRequest, action: string, work
   });
 }
 
-export function broadcastCIStatus(prNumber: number, status: string, details?: string, workerIndex?: number): void {
+export function broadcastCIStatus(prNumber: number, status: string, details?: string, workerIndex?: number, emitter: EventEmitter = globalEventEmitter): void {
   const statusEmoji =
     status === "success" ? "✅" : status === "failure" ? "❌" : status === "pending" ? "⏳" : "⚪";
 
@@ -301,7 +303,7 @@ export function broadcastCIStatus(prNumber: number, status: string, details?: st
     excellence: "CI state updated — system is actively monitored",
   };
 
-  globalEventEmitter.emit("broadcast-ci-status", {
+  emitter.emit("broadcast-ci-status", {
     content,
     prNumber,
     status,
@@ -319,8 +321,9 @@ export function broadcastReviewComment(
   author: string,
   commentCount: number,
   workerIndex?: number,
+  emitter: EventEmitter = globalEventEmitter,
 ): void {
-  globalEventEmitter.emit("broadcast-review-comment", {
+  emitter.emit("broadcast-review-comment", {
     content: `Review from ${author} on PR #${prNumber}: ${commentCount} comment(s)`,
     prNumber,
     author,
@@ -333,7 +336,7 @@ export function broadcastReviewComment(
   });
 }
 
-export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?: number): void {
+export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?: number, emitter: EventEmitter = globalEventEmitter): void {
   if (isManualIssue(issue)) return;
 
   const stateEmoji = issue.state === "open" ? "🔴" : "🟢";
@@ -350,7 +353,7 @@ export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?:
     ? "New work item queued — will be implemented automatically by the agent"
     : "Issue actively tracked — progress is being made";
 
-  globalEventEmitter.emit("broadcast-issue-update", {
+  emitter.emit("broadcast-issue-update", {
     content: `Issue #${issue.number} ${action} "${issue.title}" ${stateEmoji}`,
     issueNumber: issue.number,
     title: issue.title,
@@ -364,10 +367,10 @@ export function broadcastIssueUpdate(issue: Issue, action: string, workerIndex?:
   });
 }
 
-export function broadcastCommit(commit: Commit, workerIndex?: number): void {
+export function broadcastCommit(commit: Commit, workerIndex?: number, emitter: EventEmitter = globalEventEmitter): void {
   const shortHash = commit.hash.slice(0, 7);
   const firstLine = commit.message.split('\n')[0];
-  globalEventEmitter.emit("broadcast-commit", {
+  emitter.emit("broadcast-commit", {
     content: `Commit ${shortHash} by ${commit.author}: ${firstLine}`,
     hash: commit.hash,
     author: commit.author,
@@ -380,8 +383,8 @@ export function broadcastCommit(commit: Commit, workerIndex?: number): void {
   });
 }
 
-export function emitLogMessage(level: "info" | "success" | "warning" | "error", message: string): void {
-  globalEventEmitter.emit("log-message", {
+export function emitLogMessage(level: "info" | "success" | "warning" | "error", message: string, emitter: EventEmitter = globalEventEmitter): void {
+  emitter.emit("log-message", {
     level,
     message,
   });
