@@ -71,6 +71,18 @@ function note(text: string, indent = 1): void {
   write(`${pad}${text}`);
 }
 
+function createLogger(emitter: EventEmitter) {
+  function write(line: string): void {
+    console.log(line);
+    emitLogMessage("info", line, emitter);
+  }
+  function blank(): void { console.log(""); }
+  function section(title: string): void { blank(); write(title); write(RULE); }
+  function bullet(text: string, indent = 1): void { write(`${"  ".repeat(indent)}• ${text}`); }
+  function note(text: string, indent = 1): void { write(`${"  ".repeat(indent)}${text}`); }
+  return { write, blank, section, bullet, note };
+}
+
 function formatDuration(milliseconds: number): string {
   const seconds = Math.max(0, Math.round(milliseconds / 1000));
   if (seconds < 60) {
@@ -403,6 +415,7 @@ async function runEngineLoop(
   cancelSignal: { requested: boolean },
   emitter: EventEmitter,
 ): Promise<void> {
+  const { write, blank, section, bullet, note } = createLogger(emitter);
   const repo = `${config.owner}/${config.repo}`;
   const gitHubClient = new GitHubClient({
     owner: config.owner,
@@ -751,6 +764,7 @@ async function startProject(
   shutdownSignal: { requested: boolean },
 ): Promise<DashboardServer | null> {
   const projectEmitter = new EventEmitter();
+  const { write, blank, section, bullet, note } = createLogger(projectEmitter);
   const githubGateway = new GitHubApiGateway({
     token: githubToken,
     apiBaseUrl: envConfig.github_api_base_url ?? "https://api.github.com",

@@ -383,8 +383,8 @@ export function broadcastCommit(commit: Commit, workerIndex?: number, emitter: E
   });
 }
 
-export function emitLogMessage(level: "info" | "success" | "warning" | "error", message: string): void {
-  globalEventEmitter.emit("log-message", {
+export function emitLogMessage(level: "info" | "success" | "warning" | "error", message: string, emitter: EventEmitter = globalEventEmitter): void {
+  emitter.emit("log-message", {
     level,
     message,
   });

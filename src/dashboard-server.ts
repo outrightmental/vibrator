@@ -66,6 +66,7 @@ export class DashboardServer {
   private cachedEvents: Map<string, DashboardEvent> = new Map();
   private cssWatcher: ReturnType<typeof fs.watch> | null = null;
   private cssReloadDebounce: ReturnType<typeof setTimeout> | null = null;
+  private projectEmitter: EventEmitter;
 
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
