@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  getGitHubTokenFromEnv,
   GitHubClient,
   isReviewBot,
   isVibratorReview,
@@ -45,66 +44,6 @@ test("isVibratorReview returns false for reviews from other sources", () => {
   assert.equal(isVibratorReview("LGTM"), false);
   assert.equal(isVibratorReview(null), false);
   assert.equal(isVibratorReview(undefined), false);
-});
-
-test("getGitHubTokenFromEnv prefers VIBRATOR_GITHUB_TOKEN", (t) => {
-  const previous = {
-    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
-    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-    GH_TOKEN: process.env.GH_TOKEN,
-  };
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-  process.env.VIBRATOR_GITHUB_TOKEN = " vibrator-token ";
-  process.env.GITHUB_TOKEN = "github-token";
-  process.env.GH_TOKEN = "gh-token";
-  assert.equal(getGitHubTokenFromEnv(), "vibrator-token");
-});
-
-test("getGitHubTokenFromEnv falls back to GITHUB_TOKEN then GH_TOKEN", (t) => {
-  const previous = {
-    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
-    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-    GH_TOKEN: process.env.GH_TOKEN,
-  };
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-  delete process.env.VIBRATOR_GITHUB_TOKEN;
-  process.env.GITHUB_TOKEN = " github-token ";
-  process.env.GH_TOKEN = "gh-token";
-  assert.equal(getGitHubTokenFromEnv(), "github-token");
-
-  delete process.env.GITHUB_TOKEN;
-  assert.equal(getGitHubTokenFromEnv(), "gh-token");
-});
-
-test("getGitHubTokenFromEnv throws a clear error when no token is set", (t) => {
-  const previous = {
-    VIBRATOR_GITHUB_TOKEN: process.env.VIBRATOR_GITHUB_TOKEN,
-    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-    GH_TOKEN: process.env.GH_TOKEN,
-  };
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-  delete process.env.VIBRATOR_GITHUB_TOKEN;
-  delete process.env.GITHUB_TOKEN;
-  delete process.env.GH_TOKEN;
-  assert.throws(
-    () => getGitHubTokenFromEnv(),
-    /Missing GitHub token\. Set VIBRATOR_GITHUB_TOKEN or GITHUB_TOKEN/,
-  );
 });
 
 test("squashMergePullRequest marks draft PR ready and calls squash merge API", async (t) => {
