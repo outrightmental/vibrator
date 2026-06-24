@@ -67,6 +67,7 @@ export class DashboardServer {
   private cssWatcher: ReturnType<typeof fs.watch> | null = null;
   private cssReloadDebounce: ReturnType<typeof setTimeout> | null = null;
   private projectEmitter: EventEmitter;
+  private _unsubscribers: (() => void)[] = [];
 
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
@@ -104,19 +105,24 @@ export class DashboardServer {
       console.error("[Dashboard] WebSocket server error:", error);
     });
 
-    this.projectEmitter.subscribe((event) => {
+    this._unsubscribers.push(this.projectEmitter.subscribe((event) => {
       this.broadcastEvent(event);
-    });
+    }));
     // When using a per-project emitter, also listen on the global emitter for
     // app-level events (shutdown-requested, app-shutdown) so connected browser
     // clients receive graceful-shutdown notifications.
     if (config.eventEmitter) {
-      globalEventEmitter.subscribe((event) => {
+      this._unsubscribers.push(globalEventEmitter.subscribe((event) => {
         if (event.type === "shutdown-requested" || event.type === "app-shutdown") {
           this.broadcastEvent(event);
         }
-      });
+      }));
     }
+  }
+
+  private unsubscribeFromEvents(): void {
+    for (const unsub of this._unsubscribers) unsub();
+    this._unsubscribers = [];
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
