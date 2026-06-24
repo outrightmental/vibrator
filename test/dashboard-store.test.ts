@@ -39,6 +39,23 @@ test("reducer: iteration-start with new maxConcurrency re-initialises all cylind
   assert.equal(s.cylinders.length, 2);
 });
 
+test("reducer: cylinder colors cycle through the palette via modulo (no gray fallback)", () => {
+  // Initialise more cylinders than there are palette colors (6) to exercise the
+  // modulo wrap — every cylinder must get a real neon color, never gray.
+  let s = initialState();
+  s = dashboardReducer(s, makeEvent("iteration-start", { engineIndex: 0, iterationNumber: 1, maxConcurrency: 8 }));
+  assert.equal(s.cylinders.length, 8);
+
+  for (const cyl of s.cylinders) {
+    assert.notEqual(cyl.color, "#888888", "no cylinder should fall back to gray");
+    assert.notEqual(cyl.colorRgb, "136,136,136", "no cylinder should fall back to gray rgb");
+  }
+
+  // Cylinder 7 (index 6) wraps back to the first palette entry, cylinder 8 to the second.
+  assert.equal(s.cylinders[6]?.color, s.cylinders[0]?.color, "color should wrap via modulo");
+  assert.equal(s.cylinders[7]?.color, s.cylinders[1]?.color, "color should wrap via modulo");
+});
+
 // ── action-start ──────────────────────────────────────────────────────────────
 
 test("reducer: action-start sets cylinder to active", () => {
