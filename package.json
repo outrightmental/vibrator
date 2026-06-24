@@ -5,8 +5,8 @@
   "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run build:dashboard",
-    "build:dashboard": "esbuild src/dashboard/main.ts --bundle --format=esm --sourcemap --outfile=dist/dashboard/bundle.js",
-    "watch:dashboard": "esbuild src/dashboard/main.ts --bundle --format=esm --sourcemap --outfile=dist/dashboard/bundle.js --watch",
+    "build:dashboard": "esbuild src/dashboard/main.ts --bundle --format=esm --sourcemap --tsconfig=src/dashboard/tsconfig.json --outfile=dist/dashboard/bundle.js",
+    "watch:dashboard": "esbuild src/dashboard/main.ts --bundle --format=esm --sourcemap --tsconfig=src/dashboard/tsconfig.json --outfile=dist/dashboard/bundle.js --watch",
     "predev": "npm run build:dashboard",
     "dev": "tsx src/index.ts",
     "start": "npm run build && node dist/src/index.js",
@@ -32,7 +32,7 @@
     "@types/ws": "^8.18.1",
     "esbuild": "^0.25.0",
     "lit": "^3.2.0",
-    "tsx": "^4.21.0",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3"
   },
   "dependencies": {

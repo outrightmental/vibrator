@@ -1,0 +1,19 @@
+{
+  // Dashboard-only tsconfig consumed by the esbuild bundle build.
+  //
+  // Lit installs reactive property accessors on the prototype from each
+  // component's `static properties`. With `useDefineForClassFields: true`
+  // (the default for `target: es2022`), class-field initializers like
+  // `connection = 'connecting'` are emitted as `defineProperty` on the
+  // instance, which SHADOWS those accessors — so assigning a reactive
+  // property never calls `requestUpdate()` and the component stops
+  // re-rendering (the dashboard only updated on a full page reload, #204).
+  //
+  // Setting this to false emits plain `this.connection = ...` assignments
+  // that go through Lit's accessors, restoring reactivity.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "useDefineForClassFields": false
+  },
+  "include": ["**/*.ts"]
+}
