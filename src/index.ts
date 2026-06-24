@@ -356,7 +356,7 @@ function buildProjectConfig(
   const sessionStorePath =
     projectEnvConfig.session_store_path ?? buildDefaultSessionStorePath(owner, repo);
 
-  const dashboardPort = projectEnvConfig.dashboard_port ?? runtimeFlags.dashboardPort;
+  const dashboardPort = runtimeFlags.dashboardPort;
 
   return {
     owner,
@@ -937,16 +937,29 @@ async function main(): Promise<void> {
     });
   }
 
+  // Pre-collect explicitly-configured ports so the auto-increment counter skips them,
+  // preventing conflicts between auto-assigned and explicit ports.
+  const explicitPorts = new Set(
+    envConfig.projects
+      .filter((p) => p.dashboard_port !== undefined)
+      .map((p) => p.dashboard_port!),
+  );
   let nextDefaultDashboardPort = 3000;
+  function nextAvailablePort(): number {
+    while (explicitPorts.has(nextDefaultDashboardPort)) nextDefaultDashboardPort++;
+    return nextDefaultDashboardPort++;
+  }
+
   const projectRuns: Promise<DashboardServer | null>[] = [];
 
   for (const projectEnvConfig of envConfig.projects) {
     const githubToken = resolveGitHubToken(envConfig, projectEnvConfig.github_token_name);
+    const dashboardPort = projectEnvConfig.dashboard_port ?? nextAvailablePort();
     const config = buildProjectConfig(projectEnvConfig, envConfig, {
       once,
       dryRun,
       noBrowser,
-      dashboardPort: nextDefaultDashboardPort++,
+      dashboardPort,
     });
     projectRuns.push(startProject(config, envConfig, githubToken, shutdownSignal));
   }
