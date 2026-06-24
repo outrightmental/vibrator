@@ -73,8 +73,29 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
   if (!Array.isArray(config.github_tokens) || config.github_tokens.length === 0) {
     throw new Error(`${filePath}: "github_tokens" must be a non-empty array.`);
   }
+  for (let i = 0; i < config.github_tokens.length; i++) {
+    const t = config.github_tokens[i] as Record<string, unknown>;
+    if (!t || typeof t !== "object") {
+      throw new Error(`${filePath}: "github_tokens[${i}]" must be an object.`);
+    }
+    if (typeof t.name !== "string" || !t.name.trim()) {
+      throw new Error(`${filePath}: "github_tokens[${i}].name" must be a non-empty string.`);
+    }
+    if (typeof t.token !== "string" || !t.token.trim()) {
+      throw new Error(`${filePath}: "github_tokens[${i}].token" must be a non-empty string.`);
+    }
+  }
   if (!Array.isArray(config.projects) || config.projects.length === 0) {
     throw new Error(`${filePath}: "projects" must be a non-empty array.`);
+  }
+  for (let i = 0; i < config.projects.length; i++) {
+    const p = config.projects[i] as Record<string, unknown>;
+    if (!p || typeof p !== "object") {
+      throw new Error(`${filePath}: "projects[${i}]" must be an object.`);
+    }
+    if (typeof p.github_repository !== "string" || !p.github_repository.trim()) {
+      throw new Error(`${filePath}: "projects[${i}].github_repository" must be a non-empty string.`);
+    }
   }
   return raw as EnvConfig;
 }

@@ -137,6 +137,36 @@ test("loadEnvConfig throws when projects is empty", async () => {
   });
 });
 
+test("loadEnvConfig throws when a token entry is missing name", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvJson(dir, {
+      github_tokens: [{ token: "ghp_test" }],
+      projects: [{ github_repository: "owner/repo" }],
+    });
+    assert.throws(() => loadEnvConfig(filePath), /"github_tokens\[0\]\.name" must be a non-empty string/);
+  });
+});
+
+test("loadEnvConfig throws when a token entry is missing token", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvJson(dir, {
+      github_tokens: [{ name: "default" }],
+      projects: [{ github_repository: "owner/repo" }],
+    });
+    assert.throws(() => loadEnvConfig(filePath), /"github_tokens\[0\]\.token" must be a non-empty string/);
+  });
+});
+
+test("loadEnvConfig throws when a project entry is missing github_repository", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvJson(dir, {
+      github_tokens: [{ name: "default", token: "ghp_test" }],
+      projects: [{}],
+    });
+    assert.throws(() => loadEnvConfig(filePath), /"projects\[0\]\.github_repository" must be a non-empty string/);
+  });
+});
+
 test("resolveGitHubToken returns the default token (marked with default: true)", () => {
   const config: EnvConfig = {
     github_tokens: [
