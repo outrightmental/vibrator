@@ -1,12 +1,6 @@
-import type { ProjectModeConfig } from "./orchestrator.js";
+export const DEFAULT_DASHBOARD_TITLE = "Outright Mental";
 
-export function resolveDashboardTitle(
-  configuredTitle: string | undefined,
-  repo: string,
-  projectMode: ProjectModeConfig | undefined,
-  projectTitle: string | undefined,
-): string {
+export function resolveDashboardTitle(configuredTitle: string | undefined): string {
   if (configuredTitle && configuredTitle.trim() !== "") return configuredTitle;
-  if (projectMode) return projectTitle && projectTitle.trim() !== "" ? projectTitle : repo;
-  return repo;
+  return DEFAULT_DASHBOARD_TITLE;
 }

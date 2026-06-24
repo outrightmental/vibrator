@@ -63,7 +63,6 @@ test("loadEnvConfig loads a full config with all optional fields", async () => {
           claude_describe_model: "claude-haiku-4-5",
           cycle_minimum_seconds: 45,
           dashboard_port: 3001,
-          dashboard_title: "Project A",
           session_store_path: "/tmp/sessions.json",
         },
         {
