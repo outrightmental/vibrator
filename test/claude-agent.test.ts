@@ -1205,6 +1205,97 @@ test("implementIssue creates a canonical clone and uses linked worktrees for tas
   }
 });
 
+test("implementIssue repairs a leftover interrupted clone with an unborn HEAD", async () => {
+  // Regression: an older version (or an interrupted `git clone`) can leave a
+  // task directory whose `.git` is a *directory* with an origin remote and
+  // fetched objects but an UNBORN HEAD (`ref: refs/heads/main`, no commit).
+  // The backward-compat path treated any `.git` directory as a healthy clone
+  // and ran `git reset --hard HEAD`, which fails forever with
+  // "ambiguous argument 'HEAD'", so the engine could never make progress.
+  // The checkout must detect the unusable HEAD and recreate the directory as a
+  // linked worktree instead of looping.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-unborn-head-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    // Recreate the broken state: a task directory that is a regular `.git`
+    // directory which fetched from origin but never created a local commit.
+    const taskDir = join(checkoutRootDir, "example-repo", "issue-1");
+    await mkdir(taskDir, { recursive: true });
+    runOrThrow("git", ["init", "-b", "main", taskDir], root);
+    runOrThrow("git", ["remote", "add", "origin", remoteDir], taskDir);
+    runOrThrow("git", ["fetch", "origin"], taskDir);
+    // Sanity-check that the leftover really has an unborn HEAD.
+    const headProbe = spawnSync("git", ["rev-parse", "--verify", "--quiet", "HEAD"], {
+      cwd: taskDir,
+    });
+    assert.notEqual(headProbe.status, 0, "leftover checkout should have an unborn HEAD");
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"implementation\" >> impl.txt",
+        "git add impl.txt",
+        "git commit -m \"agent commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test\",\"body\":\"Closes #1\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+    });
+
+    // This previously threw (or never converged) on `git reset --hard HEAD`.
+    await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 1,
+      issueTitle: "First task",
+      issueBody: "Do something.",
+      baseBranch: "main",
+    });
+
+    // The broken directory must have been recreated as a linked worktree.
+    const taskGitStat = await stat(join(taskDir, ".git"));
+    assert.ok(
+      taskGitStat.isFile(),
+      "repaired task directory .git should be a file (linked worktree)",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runCommand kills a grandchild that left the process group (setsid escape)", async () => {
   // This is the leak that group-only killing could not reach: `claude` spawns
   // its Bash tool calls / MCP servers / node workers in their OWN process

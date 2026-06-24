@@ -728,6 +728,27 @@ async function getGitDir(repoDir: string): Promise<string> {
   }
 }
 
+/**
+ * Returns true when `repoDir` is a checkout whose HEAD resolves to a commit.
+ *
+ * A partial or interrupted clone leaves an unborn HEAD (`ref: refs/heads/main`
+ * with no commit), and a linked worktree whose admin entry was pruned can no
+ * longer resolve HEAD. In both cases `git reset --hard HEAD` fails with
+ * "ambiguous argument 'HEAD'", so the directory must be recreated rather than
+ * reused. `git rev-parse --verify HEAD` exits non-zero for these states and
+ * zero for a healthy checkout.
+ */
+async function hasResolvableHead(repoDir: string): Promise<boolean> {
+  try {
+    await runCommand("git", ["rev-parse", "--verify", "--quiet", "HEAD"], {
+      cwd: repoDir,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function extractBetweenMarkers(
   rawOutput: string,
   start: string,
@@ -1517,7 +1538,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     );
 
     const gitPath = join(repoDir, ".git");
-    if (await pathExists(gitPath)) {
+    if ((await pathExists(gitPath)) && (await hasResolvableHead(repoDir))) {
       // Existing checkout. Regular clones (.git is a directory) keep their own
       // remote-tracking refs and need a separate fetch. Linked worktrees (.git
       // is a file) share the canonical clone's refs, which were already updated.
@@ -1530,7 +1551,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
       }
     } else {
-      // No existing checkout: add a linked worktree from the canonical clone.
+      // No existing checkout (or unresolvable HEAD — e.g. an interrupted clone
+      // with an unborn HEAD): add a linked worktree from the canonical clone.
       // This shares git objects with _main and avoids a full network clone.
       if (await pathExists(repoDir)) {
         await rm(repoDir, { recursive: true, force: true });
@@ -1580,7 +1602,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     );
 
     const gitPath = join(repoDir, ".git");
-    if (await pathExists(gitPath)) {
+    if ((await pathExists(gitPath)) && (await hasResolvableHead(repoDir))) {
       // Existing checkout. Regular clones (.git is a directory) keep their own
       // remote-tracking refs and need a separate fetch. Linked worktrees (.git
       // is a file) share the canonical clone's refs, which were already updated.
@@ -1593,7 +1615,8 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
       }
     } else {
-      // No existing checkout: add a linked worktree from the canonical clone.
+      // No existing checkout (or unresolvable HEAD — e.g. an interrupted clone
+      // with an unborn HEAD): add a linked worktree from the canonical clone.
       // This shares git objects with _main and avoids a full network clone.
       if (await pathExists(repoDir)) {
         await rm(repoDir, { recursive: true, force: true });
