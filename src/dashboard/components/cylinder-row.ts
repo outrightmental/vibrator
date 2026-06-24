@@ -14,7 +14,7 @@ export class CylinderRow extends LitElement {
       align-items: flex-start;
       gap: 10px;
       padding: 10px 12px;
-      height: 160px;
+      min-height: 40px;
       overflow: hidden;
       border-bottom: 1px solid rgba(0, 255, 136, 0.08);
       transition: background 0.3s ease, border-color 0.3s ease;
