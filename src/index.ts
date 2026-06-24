@@ -55,22 +55,6 @@ function blank(): void {
   console.log("");
 }
 
-function section(title: string): void {
-  blank();
-  write(title);
-  write(RULE);
-}
-
-function bullet(text: string, indent = 1): void {
-  const pad = "  ".repeat(indent);
-  write(`${pad}• ${text}`);
-}
-
-function note(text: string, indent = 1): void {
-  const pad = "  ".repeat(indent);
-  write(`${pad}${text}`);
-}
-
 function createLogger(emitter: EventEmitter) {
   function write(line: string): void {
     console.log(line);
