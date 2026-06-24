@@ -53,6 +53,13 @@ export class BroadcastEventCard extends LitElement {
       flex-shrink: 0;
     }
 
+    .broadcast-event-project {
+      font-size: 9px;
+      color: rgba(255, 255, 255, 0.4);
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+
     .broadcast-event-flow {
       display: flex;
       flex-direction: column;
@@ -119,10 +126,12 @@ export class BroadcastEventCard extends LitElement {
   static override properties = {
     event: { type: Object },
     baseUrl: { type: String },
+    multiProject: { type: Boolean },
   };
 
   event: BroadcastEventData | null = null;
   baseUrl = '';
+  multiProject = false;
 
   override render() {
     const ev = this.event;
@@ -133,6 +142,9 @@ export class BroadcastEventCard extends LitElement {
     const g = parseInt(color.slice(3, 5), 16) || 0;
     const b = parseInt(color.slice(5, 7), 16) || 0;
     const ctx = { prNumber: ev.prNumber, issueNumber: ev.issueNumber, commitHash: ev.commitHash, runId: ev.runId };
+    // Link feed text to the event's own project; fall back to the global base
+    // URL in single-project mode.
+    const baseUrl = ev.repo ? `https://github.com/${ev.repo}` : this.baseUrl;
 
     const dotStyle = `background:${color};box-shadow:0 0 6px ${color}`;
     const typeStyle = `color:${color}`;
@@ -145,26 +157,27 @@ export class BroadcastEventCard extends LitElement {
           <div class="broadcast-event-header-left">
             <span class="broadcast-event-worker-dot" style="${dotStyle}"></span>
             <span class="broadcast-event-type" style="${typeStyle}">${ev.label || ev.category.toUpperCase()}</span>
+            ${this.multiProject && ev.repo ? html`<span class="broadcast-event-project">${ev.repo}</span>` : ''}
           </div>
           <span class="broadcast-event-time">${ev.time}</span>
         </div>
         <div class="broadcast-event-flow">
           <div class="broadcast-event-row before-row">
             <span class="broadcast-event-tag">WAS</span>
-            <span>${unsafeHTML(linkifyTextHtml(ev.stateBefore, this.baseUrl, ctx))}</span>
+            <span>${unsafeHTML(linkifyTextHtml(ev.stateBefore, baseUrl, ctx))}</span>
           </div>
           <div class="broadcast-event-row how-row">
             <span class="broadcast-event-tag">HOW</span>
-            <span>${unsafeHTML(linkifyTextHtml(ev.changeHow, this.baseUrl, ctx))}</span>
+            <span>${unsafeHTML(linkifyTextHtml(ev.changeHow, baseUrl, ctx))}</span>
           </div>
           <div class="broadcast-event-row after-row">
             <span class="broadcast-event-tag" style="${nowTagStyle}">NOW</span>
-            <span>${unsafeHTML(linkifyTextHtml(ev.stateAfter, this.baseUrl, ctx))}</span>
+            <span>${unsafeHTML(linkifyTextHtml(ev.stateAfter, baseUrl, ctx))}</span>
           </div>
         </div>
         ${ev.excellence ? html`
           <div class="broadcast-event-excellence">
-            ✨ ${unsafeHTML(linkifyTextHtml(ev.excellence, this.baseUrl, ctx))}
+            ✨ ${unsafeHTML(linkifyTextHtml(ev.excellence, baseUrl, ctx))}
           </div>
         ` : ''}
       </div>

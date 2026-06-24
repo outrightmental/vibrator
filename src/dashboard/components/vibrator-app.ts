@@ -58,6 +58,8 @@ export class VibratorApp extends LitElement {
         .owner=${s.owner}
         .repo=${s.repo}
         .title=${s.title}
+        .multiProject=${s.multiProject}
+        .projectCount=${s.sessionCountByRepo.size || s.lifecycleByRepo.size}
         .iteration=${latestIteration}
         .nextCycleAtMs=${nextCycleAtMs}
         .tick=${this._tick}
@@ -70,6 +72,7 @@ export class VibratorApp extends LitElement {
           .appShutdown=${s.appShutdown}
           .owner=${s.owner}
           .repo=${s.repo}
+          .multiProject=${s.multiProject}
           .tick=${this._tick}
         ></cylinder-engine>
         <lifecycle-list
@@ -78,17 +81,19 @@ export class VibratorApp extends LitElement {
           .cylinderByPR=${s.cylinderByPR}
           .owner=${s.owner}
           .repo=${s.repo}
+          .multiProject=${s.multiProject}
         ></lifecycle-list>
         <broadcast-feed
           .events=${s.broadcastVisible}
           .baseUrl=${baseUrl}
+          .multiProject=${s.multiProject}
         ></broadcast-feed>
       </div>
       <div class="event-log-section">
         <div class="panel panel-d">
           <div class="panel-header">📋 EVENT LOG</div>
           <div class="panel-body">
-            <event-stream .events=${s.eventStream}></event-stream>
+            <event-stream .events=${s.eventStream} .multiProject=${s.multiProject}></event-stream>
           </div>
         </div>
       </div>

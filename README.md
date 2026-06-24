@@ -174,7 +174,7 @@ The repository slug can be omitted from the CLI when `GITHUB_REPOSITORY` is set.
 
 ## Dashboard
 
-`vibrator` opens a real-time **Dashboard** in your browser at `http://localhost:3000` when the loop starts. The Dashboard shows:
+`vibrator` opens a single real-time **Dashboard** in your browser at `http://localhost:3000` when the loop starts. One dashboard covers **all** configured projects: there is a single shared pool of `max_concurrency` engine cylinders, and each project's own `max_concurrency` caps how many of those cylinders may work it at once. When more than one project is configured, every cylinder, lifecycle pill, broadcast-feed card, and event-log line is labelled with the project (`owner/repo`) it belongs to; with a single project the name appears in the header only. The Dashboard shows:
 
 - **Issue → PR Lifecycle panel**: a row of two-halved pills, one per open issue. The left half shows the issue; the right half shows the linked pull request and transitions through states:
   - *(absent)* — no PR yet

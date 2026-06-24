@@ -6,6 +6,8 @@ export class VibratorHeader extends LitElement {
     owner: { type: String },
     repo: { type: String },
     title: { type: String },
+    multiProject: { type: Boolean },
+    projectCount: { type: Number },
     iteration: { type: Number },
     nextCycleAtMs: { type: Number },
     tick: { type: Number },
@@ -14,6 +16,8 @@ export class VibratorHeader extends LitElement {
   owner = '';
   repo = '';
   title = '';
+  multiProject = false;
+  projectCount = 0;
   iteration = 0;
   nextCycleAtMs: number | null = null;
   tick = 0;
@@ -28,14 +32,21 @@ export class VibratorHeader extends LitElement {
   }
 
   override render() {
-    const baseUrl = `https://github.com/${this.owner}/${this.repo}`;
+    // In multi-project mode there is no single repo, so link to the org (or
+    // GitHub) and show how many projects share this dashboard.
+    const baseUrl = this.multiProject
+      ? `https://github.com/${this.owner || ''}`
+      : `https://github.com/${this.owner}/${this.repo}`;
     const countdown = this._countdown();
+    const subtitle = this.multiProject && this.projectCount > 1
+      ? `${this.projectCount} PROJECTS · AI SDLC BROADCAST`
+      : 'AI SDLC BROADCAST';
     return html`
       <div class="header">
         <div>
           <div class="header-title">
             <a class="gh-link" href="${baseUrl}" target="_blank" rel="noopener noreferrer">⚡ ${(this.title || 'VIBRATOR').toUpperCase()}</a>
-            <span>AI SDLC BROADCAST</span>
+            <span>${subtitle}</span>
           </div>
         </div>
         ${this.iteration > 0 ? html`

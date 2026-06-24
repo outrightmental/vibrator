@@ -30,6 +30,7 @@ function initCylinders(n: number): CylinderState[] {
       status: 'idle' as const,
       idleStatusText: 'idle',
       actionType: null,
+      repo: null,
       issueNumber: null,
       prNumber: null,
       model: null,
@@ -42,16 +43,23 @@ function initCylinders(n: number): CylinderState[] {
   });
 }
 
-function makeEventLine(text: string, cylinderIdx: number, level: string): EventLine {
+function makeEventLine(text: string, cylinderIdx: number, level: string, repo = ''): EventLine {
   const color =
     cylinderIdx >= 0 && cylinderIdx < CYLINDER_COLORS.length
       ? (CYLINDER_COLORS[cylinderIdx] ?? null)
       : null;
-  return { text, cylinderIdx, level, time: new Date().toLocaleTimeString('en', { hour12: false }), color };
+  return {
+    text,
+    cylinderIdx,
+    level,
+    time: new Date().toLocaleTimeString('en', { hour12: false }),
+    color,
+    ...(repo ? { repo } : {}),
+  };
 }
 
-function addToStream(state: DashboardState, text: string, cylinderIdx: number, level: string): DashboardState {
-  const line = makeEventLine(text, cylinderIdx, level);
+function addToStream(state: DashboardState, text: string, cylinderIdx: number, level: string, repo = ''): DashboardState {
+  const line = makeEventLine(text, cylinderIdx, level, repo);
   const stream = [...state.eventStream, line];
   return {
     ...state,
@@ -79,7 +87,9 @@ export function initialState(): DashboardState {
     prCards: new Map(),
     cylinderByIssue: new Map(),
     cylinderByPR: new Map(),
+    lifecycleByRepo: new Map(),
     lastLifecyclePairs: [],
+    sessionCountByRepo: new Map(),
     broadcastQueue: [],
     broadcastVisible: [],
     eventStream: [],
@@ -87,6 +97,7 @@ export function initialState(): DashboardState {
     sessionCount: 0,
     shutdownRequested: false,
     appShutdown: false,
+    multiProject: false,
     owner: '',
     repo: '',
     title: '',
@@ -108,7 +119,7 @@ export function dashboardReducer(state: DashboardState, event: DashboardEvent): 
     case 'snapshot-update':    return applySnapshotUpdate(state, event.data);
     case 'lifecycle-update':   return applyLifecycleUpdate(state, event.data);
     case 'phase-update':       return addToStream(state, `📍 Phase: ${event.data['phase'] as string ?? ''}`, -1, 'info');
-    case 'log-message':        return addToStream(state, (event.data['message'] as string) ?? '', -1, (event.data['level'] as string) ?? 'info');
+    case 'log-message':        return addToStream(state, (event.data['message'] as string) ?? '', -1, (event.data['level'] as string) ?? 'info', (event.data['repo'] as string) || '');
     case 'workflow-approval':  return applyWorkflowApproval(state, event.data);
     case 'github-rate-limit': {
       const msg = (event.data['message'] as string) || 'rate limited';
@@ -158,6 +169,7 @@ function applyIterationStart(state: DashboardState, data: Record<string, unknown
       ...cyl,
       iterationNumber,
       status: 'idle',
+      repo: null,
       issueNumber: null,
       prNumber: null,
       actionType: null,
@@ -200,6 +212,7 @@ function applyActionStart(state: DashboardState, data: Record<string, unknown>):
       status: 'active',
       actionType: (data['type'] as string) ?? null,
       idleStatusText: '',
+      repo: (data['repo'] as string) || null,
       issueNumber,
       prNumber,
       model: (data['model'] as string) ?? null,
@@ -214,7 +227,7 @@ function applyActionStart(state: DashboardState, data: Record<string, unknown>):
   return addToStream(
     { ...state, cylinders, cylinderByIssue, cylinderByPR },
     `▶ [${data['actionIndex'] as number}/${data['totalActions'] as number}] ${actionDesc}`,
-    idx, 'info'
+    idx, 'info', (data['repo'] as string) || ''
   );
 }
 
@@ -226,7 +239,7 @@ function applyActionComplete(state: DashboardState, data: Record<string, unknown
     cylinders = [...cylinders];
     cylinders[idx] = { ...cyl, status: 'done', thinkingLines: [] };
   }
-  return addToStream({ ...state, cylinders }, `✓ action [${data['actionIndex']}/${data['totalActions']}] complete`, idx, 'success');
+  return addToStream({ ...state, cylinders }, `✓ action [${data['actionIndex']}/${data['totalActions']}] complete`, idx, 'success', (data['repo'] as string) || '');
 }
 
 function applyActionError(state: DashboardState, data: Record<string, unknown>): DashboardState {
@@ -237,7 +250,7 @@ function applyActionError(state: DashboardState, data: Record<string, unknown>):
     cylinders = [...cylinders];
     cylinders[idx] = { ...cyl, status: 'error', thinkingLines: [] };
   }
-  return addToStream({ ...state, cylinders }, `✗ action [${data['actionIndex']}/${data['totalActions']}] failed: ${data['error'] ?? ''}`, idx, 'error');
+  return addToStream({ ...state, cylinders }, `✗ action [${data['actionIndex']}/${data['totalActions']}] failed: ${data['error'] ?? ''}`, idx, 'error', (data['repo'] as string) || '');
 }
 
 function applyClaudeThinking(state: DashboardState, data: Record<string, unknown>): DashboardState {
@@ -273,6 +286,7 @@ function applyEngineIdle(state: DashboardState, data: Record<string, unknown>): 
   cylinders[engineIndex] = {
     ...cyl,
     status: 'idle',
+    repo: null,
     issueNumber: null,
     prNumber: null,
     actionType: null,
@@ -310,7 +324,8 @@ function applyCylinderCancel(state: DashboardState, data: Record<string, unknown
 function applySnapshotUpdate(state: DashboardState, data: Record<string, unknown>): DashboardState {
   const issueCards = new Map<number, IssueCard>();
   const prCards = new Map<number, PRCard>();
-  const sessionCount = (data['sessionCount'] as number) ?? 0;
+  const repo = (data['repo'] as string) || '';
+  const repoSessionCount = (data['sessionCount'] as number) ?? 0;
 
   if (Array.isArray(data['issues'])) {
     for (const issue of data['issues'] as IssueCard[]) issueCards.set(issue.number, issue);
@@ -319,17 +334,36 @@ function applySnapshotUpdate(state: DashboardState, data: Record<string, unknown
     for (const pr of data['pullRequests'] as PRCard[]) prCards.set(pr.number, pr);
   }
 
+  // Track sessions per project and display the sum, so projects sharing one
+  // dashboard don't overwrite each other's session count.
+  const sessionCountByRepo = new Map(state.sessionCountByRepo);
+  sessionCountByRepo.set(repo, repoSessionCount);
+  let sessionCount = 0;
+  for (const n of sessionCountByRepo.values()) sessionCount += n;
+
   const newState = addToStream(
-    { ...state, issueCards, prCards, sessionCount },
-    `📊 Snapshot: ${data['issueCount'] ?? 0} issues, ${data['prCount'] ?? 0} PRs, ${sessionCount} sessions`,
-    -1, 'info'
+    { ...state, issueCards, prCards, sessionCountByRepo, sessionCount },
+    `📊 ${repo ? repo + ' ' : ''}Snapshot: ${data['issueCount'] ?? 0} issues, ${data['prCount'] ?? 0} PRs, ${repoSessionCount} sessions`,
+    -1, 'info', repo
   );
   return newState;
 }
 
 function applyLifecycleUpdate(state: DashboardState, data: Record<string, unknown>): DashboardState {
-  const pairs = Array.isArray(data['pairs']) ? (data['pairs'] as LifecyclePair[]) : [];
-  return { ...state, lastLifecyclePairs: pairs };
+  const repo = (data['repo'] as string) || '';
+  const incoming = Array.isArray(data['pairs']) ? (data['pairs'] as LifecyclePair[]) : [];
+  // Tag every pair with its project so the pill can build the right GitHub URL
+  // and (in multi-project mode) show which repo it belongs to.
+  const pairs = repo ? incoming.map((p) => ({ ...p, repo })) : incoming;
+
+  // Replace only this project's slice; keep the others intact, then flatten in a
+  // stable project order so multiple projects coexist in one lifecycle pane.
+  const lifecycleByRepo = new Map(state.lifecycleByRepo);
+  lifecycleByRepo.set(repo, pairs);
+  const lastLifecyclePairs: LifecyclePair[] = [];
+  for (const slice of lifecycleByRepo.values()) lastLifecyclePairs.push(...slice);
+
+  return { ...state, lifecycleByRepo, lastLifecyclePairs };
 }
 
 function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): DashboardState {
@@ -353,6 +387,7 @@ function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): Dash
   const prNumber = data['prNumber'] as number | undefined;
   const issueNumber = data['issueNumber'] as number | undefined;
   const commitHash = data['hash'] as string | undefined;
+  const repo = (data['repo'] as string) || '';
   const item: BroadcastEventData = {
     id: `${Date.now()}-${Math.random()}`,
     category,
@@ -365,6 +400,7 @@ function applyBroadcastEvent(state: DashboardState, event: DashboardEvent): Dash
     ...(prNumber !== undefined ? { prNumber } : {}),
     ...(issueNumber !== undefined ? { issueNumber } : {}),
     ...(commitHash !== undefined ? { commitHash } : {}),
+    ...(repo ? { repo } : {}),
     time: new Date().toLocaleTimeString(),
     color,
   };
@@ -460,6 +496,8 @@ export class DashboardStore {
         repo?: string;
         dashboardTitle?: string;
         maxConcurrency?: number;
+        multiProject?: boolean;
+        projects?: string[];
         cachedEvents?: DashboardEvent[];
       };
 
@@ -473,6 +511,7 @@ export class DashboardStore {
       state.owner = data.owner ?? '';
       state.repo = data.repo ?? '';
       state.title = data.dashboardTitle ?? data.repo ?? '';
+      state.multiProject = data.multiProject ?? false;
       if (typeof data.maxConcurrency === 'number') {
         state.maxConcurrency = data.maxConcurrency;
         state.cylinders = initCylinders(data.maxConcurrency);

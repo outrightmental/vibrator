@@ -98,6 +98,17 @@ export class CylinderRow extends LitElement {
       letter-spacing: 0.5px;
     }
 
+    .cylinder-project {
+      font-size: 9px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.4);
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 1px;
+    }
+
     .cylinder-status-text {
       font-size: 10px;
       color: rgba(255, 255, 255, 0.45);
@@ -139,16 +150,20 @@ export class CylinderRow extends LitElement {
     cylinder: { type: Object },
     owner: { type: String },
     repo: { type: String },
+    multiProject: { type: Boolean },
     tick: { type: Number },
   };
 
   cylinder: CylinderState | null = null;
   owner = '';
   repo = '';
+  multiProject = false;
   tick = 0;
 
   private _statusHtml(cyl: CylinderState): string {
-    const baseUrl = `https://github.com/${this.owner}/${this.repo}`;
+    // Prefer the cylinder's own repo (one shared pool roams across projects);
+    // fall back to the global owner/repo in single-project mode.
+    const baseUrl = `https://github.com/${cyl.repo ?? `${this.owner}/${this.repo}`}`;
     const isActive   = cyl.status === 'active';
     const isDone     = cyl.status === 'done';
     const isError    = cyl.status === 'error';
@@ -216,6 +231,7 @@ export class CylinderRow extends LitElement {
         <div class="${dotClass}"></div>
         <div class="cylinder-info">
           <div class="cylinder-label">${modelLabel}${cycleLabel}</div>
+          ${this.multiProject && cyl.repo ? html`<div class="cylinder-project">${cyl.repo}</div>` : ''}
           <div class="cylinder-status-text">${unsafeHTML(this._statusHtml(cyl))}</div>
           <div class="${thinkingClass}">${cyl.thinkingLines.join('\n')}</div>
         </div>

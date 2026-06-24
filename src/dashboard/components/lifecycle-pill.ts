@@ -156,6 +156,16 @@ export class LifecyclePill extends LitElement {
       color: rgba(185, 185, 200, 0.85);
     }
 
+    .pill-project {
+      font-size: 8px;
+      color: rgba(255, 255, 255, 0.4);
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      margin-left: auto;
+      padding-left: 6px;
+    }
+
     a.gh-link { color: inherit; text-decoration: none; cursor: pointer; }
     a.gh-link:hover { text-decoration: underline; filter: brightness(1.4); }
   `;
@@ -166,6 +176,7 @@ export class LifecyclePill extends LitElement {
     colorRgb: { type: String },
     owner: { type: String },
     repo: { type: String },
+    multiProject: { type: Boolean },
   };
 
   pair: LifecyclePair | null = null;
@@ -173,10 +184,16 @@ export class LifecyclePill extends LitElement {
   colorRgb = '85,85,119';
   owner = '';
   repo = '';
+  multiProject = false;
+
+  /** GitHub base URL for this pill: the pair's own repo, else the global one. */
+  private _baseUrl(): string {
+    return `https://github.com/${this.pair?.repo ?? `${this.owner}/${this.repo}`}`;
+  }
 
   private _prHalf() {
     const pair = this.pair!;
-    const baseUrl = `https://github.com/${this.owner}/${this.repo}`;
+    const baseUrl = this._baseUrl();
     const isBlocked = (pair.blockedByIssueNumbers?.length ?? 0) > 0;
     const prClass = `pill-pr-half ${pair.prPhase ?? 'absent'}${isBlocked ? ' blocked' : ''}${pair.disabled ? ' disabled' : ''}`;
 
@@ -240,13 +257,16 @@ export class LifecyclePill extends LitElement {
     const pair = this.pair;
     if (!pair) return html``;
 
-    const baseUrl = `https://github.com/${this.owner}/${this.repo}`;
+    const baseUrl = this._baseUrl();
     const style = `--pill-color:${this.color};--pill-rgb:${this.colorRgb};--pill-glow:rgba(${this.colorRgb},0.3)`;
+    const projectChip = this.multiProject && pair.repo
+      ? html`<span class="pill-project">${pair.repo}</span>`
+      : '';
 
     if (!pair.issue) {
       return html`
         <div class="lifecycle-pill" style="${style}">
-          <div class="pill-issue-half empty"></div>
+          <div class="pill-issue-half empty">${projectChip}</div>
           ${this._prHalf()}
         </div>`;
     }
@@ -263,6 +283,7 @@ export class LifecyclePill extends LitElement {
             </span>
             <span class="pill-badge">${issue.state.toUpperCase()}</span>
             <span class="pill-title">${issue.title}</span>
+            ${projectChip}
           </div>
         </div>
         ${this._prHalf()}

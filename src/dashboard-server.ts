@@ -17,12 +17,20 @@ const MAX_CLIENT_BUFFER_BYTES = 1024 * 1024;
 interface DashboardServerConfig {
   port: number;
   host?: string;
+  /** Project owner. Empty in multi-project mode (each item carries its own repo). */
   owner: string;
+  /** Project repo. Empty in multi-project mode (each item carries its own repo). */
   repo: string;
   dashboardTitle?: string;
-  /** Per-project event emitter. When provided, engine events are scoped to this emitter
-   *  and cylinder-cancel signals are emitted to it (not globalEventEmitter). App-level
-   *  events (shutdown-requested, app-shutdown) are still received via globalEventEmitter. */
+  /** Global cylinder-pool size (shared across all projects). */
+  maxConcurrency?: number;
+  /** True when more than one project shares this dashboard, so items show their repo. */
+  multiProject?: boolean;
+  /** All project repo keys ("owner/repo"), in configured order. */
+  projects?: string[];
+  /** Event emitter the engine pool publishes to. When provided, cylinder-cancel
+   *  signals are emitted to it (not globalEventEmitter). App-level events
+   *  (shutdown-requested, app-shutdown) are still received via globalEventEmitter. */
   eventEmitter?: EventEmitter;
 }
 
@@ -60,6 +68,8 @@ export class DashboardServer {
   private owner: string;
   private repo: string;
   private dashboardTitle: string;
+  private multiProject: boolean;
+  private projects: string[];
   private server: http.Server;
   private wss: WebSocketServer;
   private maxConcurrency: number = 3;
@@ -75,6 +85,9 @@ export class DashboardServer {
     this.owner = config.owner;
     this.repo = config.repo;
     this.dashboardTitle = config.dashboardTitle ?? config.repo;
+    this.multiProject = config.multiProject ?? false;
+    this.projects = config.projects ?? [];
+    if (typeof config.maxConcurrency === "number") this.maxConcurrency = config.maxConcurrency;
     this.projectEmitter = config.eventEmitter ?? globalEventEmitter;
 
     this.server = http.createServer((req, res) => {
@@ -108,10 +121,13 @@ export class DashboardServer {
     this._unsubscribers.push(this.projectEmitter.subscribe((event) => {
       this.broadcastEvent(event);
     }));
-    // When using a per-project emitter, also listen on the global emitter for
-    // app-level events (shutdown-requested, app-shutdown) so connected browser
-    // clients receive graceful-shutdown notifications.
-    if (config.eventEmitter) {
+    // When using a SEPARATE emitter from the global one, also listen on the
+    // global emitter for app-level events (shutdown-requested, app-shutdown) so
+    // connected browser clients receive graceful-shutdown notifications. When
+    // the configured emitter IS the global emitter (the single shared
+    // dashboard), the primary subscription already covers these — subscribing
+    // again would broadcast each shutdown event twice.
+    if (config.eventEmitter && config.eventEmitter !== globalEventEmitter) {
       this._unsubscribers.push(globalEventEmitter.subscribe((event) => {
         if (event.type === "shutdown-requested" || event.type === "app-shutdown") {
           this.broadcastEvent(event);
@@ -159,6 +175,8 @@ export class DashboardServer {
         repo: this.repo,
         dashboardTitle: this.dashboardTitle,
         maxConcurrency: this.maxConcurrency,
+        multiProject: this.multiProject,
+        projects: this.projects,
         cachedEvents: Array.from(this.cachedEvents.values()),
       });
       return;
@@ -193,7 +211,12 @@ export class DashboardServer {
   private updateStateCache(event: DashboardEvent): void {
     const { type, data } = event;
     if (type === "lifecycle-update" || type === "snapshot-update") {
-      this.cachedEvents.set(type, event);
+      // Scope per project so multiple projects sharing this dashboard each keep
+      // their own latest lifecycle/snapshot in the replay cache instead of
+      // overwriting one another (the bug that left a reconnecting client seeing
+      // only the last project's state).
+      const repo = (data["repo"] as string) || "";
+      this.cachedEvents.set(`${type}:${repo}`, event);
     } else if (type === "action-start" || type === "action-complete" || type === "action-error") {
       const cylinderIdx = ((data["actionIndex"] as number) || 1) - 1;
       this.cachedEvents.set(`cylinder-${cylinderIdx}`, event);
