@@ -30,7 +30,18 @@ export class WsClient {
     const ws = new WebSocket(this._url);
     this._ws = ws;
 
+    // If the TCP handshake hangs (SYN sent, no response), the WebSocket stays
+    // in CONNECTING state indefinitely and no open/error/close event fires —
+    // leaving the UI stuck on "Connecting…".  Force-close after 10 s so the
+    // close handler can trigger the normal reconnect cycle.
+    const connectTimeoutId = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+    }, 10_000);
+
     ws.addEventListener('open', () => {
+      clearTimeout(connectTimeoutId);
       this._onConnectionChange?.(true);
     });
 
@@ -44,10 +55,12 @@ export class WsClient {
     });
 
     ws.addEventListener('error', () => {
+      clearTimeout(connectTimeoutId);
       this._onConnectionChange?.(false);
     });
 
     ws.addEventListener('close', () => {
+      clearTimeout(connectTimeoutId);
       this._onConnectionChange?.(false);
       if (!this._intentionallyClosed) {
         setTimeout(async () => {
