@@ -526,3 +526,47 @@ test("DashboardServer broadcasts cylinder-cancel when a client sends cylinder-ca
   assert.equal(cancelMsg?.data.engineIndex, 1, "cylinder-cancel should carry the correct engineIndex");
 });
 
+test("DashboardServer broadcasts css-reload when bundle.css changes on disk", async (t) => {
+  const bundleDir = path.join(process.cwd(), "dist", "dashboard");
+  const cssPath = path.join(bundleDir, "bundle.css");
+  await fs.promises.mkdir(bundleDir, { recursive: true });
+  const originalContent = await fs.promises.readFile(cssPath, "utf-8").catch(() => null);
+  if (originalContent === null) {
+    await fs.promises.writeFile(cssPath, "/* initial */");
+  }
+
+  const server = new DashboardServer({
+    port: TEST_PORT + 18,
+    host: "127.0.0.1",
+    owner: "test",
+    repo: "repo",
+  });
+  await server.initialize();
+  await server.start();
+  t.after(async () => {
+    server.close();
+    if (originalContent !== null) {
+      await fs.promises.writeFile(cssPath, originalContent).catch(() => {});
+    } else {
+      await fs.promises.unlink(cssPath).catch(() => {});
+    }
+  });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${TEST_PORT + 18}/api/ws`);
+  const received: DashboardEvent[] = [];
+  ws.on("message", (data: Buffer) => {
+    received.push(JSON.parse(data.toString()) as DashboardEvent);
+  });
+  await new Promise<void>((resolve) => ws.once("open", resolve));
+
+  // Touch the CSS file to trigger the watcher
+  await fs.promises.writeFile(cssPath, "/* updated */");
+
+  // Wait for the debounce (50ms) plus OS watcher latency
+  await new Promise<void>((resolve) => setTimeout(resolve, 300));
+  ws.close();
+
+  const reloadMsg = received.find((m) => m.type === "css-reload");
+  assert.ok(reloadMsg !== undefined, "should broadcast css-reload when bundle.css changes");
+});
+
