@@ -810,38 +810,9 @@ async function main(): Promise<void> {
   });
 
   // ── Resolve the single dashboard title ────────────────────────────────────
-  // Multi-project: a neutral title (each item carries its own project label).
-  // Single-project: the project's name in the title, as before.
-  let dashboardTitle = "Vibrator";
   const first = contexts[0]!;
   const firstProjectEnv = envConfig.projects[0]!;
-  // Global `dashboard_title` wins; the per-project field is a deprecated fallback.
-  const titleOverride = envConfig.dashboard_title ?? firstProjectEnv.dashboard_title;
-  if (!multiProject) {
-    let projectTitle: string | undefined;
-    if (titleOverride === undefined && first.config.projectMode) {
-      try {
-        const titleClient = new GitHubClient({
-          owner: first.config.owner,
-          repo: first.config.repo,
-          token: first.githubToken,
-        });
-        projectTitle = await titleClient.getProjectTitle(first.config.projectMode.projectNumber);
-      } catch (error) {
-        console.warn(
-          `[vibrator] Could not resolve project title for dashboard header: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    dashboardTitle = resolveDashboardTitle(
-      titleOverride,
-      first.config.repo,
-      first.config.projectMode,
-      projectTitle,
-    );
-  } else if (titleOverride !== undefined) {
-    dashboardTitle = titleOverride;
-  }
+  const dashboardTitle = resolveDashboardTitle(envConfig.dashboard_title);
 
   // ── Start the single dashboard server ─────────────────────────────────────
   const dashboardPort = envConfig.dashboard_port ?? firstProjectEnv.dashboard_port ?? 3000;

@@ -368,7 +368,7 @@ test("DashboardServer injects custom dashboardTitle into served HTML", async (t)
   assert.ok(html.includes("My Custom Title"), "HTML should contain the custom dashboard title");
 });
 
-test("DashboardServer defaults to repository name when no dashboardTitle is provided", async (t) => {
+test("DashboardServer defaults to 'Outright Mental' when no dashboardTitle is provided", async (t) => {
   const server = new DashboardServer({
     port: TEST_PORT + 13,
     host: "127.0.0.1",
@@ -380,7 +380,7 @@ test("DashboardServer defaults to repository name when no dashboardTitle is prov
   t.after(() => server.close());
 
   const html = await fetchHtml(`http://127.0.0.1:${TEST_PORT + 13}/`);
-  assert.ok(html.includes("repo"), "HTML should contain the default repository title");
+  assert.ok(html.includes("Outright Mental"), "HTML should contain the default title 'Outright Mental'");
 });
 
 test("DashboardServer caches github-rate-limit event", async (t) => {

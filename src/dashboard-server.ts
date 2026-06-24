@@ -84,7 +84,7 @@ export class DashboardServer {
     this.host = config.host ?? "localhost";
     this.owner = config.owner;
     this.repo = config.repo;
-    this.dashboardTitle = config.dashboardTitle ?? config.repo;
+    this.dashboardTitle = config.dashboardTitle ?? "Outright Mental";
     this.multiProject = config.multiProject ?? false;
     this.projects = config.projects ?? [];
     if (typeof config.maxConcurrency === "number") this.maxConcurrency = config.maxConcurrency;

@@ -26,12 +26,8 @@ export interface ProjectEnvConfig {
   claude_describe_model?: string;
   /** Minimum seconds between engine cycle starts. Defaults to global cycle_minimum_seconds. */
   cycle_minimum_seconds?: number;
-  /** @deprecated The dashboard is now global — set `dashboard_port` at the top level.
-   *  Honoured only as a fallback when no global `dashboard_port` is set. */
+  /** @deprecated Use the top-level `dashboard_port` instead. Honoured only as a fallback. */
   dashboard_port?: number;
-  /** @deprecated The dashboard is now global — set `dashboard_title` at the top level.
-   *  Honoured only (for the single-project case) as a fallback. */
-  dashboard_title?: string;
   /** Path for persisted agent-session state. Defaults to .vibrator/<owner>-<repo>-sessions.json. */
   session_store_path?: string;
 }
@@ -47,8 +43,7 @@ export interface EnvConfig {
   cycle_minimum_seconds?: number;
   /** Port for the single shared dashboard (default: 3000). */
   dashboard_port?: number;
-  /** Title shown in the dashboard header. Defaults to the project name in
-   *  single-project mode, or "Vibrator" when multiple projects share the dashboard. */
+  /** Title shown in the dashboard header. Defaults to "Outright Mental". */
   dashboard_title?: string;
   /** GitHub API base URL, for GitHub Enterprise (default: https://api.github.com). */
   github_api_base_url?: string;
