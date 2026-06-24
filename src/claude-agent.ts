@@ -2,7 +2,6 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdir, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getGitHubTokenFromEnv } from "./github.js";
 import { GitHubApiGateway } from "./github-gateway.js";
 
 
@@ -276,7 +275,7 @@ interface ClaudeAgentClientOptions {
   checkoutRootDir?: string;
   /** Path / command for the local `claude` CLI. */
   claudeCommand?: string;
-  /** GitHub token used for GitHub API and authenticated git operations. Defaults to env token resolution. */
+  /** GitHub token used for GitHub API and authenticated git operations. Required unless githubGateway is provided. */
   githubToken?: string;
   /** GitHub REST API base URL. */
   githubApiBaseUrl?: string;
@@ -284,14 +283,11 @@ interface ClaudeAgentClientOptions {
   githubGateway?: GitHubApiGateway;
   /** Override repository clone URLs in tests or enterprise deployments. */
   repositoryCloneUrl?: string | ((owner: string, repo: string) => string);
-  /** Model to pass to the claude CLI via --model. When omitted, falls back to CLAUDE_MODEL env. */
+  /** Model to pass to the claude CLI via --model. When omitted, uses the default model. */
   claudeModel?: string;
-  /** Model used specifically for commit message generation. Defaults to CLAUDE_COMMIT_MODEL env, then claude-haiku-4-5-20251001. */
+  /** Model used specifically for commit message generation. Defaults to claude-haiku-4-5-20251001. */
   claudeCommitModel?: string;
-  /**
-   * Maximum milliseconds the Claude CLI is allowed to run before being killed.
-   * Defaults to CLAUDE_TIMEOUT_MS env var, or 30 minutes if unset.
-   */
+  /** Maximum milliseconds the Claude CLI is allowed to run before being killed. Defaults to 30 minutes. */
   claudeTimeoutMs?: number;
 }
 
@@ -1196,7 +1192,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   constructor(options: ClaudeAgentClientOptions = {}) {
     this.checkoutRootDir = options.checkoutRootDir ?? defaultCheckoutRootDir();
     this.claudeCommand = options.claudeCommand ?? "claude";
-    this.githubToken = options.githubToken ?? getGitHubTokenFromEnv();
+    if (!options.githubToken && !options.githubGateway) {
+      throw new Error("ClaudeAgentClient requires either githubToken or githubGateway.");
+    }
+    this.githubToken = options.githubToken ?? "";
     this.githubApiBaseUrl = options.githubApiBaseUrl ?? "https://api.github.com";
     this.githubGateway =
       options.githubGateway ??
@@ -1206,13 +1205,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       });
     this.repositoryCloneUrl = options.repositoryCloneUrl;
     this.gitAuth = new GitAuth(this.githubToken);
-    this.claudeModel = options.claudeModel ?? process.env.CLAUDE_MODEL;
-    this.claudeCommitModel =
-      options.claudeCommitModel ?? process.env.CLAUDE_COMMIT_MODEL ?? DEFAULT_COMMIT_MODEL;
-    const envTimeout = process.env.CLAUDE_TIMEOUT_MS;
-    this.claudeTimeoutMs =
-      options.claudeTimeoutMs ??
-      (envTimeout !== undefined ? Number.parseInt(envTimeout, 10) : DEFAULT_CLAUDE_TIMEOUT_MS);
+    this.claudeModel = options.claudeModel;
+    this.claudeCommitModel = options.claudeCommitModel ?? DEFAULT_COMMIT_MODEL;
+    this.claudeTimeoutMs = options.claudeTimeoutMs ?? DEFAULT_CLAUDE_TIMEOUT_MS;
   }
 
   async implementIssue(params: ImplementIssueParams): Promise<ImplementIssueResult> {

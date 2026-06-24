@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import open from "open";
-import { globalEventEmitter, type DashboardEvent } from "./event-emitter.js";
+import { globalEventEmitter, EventEmitter, type DashboardEvent } from "./event-emitter.js";
 
 /**
  * Per-client cap on buffered (un-flushed) WebSocket data. A backgrounded or
@@ -20,6 +20,10 @@ interface DashboardServerConfig {
   owner: string;
   repo: string;
   dashboardTitle?: string;
+  /** Per-project event emitter. When provided, engine events are scoped to this emitter
+   *  and cylinder-cancel signals are emitted to it (not globalEventEmitter). App-level
+   *  events (shutdown-requested, app-shutdown) are still received via globalEventEmitter. */
+  eventEmitter?: EventEmitter;
 }
 
 const ROOT_DIR = process.cwd();
@@ -62,7 +66,7 @@ export class DashboardServer {
   private cachedEvents: Map<string, DashboardEvent> = new Map();
   private cssWatcher: ReturnType<typeof fs.watch> | null = null;
   private cssReloadDebounce: ReturnType<typeof setTimeout> | null = null;
-  private unsubscribeFromEvents: () => void;
+  private projectEmitter: EventEmitter;
 
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
@@ -70,6 +74,7 @@ export class DashboardServer {
     this.owner = config.owner;
     this.repo = config.repo;
     this.dashboardTitle = config.dashboardTitle ?? config.repo;
+    this.projectEmitter = config.eventEmitter ?? globalEventEmitter;
 
     this.server = http.createServer((req, res) => {
       this.handleRequest(req, res).catch((err: Error) => {
@@ -99,9 +104,19 @@ export class DashboardServer {
       console.error("[Dashboard] WebSocket server error:", error);
     });
 
-    this.unsubscribeFromEvents = globalEventEmitter.subscribe((event) => {
+    this.projectEmitter.subscribe((event) => {
       this.broadcastEvent(event);
     });
+    // When using a per-project emitter, also listen on the global emitter for
+    // app-level events (shutdown-requested, app-shutdown) so connected browser
+    // clients receive graceful-shutdown notifications.
+    if (config.eventEmitter) {
+      globalEventEmitter.subscribe((event) => {
+        if (event.type === "shutdown-requested" || event.type === "app-shutdown") {
+          this.broadcastEvent(event);
+        }
+      });
+    }
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -160,7 +175,7 @@ export class DashboardServer {
       try {
         const message = JSON.parse(data.toString()) as { type: string; engineIndex?: number };
         if (message.type === "cylinder-cancel-request" && typeof message.engineIndex === "number") {
-          globalEventEmitter.emit("cylinder-cancel", { engineIndex: message.engineIndex });
+          this.projectEmitter.emit("cylinder-cancel", { engineIndex: message.engineIndex });
         }
       } catch {
         // Ignore malformed messages from clients

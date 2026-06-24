@@ -2,8 +2,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import "dotenv/config";
-
 import { executeAction, type ExecuteActionResult } from "./actions.js";
 import {
   createClaudeAgentClient,
@@ -11,9 +9,9 @@ import {
   isClaudeUsageLimitMessage,
   getClaudeQuotaBlockedUntilMs,
 } from "./claude-agent.js";
+import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "./env-config.js";
 import {
   buildDefaultSessionStorePath,
-  getGitHubTokenFromEnv,
   GitHubClient,
   loadSnapshot,
 } from "./github.js";
@@ -23,7 +21,7 @@ import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
 import { resolveDashboardTitle } from "./dashboard-title.js";
-import { globalEventEmitter } from "./event-emitter.js";
+import { globalEventEmitter, EventEmitter } from "./event-emitter.js";
 import {
   broadcastRepositorySnapshot,
   broadcastPullRequestUpdate,
@@ -57,20 +55,16 @@ function blank(): void {
   console.log("");
 }
 
-function section(title: string): void {
-  blank();
-  write(title);
-  write(RULE);
-}
-
-function bullet(text: string, indent = 1): void {
-  const pad = "  ".repeat(indent);
-  write(`${pad}• ${text}`);
-}
-
-function note(text: string, indent = 1): void {
-  const pad = "  ".repeat(indent);
-  write(`${pad}${text}`);
+function createLogger(emitter: EventEmitter) {
+  function write(line: string): void {
+    console.log(line);
+    emitLogMessage("info", line, emitter);
+  }
+  function blank(): void { console.log(""); }
+  function section(title: string): void { blank(); write(title); write(RULE); }
+  function bullet(text: string, indent = 1): void { write(`${"  ".repeat(indent)}• ${text}`); }
+  function note(text: string, indent = 1): void { write(`${"  ".repeat(indent)}${text}`); }
+  return { write, blank, section, bullet, note };
 }
 
 function formatDuration(milliseconds: number): string {
@@ -166,6 +160,7 @@ async function broadcastBetweenCycleActivity(
   lastSnapshot: RepositorySnapshot | null,
   seenCommitHashes: Set<string>,
   claimedActions: ReadonlySet<string>,
+  emitter: EventEmitter,
 ): Promise<{ snapshot: RepositorySnapshot; seenCommitHashes: Set<string> }> {
   try {
     const gitHubClient = new GitHubClient({
@@ -191,7 +186,7 @@ async function broadcastBetweenCycleActivity(
       lastSnapshot.agentSessions.filter((s) => s.status === "in_progress").length !==
         snapshot.agentSessions.filter((s) => s.status === "in_progress").length;
     if (snapshotChanged) {
-      broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+      broadcastRepositorySnapshot(snapshot, config.owner, config.repo, undefined, emitter);
     }
     const { blockedIssueNumbers } = buildPlan(snapshot, config.maxConcurrency, config.projectMode, config.focusMode);
     // Include in-flight implementations (claimed but not yet completed) so
@@ -205,6 +200,7 @@ async function broadcastBetweenCycleActivity(
       blockedIssueNumbers,
       config.projectMode !== undefined,
       config.focusMode,
+      emitter,
     );
 
     // Broadcast open PRs only when their state has changed since the last poll
@@ -213,7 +209,7 @@ async function broadcastBetweenCycleActivity(
       const prChanged = !lastPr || hasPrStateChanged(pr, lastPr);
 
       if (prChanged) {
-        broadcastPullRequestUpdate(pr, "monitoring");
+        broadcastPullRequestUpdate(pr, "monitoring", undefined, emitter);
       }
 
       // Broadcast review comments only when the unresolved count changed
@@ -223,7 +219,7 @@ async function broadcastBetweenCycleActivity(
         try {
           const reviewComments = await gitHubClient.listUnresolvedReviewComments(pr.number);
           if (reviewComments.length > 0) {
-            broadcastReviewComment(pr.number, "Review", reviewComments.length);
+            broadcastReviewComment(pr.number, "Review", reviewComments.length, undefined, emitter);
           }
         } catch (error) {
           // Silently skip review comment broadcasting if it fails
@@ -238,7 +234,7 @@ async function broadcastBetweenCycleActivity(
         const lastIssue = lastIssueMap.get(issue.number);
         // Broadcast if this is a new issue or recently updated
         if (!lastIssue || new Date(issue.updatedAt) > new Date(lastIssue.updatedAt)) {
-          broadcastIssueUpdate(issue, lastIssue ? "updated" : "opened");
+          broadcastIssueUpdate(issue, lastIssue ? "updated" : "opened", undefined, emitter);
         }
       }
     }
@@ -248,7 +244,7 @@ async function broadcastBetweenCycleActivity(
     try {
       const recentCommits = await gitHubClient.listRecentCommits(5);
       for (const commit of filterNewCommits(recentCommits, seenCommitHashes)) {
-        broadcastCommit(commit);
+        broadcastCommit(commit, undefined, emitter);
         newSeenHashes.add(commit.hash);
       }
     } catch (error) {
@@ -345,57 +341,38 @@ function parseRepositorySlug(repository: string): { owner: string; repo: string 
   return { owner, repo };
 }
 
-function parseArgs(argv: string[]): Config {
-  const repositoryArgument = argv.find((argument) => !argument.startsWith("--"));
-  const repository = repositoryArgument ?? process.env.GITHUB_REPOSITORY;
-  if (!repository) {
-    throw new Error("Provide a repository slug such as owner/repo.");
-  }
+function buildProjectConfig(
+  projectEnvConfig: ProjectEnvConfig,
+  envConfig: EnvConfig,
+  runtimeFlags: { once: boolean; dryRun: boolean; noBrowser: boolean; dashboardPort: number },
+): Config {
+  const { owner, repo } = parseRepositorySlug(projectEnvConfig.github_repository);
+  const resolved = applyProjectDefaults(projectEnvConfig, envConfig);
 
-  const { owner, repo } = parseRepositorySlug(repository);
-  const maxConcurrency = Number.parseInt(process.env.MAX_CONCURRENCY ?? "3", 10);
-  const cycleMinimumSeconds = Number.parseFloat(process.env.CYCLE_MINIMUM_SECONDS ?? "60");
-  const dashboardPort = Number.parseInt(process.env.DASHBOARD_PORT ?? "3000", 10);
-  const once = argv.includes("--once");
-  const dryRun = argv.includes("--dry-run");
-  const noBrowser = argv.includes("--no-browser");
-  const focusMode =
-    argv.some((a) => a === "--mode=focus") ||
-    (process.env.MODE ?? "").toLowerCase() === "focus";
-  const sessionStorePath =
-    process.env.VIBRATOR_SESSION_STORE_PATH ?? buildDefaultSessionStorePath(owner, repo);
-  const dashboardTitle = process.env.DASHBOARD_TITLE;
-  const claudeModel = process.env.CLAUDE_MODEL;
-  const claudeCommitModel = process.env.CLAUDE_COMMIT_MODEL;
-
-  const projectNumberRaw = process.env.GITHUB_PROJECT_NUMBER;
-  const projectNumber = projectNumberRaw
-    ? Number.parseInt(projectNumberRaw, 10)
-    : undefined;
-  const reviewersRaw = process.env.VIBRATOR_REVIEWERS;
-  const reviewers = reviewersRaw
-    ? reviewersRaw.split(",").map((r) => r.trim()).filter(Boolean)
-    : [];
+  const projectNumber = projectEnvConfig.github_project_number;
   const projectMode: ProjectModeConfig | undefined =
-    projectNumber !== undefined && !Number.isNaN(projectNumber)
-      ? { projectNumber, reviewers }
-      : undefined;
+    projectNumber !== undefined ? { projectNumber, reviewers: resolved.reviewers } : undefined;
+
+  const sessionStorePath =
+    projectEnvConfig.session_store_path ?? buildDefaultSessionStorePath(owner, repo);
+
+  const dashboardPort = runtimeFlags.dashboardPort;
 
   return {
     owner,
     repo,
-    claudeModel,
-    claudeCommitModel,
-    maxConcurrency: Number.isNaN(maxConcurrency) ? 3 : maxConcurrency,
-    cycleMinimumMs: Number.isNaN(cycleMinimumSeconds) ? 60000 : Math.round(cycleMinimumSeconds * 1000),
-    dashboardPort: Number.isNaN(dashboardPort) ? 3000 : dashboardPort,
-    dashboardTitle,
-    once,
-    dryRun,
-    noBrowser,
+    claudeModel: resolved.claude_code_model,
+    claudeCommitModel: resolved.claude_describe_model,
+    maxConcurrency: resolved.max_concurrency,
+    cycleMinimumMs: Math.round(resolved.cycle_minimum_seconds * 1000),
+    dashboardPort,
+    dashboardTitle: projectEnvConfig.dashboard_title,
+    once: runtimeFlags.once,
+    dryRun: runtimeFlags.dryRun,
+    noBrowser: runtimeFlags.noBrowser,
     sessionStorePath,
     projectMode,
-    focusMode,
+    focusMode: resolved.focus_mode,
   };
 }
 
@@ -409,7 +386,9 @@ async function runEngineLoop(
   pollingState: PollingState,
   shutdownSignal: { requested: boolean },
   cancelSignal: { requested: boolean },
+  emitter: EventEmitter,
 ): Promise<void> {
+  const { write, blank, section, bullet, note } = createLogger(emitter);
   const repo = `${config.owner}/${config.repo}`;
   const gitHubClient = new GitHubClient({
     owner: config.owner,
@@ -429,7 +408,7 @@ async function runEngineLoop(
 
   do {
     if (shutdownSignal.requested) {
-      globalEventEmitter.emit("engine-shutdown", { engineIndex });
+      emitter.emit("engine-shutdown", { engineIndex });
       write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
       return;
     }
@@ -440,7 +419,7 @@ async function runEngineLoop(
 
     const githubHold = githubGateway.currentRateLimitHold();
     if (githubHold && Date.now() < githubHold.blockedUntilMs) {
-      globalEventEmitter.emit("engine-idle", {
+      emitter.emit("engine-idle", {
         engineIndex,
         reason: "github-rate-limit",
         rateLimitedUntilMs: githubHold.blockedUntilMs,
@@ -450,7 +429,7 @@ async function runEngineLoop(
       continue;
     }
 
-    globalEventEmitter.emit("iteration-start", {
+    emitter.emit("iteration-start", {
       iterationNumber,
       engineIndex,
       maxConcurrency: config.maxConcurrency,
@@ -478,7 +457,7 @@ async function runEngineLoop(
               try {
                 const result = await gitHubClient.approveWorkflowRun(run.id);
                 note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
-                globalEventEmitter.emit("workflow-approval", {
+                emitter.emit("workflow-approval", {
                   runId: run.id,
                   runName: run.name,
                   approved: result.approved,
@@ -518,7 +497,7 @@ async function runEngineLoop(
 
         const activeSessions = snapshot.agentSessions.filter((s) => s.status === "in_progress");
 
-        globalEventEmitter.emit("snapshot-update", {
+        emitter.emit("snapshot-update", {
           issueCount: snapshot.issues.length,
           prCount: openPullRequests.length,
           draftPrCount: openPullRequests.filter((pr) => pr.draft).length,
@@ -540,11 +519,11 @@ async function runEngineLoop(
           })),
         });
 
-        broadcastRepositorySnapshot(snapshot, config.owner, config.repo, activeSessions.length);
+        broadcastRepositorySnapshot(snapshot, config.owner, config.repo, activeSessions.length, emitter);
         for (const pr of openPullRequests) {
           const draftLabel = pr.draft ? "[DRAFT]" : "";
           const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
-          broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
+          broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`, undefined, emitter);
         }
       }
 
@@ -580,6 +559,7 @@ async function runEngineLoop(
             plan.blockedIssueNumbers,
             config.projectMode !== undefined,
             config.focusMode,
+            emitter,
           );
           return { action: a, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
         }
@@ -591,6 +571,7 @@ async function runEngineLoop(
         plan.blockedIssueNumbers,
         config.projectMode !== undefined,
         config.focusMode,
+        emitter,
       );
       return { action: null, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
     });
@@ -605,8 +586,8 @@ async function runEngineLoop(
       section(`Engine ${engineIndex + 1}: Action`);
       bullet(describeAction(action, snapshot, gitHubClient));
 
-      globalEventEmitter.emit("phase-update", { phase: "implementation" });
-      globalEventEmitter.emit("action-start", {
+      emitter.emit("phase-update", { phase: "implementation" });
+      emitter.emit("action-start", {
         actionIndex: engineIndex + 1,
         totalActions: config.maxConcurrency,
         description: describeAction(action, snapshot, gitHubClient),
@@ -638,7 +619,7 @@ async function runEngineLoop(
           actionContext,
         );
 
-        globalEventEmitter.emit("action-complete", {
+        emitter.emit("action-complete", {
           actionIndex: engineIndex + 1,
           totalActions: config.maxConcurrency,
           noCommitsPushed: result.noCommitsPushed || false,
@@ -669,6 +650,7 @@ async function runEngineLoop(
               planned.blockedIssueNumbers,
               config.projectMode !== undefined,
               config.focusMode,
+              emitter,
             );
           }
         }
@@ -677,7 +659,7 @@ async function runEngineLoop(
         if (isClaudeUsageLimitMessage(errorMessage)) {
           cycleRateLimitedUntilMs = getClaudeQuotaBlockedUntilMs();
         }
-        globalEventEmitter.emit("action-error", {
+        emitter.emit("action-error", {
           actionIndex: engineIndex + 1,
           totalActions: config.maxConcurrency,
           error: errorMessage,
@@ -689,7 +671,7 @@ async function runEngineLoop(
     } else {
       section(`Engine ${engineIndex + 1}: Idle`);
       bullet("nothing to do this cycle");
-      globalEventEmitter.emit("engine-idle", {
+      emitter.emit("engine-idle", {
         engineIndex,
         reason: "nothing to do this cycle",
       });
@@ -697,7 +679,7 @@ async function runEngineLoop(
 
     if (config.once) {
       if (shutdownSignal.requested) {
-        globalEventEmitter.emit("engine-shutdown", { engineIndex });
+        emitter.emit("engine-shutdown", { engineIndex });
         write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
       }
       return;
@@ -708,7 +690,7 @@ async function runEngineLoop(
     const remainingMs = Math.max(0, config.cycleMinimumMs - elapsed);
 
     if (remainingMs > 0) {
-      globalEventEmitter.emit("engine-idle", {
+      emitter.emit("engine-idle", {
         engineIndex,
         nextCycleAtMs: Date.now() + remainingMs,
         ...(cycleRateLimitedUntilMs !== undefined
@@ -740,6 +722,7 @@ async function runEngineLoop(
               pollingState.lastSnapshot,
               pollingState.seenCommitHashes,
               claimedActions,
+              emitter,
             ));
         }
       }
@@ -747,16 +730,23 @@ async function runEngineLoop(
   } while (true);
 }
 
-async function main(): Promise<void> {
-  const config = parseArgs(process.argv.slice(2));
-  const githubToken = getGitHubTokenFromEnv();
+async function startProject(
+  config: Config,
+  envConfig: EnvConfig,
+  githubToken: string,
+  shutdownSignal: { requested: boolean },
+): Promise<DashboardServer | null> {
+  const projectEmitter = new EventEmitter();
+  const { write, blank, section, bullet, note } = createLogger(projectEmitter);
   const githubGateway = new GitHubApiGateway({
     token: githubToken,
-    apiBaseUrl: process.env.GITHUB_API_BASE_URL ?? "https://api.github.com",
-    apiVersion: process.env.GITHUB_API_VERSION ?? "2022-11-28",
+    apiBaseUrl: envConfig.github_api_base_url ?? "https://api.github.com",
+    apiVersion: envConfig.github_api_version ?? "2022-11-28",
     userAgent: "vibrator",
+    eventEmitter: projectEmitter,
   });
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
+
   let projectTitle: string | undefined;
   if (config.dashboardTitle === undefined && config.projectMode) {
     try {
@@ -785,6 +775,7 @@ async function main(): Promise<void> {
     owner: config.owner,
     repo: config.repo,
     dashboardTitle,
+    eventEmitter: projectEmitter,
   });
   let dashboardReady = false;
   try {
@@ -796,7 +787,7 @@ async function main(): Promise<void> {
     dashboardReady = true;
   } catch (error) {
     console.error(
-      `[Dashboard] Failed to start: ${error instanceof Error ? error.message : String(error)}`,
+      `[Dashboard] Failed to start for ${config.owner}/${config.repo}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
@@ -819,7 +810,7 @@ async function main(): Promise<void> {
   if (config.once) modeNotes.push("--once");
   if (config.dryRun) modeNotes.push("--dry-run");
   if (config.noBrowser) modeNotes.push("--no-browser");
-  if (config.focusMode) modeNotes.push("--mode=focus");
+  if (config.focusMode) modeNotes.push("focus");
   write(
     `cycle-minimum: ${formatDuration(config.cycleMinimumMs)} · concurrency: ${config.maxConcurrency}` +
       (modeNotes.length > 0 ? ` · mode: ${modeNotes.join(", ")}` : ""),
@@ -884,10 +875,9 @@ async function main(): Promise<void> {
     lastSnapshot: null,
     seenCommitHashes: new Set<string>(),
   };
-  const shutdownSignal = { requested: false };
   const cancelSignals = Array.from({ length: config.maxConcurrency }, () => ({ requested: false }));
 
-  globalEventEmitter.subscribe((event) => {
+  projectEmitter.subscribe((event) => {
     if (event.type === "cylinder-cancel") {
       const engineIndex = event.data.engineIndex as number;
       if (typeof engineIndex === "number" && engineIndex >= 0 && engineIndex < cancelSignals.length) {
@@ -896,6 +886,36 @@ async function main(): Promise<void> {
       }
     }
   });
+
+  const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
+    runEngineLoop(
+      config,
+      githubGateway,
+      githubToken,
+      i,
+      planningMutex,
+      claimedActions,
+      pollingState,
+      shutdownSignal,
+      cancelSignals[i]!,
+      projectEmitter,
+    ),
+  );
+
+  await Promise.all(engines);
+
+  return dashboardReady ? dashboard : null;
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const once = argv.includes("--once");
+  const dryRun = argv.includes("--dry-run");
+  const noBrowser = argv.includes("--no-browser");
+
+  const envConfig = loadEnvConfig();
+
+  const shutdownSignal = { requested: false };
 
   // Listen for Escape key on the console to trigger graceful shutdown
   if (process.stdin.isTTY) {
@@ -917,21 +937,34 @@ async function main(): Promise<void> {
     });
   }
 
-  const engines = Array.from({ length: config.maxConcurrency }, (_, i) =>
-    runEngineLoop(
-      config,
-      githubGateway,
-      githubToken,
-      i,
-      planningMutex,
-      claimedActions,
-      pollingState,
-      shutdownSignal,
-      cancelSignals[i]!,
-    ),
+  // Pre-collect explicitly-configured ports so the auto-increment counter skips them,
+  // preventing conflicts between auto-assigned and explicit ports.
+  const explicitPorts = new Set(
+    envConfig.projects
+      .filter((p) => p.dashboard_port !== undefined)
+      .map((p) => p.dashboard_port!),
   );
+  let nextDefaultDashboardPort = 3000;
+  function nextAvailablePort(): number {
+    while (explicitPorts.has(nextDefaultDashboardPort)) nextDefaultDashboardPort++;
+    return nextDefaultDashboardPort++;
+  }
 
-  await Promise.all(engines);
+  const projectRuns: Promise<DashboardServer | null>[] = [];
+
+  for (const projectEnvConfig of envConfig.projects) {
+    const githubToken = resolveGitHubToken(envConfig, projectEnvConfig.github_token_name);
+    const dashboardPort = projectEnvConfig.dashboard_port ?? nextAvailablePort();
+    const config = buildProjectConfig(projectEnvConfig, envConfig, {
+      once,
+      dryRun,
+      noBrowser,
+      dashboardPort,
+    });
+    projectRuns.push(startProject(config, envConfig, githubToken, shutdownSignal));
+  }
+
+  const dashboards = (await Promise.all(projectRuns)).filter(Boolean) as DashboardServer[];
 
   blank();
   if (shutdownSignal.requested) {
@@ -946,7 +979,7 @@ async function main(): Promise<void> {
       process.stdin.setRawMode(false);
     }
   }
-  if (dashboardReady) {
+  for (const dashboard of dashboards) {
     dashboard.close();
   }
   process.exit(0);
