@@ -12,15 +12,15 @@ function waitMs(ms: number): Promise<void> {
 test("WsClient: onConnectionChange(true) is called when WebSocket opens", async (t) => {
   const port = BASE_PORT;
   const wss = new WebSocketServer({ host: "127.0.0.1", port });
-  t.after(() => wss.close());
-
-  let connectionChange: boolean | null = null;
   const client = new WsClient(
     `ws://127.0.0.1:${port}`,
     () => {},
     undefined,
     (connected) => { connectionChange = connected; }
   );
+  t.after(() => { client.close(); wss.close(); });
+
+  let connectionChange: boolean | null = null;
   client.connect();
 
   await waitMs(150);
@@ -31,15 +31,15 @@ test("WsClient: onConnectionChange(true) is called when WebSocket opens", async 
 test("WsClient: onConnectionChange(false) is called when WebSocket closes", async (t) => {
   const port = BASE_PORT + 1;
   const wss = new WebSocketServer({ host: "127.0.0.1", port });
-  t.after(() => wss.close());
-
-  const states: boolean[] = [];
   const client = new WsClient(
     `ws://127.0.0.1:${port}`,
     () => {},
     undefined,
     (connected) => { states.push(connected); }
   );
+  t.after(() => { client.close(); wss.close(); });
+
+  const states: boolean[] = [];
   client.connect();
 
   await waitMs(150);
@@ -62,6 +62,7 @@ test("WsClient: onConnectionChange(false) is called when connection is refused",
     undefined,
     (connected) => { connectionChange = connected; }
   );
+  t.after(() => client.close());
   client.connect();
 
   await waitMs(500);
@@ -81,7 +82,6 @@ test("DashboardStore: connection becomes 'connected' after connectLive WebSocket
   });
   await server.initialize();
   await server.start();
-  t.after(() => server.close());
 
   // Polyfill fetch to hit the test server instead of location.host
   const origFetch = globalThis.fetch;
@@ -89,10 +89,11 @@ test("DashboardStore: connection becomes 'connected' after connectLive WebSocket
     const path = typeof input === "string" ? input : input.toString();
     return origFetch(`http://127.0.0.1:${port}${path}`, init);
   }) as typeof fetch;
-  t.after(() => { globalThis.fetch = origFetch; });
 
   const { DashboardStore } = await import("../src/dashboard/store/dashboard-store.js");
   const store = new DashboardStore();
+  t.after(() => { store.disconnect(); server.close(); globalThis.fetch = origFetch; });
+
   await store.bootstrap();
 
   const wsUrl = `ws://127.0.0.1:${port}/api/ws`;
@@ -121,10 +122,11 @@ test("DashboardStore: connection becomes 'disconnected' when WebSocket server cl
     const path = typeof input === "string" ? input : input.toString();
     return origFetch(`http://127.0.0.1:${port}${path}`, init);
   }) as typeof fetch;
-  t.after(() => { globalThis.fetch = origFetch; });
 
   const { DashboardStore } = await import("../src/dashboard/store/dashboard-store.js");
   const store = new DashboardStore();
+  t.after(() => { store.disconnect(); globalThis.fetch = origFetch; });
+
   await store.bootstrap();
 
   const wsUrl = `ws://127.0.0.1:${port}/api/ws`;

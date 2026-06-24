@@ -2456,6 +2456,7 @@ const dashboard = new DashboardUI();
     }
     this.cssWatcher?.close();
     this.cssWatcher = null;
+    for (const client of this.wss.clients) client.terminate();
     this.wss.close();
     this.server.close();
   }
