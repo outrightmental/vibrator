@@ -463,7 +463,13 @@ export class DashboardStore {
         cachedEvents?: DashboardEvent[];
       };
 
+      // Preserve the current connection status so that a reconnect-triggered
+      // bootstrap doesn't overwrite 'disconnected' with the initialState default
+      // of 'connecting', which would leave the indicator stuck on "Connecting…"
+      // if the subsequent reconnect also fails.
+      const currentConnection = this._state.connection;
       let state = initialState();
+      state.connection = currentConnection;
       state.owner = data.owner ?? '';
       state.repo = data.repo ?? '';
       state.title = data.dashboardTitle ?? data.repo ?? '';

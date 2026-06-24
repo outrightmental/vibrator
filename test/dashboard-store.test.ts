@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dashboardReducer, initialState } from "../src/dashboard/store/dashboard-store.js";
+import { dashboardReducer, initialState, DashboardStore } from "../src/dashboard/store/dashboard-store.js";
 import type { DashboardState } from "../src/dashboard/store/dashboard-store.js";
 
 interface WireEvent {
@@ -336,4 +336,51 @@ test("reducer: applying a sequence of cached events produces consistent state", 
   assert.equal(s.cylinderByIssue.get(10), 0);
   assert.equal(s.issueCards.get(10)?.title, "X");
   assert.equal(s.lastLifecyclePairs[0]?.prPhase, "planning");
+});
+
+// ── DashboardStore.bootstrap() connection preservation ────────────────────────
+
+function withMockFetch<T>(response: unknown, fn: () => Promise<T>): Promise<T> {
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () =>
+    ({ json: async () => response } as unknown as Response);
+  return fn().finally(() => { globalThis.fetch = saved; });
+}
+
+const MOCK_STATE_RESPONSE = {
+  owner: "test",
+  repo: "repo",
+  dashboardTitle: "Test",
+  maxConcurrency: 2,
+  cachedEvents: [] as WireEvent[],
+};
+
+test("DashboardStore.bootstrap() preserves 'connecting' status on initial load", async () => {
+  await withMockFetch(MOCK_STATE_RESPONSE, async () => {
+    const store = new DashboardStore();
+    assert.equal(store.getState().connection, "connecting");
+    await store.bootstrap();
+    assert.equal(store.getState().connection, "connecting",
+      "bootstrap() must not change connection status during initial load");
+  });
+});
+
+test("DashboardStore.bootstrap() preserves 'disconnected' status during reconnect", async () => {
+  await withMockFetch(MOCK_STATE_RESPONSE, async () => {
+    const store = new DashboardStore();
+
+    // Simulate post-disconnect state by forcing the internal state directly.
+    // This is the state the store is in when onConnectionChange(false) fires.
+    (store as unknown as { _state: DashboardState })._state = {
+      ...store.getState(),
+      connection: "disconnected",
+    };
+    assert.equal(store.getState().connection, "disconnected");
+
+    // bootstrap() is called by the reconnect handler — it must not reset
+    // connection back to 'connecting' before the new WebSocket has opened.
+    await store.bootstrap();
+    assert.equal(store.getState().connection, "disconnected",
+      "bootstrap() must not reset 'disconnected' to 'connecting' during reconnect");
+  });
 });
