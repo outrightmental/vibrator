@@ -473,8 +473,19 @@ export class DashboardStore {
   connectLive(wsUrl?: string): void {
     const url = wsUrl ?? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/ws`;
     const client = new WsClient(
-      url,
-      (event) => this.applyEvent(event),
+      `ws://${location.host}/api/ws`,
+      (event) => {
+        if (event.type === 'css-reload') {
+          const link = document.querySelector<HTMLLinkElement>('link[rel="stylesheet"]');
+          if (link) {
+            const url = new URL(link.href, location.href);
+            url.searchParams.set('v', String(Date.now()));
+            link.href = url.pathname + url.search;
+          }
+          return;
+        }
+        this.applyEvent(event);
+      },
       async () => {
         await this.bootstrap();
       },
