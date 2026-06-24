@@ -21,7 +21,7 @@ import { reconcileSessions } from "./reconcile.js";
 import { FileSessionStore } from "./session-store.js";
 import { DashboardServer } from "./dashboard-server.js";
 import { resolveDashboardTitle } from "./dashboard-title.js";
-import { globalEventEmitter } from "./event-emitter.js";
+import { globalEventEmitter, EventEmitter } from "./event-emitter.js";
 import {
   broadcastRepositorySnapshot,
   broadcastPullRequestUpdate,
@@ -164,6 +164,7 @@ async function broadcastBetweenCycleActivity(
   lastSnapshot: RepositorySnapshot | null,
   seenCommitHashes: Set<string>,
   claimedActions: ReadonlySet<string>,
+  emitter: EventEmitter,
 ): Promise<{ snapshot: RepositorySnapshot; seenCommitHashes: Set<string> }> {
   try {
     const gitHubClient = new GitHubClient({
@@ -189,7 +190,7 @@ async function broadcastBetweenCycleActivity(
       lastSnapshot.agentSessions.filter((s) => s.status === "in_progress").length !==
         snapshot.agentSessions.filter((s) => s.status === "in_progress").length;
     if (snapshotChanged) {
-      broadcastRepositorySnapshot(snapshot, config.owner, config.repo);
+      broadcastRepositorySnapshot(snapshot, config.owner, config.repo, undefined, emitter);
     }
     const { blockedIssueNumbers } = buildPlan(snapshot, config.maxConcurrency, config.projectMode, config.focusMode);
     // Include in-flight implementations (claimed but not yet completed) so
@@ -203,6 +204,7 @@ async function broadcastBetweenCycleActivity(
       blockedIssueNumbers,
       config.projectMode !== undefined,
       config.focusMode,
+      emitter,
     );
 
     // Broadcast open PRs only when their state has changed since the last poll
@@ -211,7 +213,7 @@ async function broadcastBetweenCycleActivity(
       const prChanged = !lastPr || hasPrStateChanged(pr, lastPr);
 
       if (prChanged) {
-        broadcastPullRequestUpdate(pr, "monitoring");
+        broadcastPullRequestUpdate(pr, "monitoring", undefined, emitter);
       }
 
       // Broadcast review comments only when the unresolved count changed
@@ -221,7 +223,7 @@ async function broadcastBetweenCycleActivity(
         try {
           const reviewComments = await gitHubClient.listUnresolvedReviewComments(pr.number);
           if (reviewComments.length > 0) {
-            broadcastReviewComment(pr.number, "Review", reviewComments.length);
+            broadcastReviewComment(pr.number, "Review", reviewComments.length, undefined, emitter);
           }
         } catch (error) {
           // Silently skip review comment broadcasting if it fails
@@ -236,7 +238,7 @@ async function broadcastBetweenCycleActivity(
         const lastIssue = lastIssueMap.get(issue.number);
         // Broadcast if this is a new issue or recently updated
         if (!lastIssue || new Date(issue.updatedAt) > new Date(lastIssue.updatedAt)) {
-          broadcastIssueUpdate(issue, lastIssue ? "updated" : "opened");
+          broadcastIssueUpdate(issue, lastIssue ? "updated" : "opened", undefined, emitter);
         }
       }
     }
@@ -246,7 +248,7 @@ async function broadcastBetweenCycleActivity(
     try {
       const recentCommits = await gitHubClient.listRecentCommits(5);
       for (const commit of filterNewCommits(recentCommits, seenCommitHashes)) {
-        broadcastCommit(commit);
+        broadcastCommit(commit, undefined, emitter);
         newSeenHashes.add(commit.hash);
       }
     } catch (error) {
@@ -399,6 +401,7 @@ async function runEngineLoop(
   pollingState: PollingState,
   shutdownSignal: { requested: boolean },
   cancelSignal: { requested: boolean },
+  emitter: EventEmitter,
 ): Promise<void> {
   const repo = `${config.owner}/${config.repo}`;
   const gitHubClient = new GitHubClient({
@@ -419,7 +422,7 @@ async function runEngineLoop(
 
   do {
     if (shutdownSignal.requested) {
-      globalEventEmitter.emit("engine-shutdown", { engineIndex });
+      emitter.emit("engine-shutdown", { engineIndex });
       write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
       return;
     }
@@ -430,7 +433,7 @@ async function runEngineLoop(
 
     const githubHold = githubGateway.currentRateLimitHold();
     if (githubHold && Date.now() < githubHold.blockedUntilMs) {
-      globalEventEmitter.emit("engine-idle", {
+      emitter.emit("engine-idle", {
         engineIndex,
         reason: "github-rate-limit",
         rateLimitedUntilMs: githubHold.blockedUntilMs,
@@ -440,7 +443,7 @@ async function runEngineLoop(
       continue;
     }
 
-    globalEventEmitter.emit("iteration-start", {
+    emitter.emit("iteration-start", {
       iterationNumber,
       engineIndex,
       maxConcurrency: config.maxConcurrency,
@@ -468,7 +471,7 @@ async function runEngineLoop(
               try {
                 const result = await gitHubClient.approveWorkflowRun(run.id);
                 note(result.approved ? `✓ approved ${label}` : `skipped ${label}: ${result.reason}`, 2);
-                globalEventEmitter.emit("workflow-approval", {
+                emitter.emit("workflow-approval", {
                   runId: run.id,
                   runName: run.name,
                   approved: result.approved,
@@ -508,7 +511,7 @@ async function runEngineLoop(
 
         const activeSessions = snapshot.agentSessions.filter((s) => s.status === "in_progress");
 
-        globalEventEmitter.emit("snapshot-update", {
+        emitter.emit("snapshot-update", {
           issueCount: snapshot.issues.length,
           prCount: openPullRequests.length,
           draftPrCount: openPullRequests.filter((pr) => pr.draft).length,
@@ -530,11 +533,11 @@ async function runEngineLoop(
           })),
         });
 
-        broadcastRepositorySnapshot(snapshot, config.owner, config.repo, activeSessions.length);
+        broadcastRepositorySnapshot(snapshot, config.owner, config.repo, activeSessions.length, emitter);
         for (const pr of openPullRequests) {
           const draftLabel = pr.draft ? "[DRAFT]" : "";
           const checksLabel = pr.checksStatus === "success" ? "[CHECKS OK]" : "[CHECKS " + pr.checksStatus.toUpperCase() + "]";
-          broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`);
+          broadcastPullRequestUpdate(pr, `tracking ${draftLabel} ${checksLabel}`, undefined, emitter);
         }
       }
 
@@ -570,6 +573,7 @@ async function runEngineLoop(
             plan.blockedIssueNumbers,
             config.projectMode !== undefined,
             config.focusMode,
+            emitter,
           );
           return { action: a, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
         }
@@ -581,6 +585,7 @@ async function runEngineLoop(
         plan.blockedIssueNumbers,
         config.projectMode !== undefined,
         config.focusMode,
+        emitter,
       );
       return { action: null, snapshot, blockedIssueNumbers: plan.blockedIssueNumbers };
     });
@@ -595,8 +600,8 @@ async function runEngineLoop(
       section(`Engine ${engineIndex + 1}: Action`);
       bullet(describeAction(action, snapshot, gitHubClient));
 
-      globalEventEmitter.emit("phase-update", { phase: "implementation" });
-      globalEventEmitter.emit("action-start", {
+      emitter.emit("phase-update", { phase: "implementation" });
+      emitter.emit("action-start", {
         actionIndex: engineIndex + 1,
         totalActions: config.maxConcurrency,
         description: describeAction(action, snapshot, gitHubClient),
@@ -628,7 +633,7 @@ async function runEngineLoop(
           actionContext,
         );
 
-        globalEventEmitter.emit("action-complete", {
+        emitter.emit("action-complete", {
           actionIndex: engineIndex + 1,
           totalActions: config.maxConcurrency,
           noCommitsPushed: result.noCommitsPushed || false,
@@ -659,6 +664,7 @@ async function runEngineLoop(
               planned.blockedIssueNumbers,
               config.projectMode !== undefined,
               config.focusMode,
+              emitter,
             );
           }
         }
@@ -667,7 +673,7 @@ async function runEngineLoop(
         if (isClaudeUsageLimitMessage(errorMessage)) {
           cycleRateLimitedUntilMs = getClaudeQuotaBlockedUntilMs();
         }
-        globalEventEmitter.emit("action-error", {
+        emitter.emit("action-error", {
           actionIndex: engineIndex + 1,
           totalActions: config.maxConcurrency,
           error: errorMessage,
@@ -679,7 +685,7 @@ async function runEngineLoop(
     } else {
       section(`Engine ${engineIndex + 1}: Idle`);
       bullet("nothing to do this cycle");
-      globalEventEmitter.emit("engine-idle", {
+      emitter.emit("engine-idle", {
         engineIndex,
         reason: "nothing to do this cycle",
       });
@@ -687,7 +693,7 @@ async function runEngineLoop(
 
     if (config.once) {
       if (shutdownSignal.requested) {
-        globalEventEmitter.emit("engine-shutdown", { engineIndex });
+        emitter.emit("engine-shutdown", { engineIndex });
         write(`Engine ${engineIndex + 1}: shutdown — no further work will be done.`);
       }
       return;
@@ -698,7 +704,7 @@ async function runEngineLoop(
     const remainingMs = Math.max(0, config.cycleMinimumMs - elapsed);
 
     if (remainingMs > 0) {
-      globalEventEmitter.emit("engine-idle", {
+      emitter.emit("engine-idle", {
         engineIndex,
         nextCycleAtMs: Date.now() + remainingMs,
         ...(cycleRateLimitedUntilMs !== undefined
@@ -730,6 +736,7 @@ async function runEngineLoop(
               pollingState.lastSnapshot,
               pollingState.seenCommitHashes,
               claimedActions,
+              emitter,
             ));
         }
       }
@@ -743,11 +750,13 @@ async function startProject(
   githubToken: string,
   shutdownSignal: { requested: boolean },
 ): Promise<DashboardServer | null> {
+  const projectEmitter = new EventEmitter();
   const githubGateway = new GitHubApiGateway({
     token: githubToken,
     apiBaseUrl: envConfig.github_api_base_url ?? "https://api.github.com",
     apiVersion: envConfig.github_api_version ?? "2022-11-28",
     userAgent: "vibrator",
+    eventEmitter: projectEmitter,
   });
   const repositoryUrl = `https://github.com/${config.owner}/${config.repo}`;
 
@@ -779,6 +788,7 @@ async function startProject(
     owner: config.owner,
     repo: config.repo,
     dashboardTitle,
+    eventEmitter: projectEmitter,
   });
   let dashboardReady = false;
   try {
@@ -880,7 +890,7 @@ async function startProject(
   };
   const cancelSignals = Array.from({ length: config.maxConcurrency }, () => ({ requested: false }));
 
-  globalEventEmitter.subscribe((event) => {
+  projectEmitter.subscribe((event) => {
     if (event.type === "cylinder-cancel") {
       const engineIndex = event.data.engineIndex as number;
       if (typeof engineIndex === "number" && engineIndex >= 0 && engineIndex < cancelSignals.length) {
@@ -901,6 +911,7 @@ async function startProject(
       pollingState,
       shutdownSignal,
       cancelSignals[i]!,
+      projectEmitter,
     ),
   );
 
