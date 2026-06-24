@@ -64,7 +64,8 @@ export class DashboardServer {
   private wss: WebSocketServer;
   private maxConcurrency: number = 3;
   private cachedEvents: Map<string, DashboardEvent> = new Map();
-  private projectEmitter: EventEmitter;
+  private cssWatcher: ReturnType<typeof fs.watch> | null = null;
+  private cssReloadDebounce: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: DashboardServerConfig) {
     this.port = config.port;
@@ -2411,6 +2412,30 @@ const dashboard = new DashboardUI();
 `;
   }
 
+  private startCssWatch(): void {
+    const cssDir = path.dirname(STATIC_BUNDLE_CSS);
+    const cssFile = path.basename(STATIC_BUNDLE_CSS);
+    try {
+      this.cssWatcher = fs.watch(cssDir, (_eventType, filename) => {
+        if (filename !== cssFile) return;
+        if (this.cssReloadDebounce !== null) clearTimeout(this.cssReloadDebounce);
+        this.cssReloadDebounce = setTimeout(() => {
+          this.cssReloadDebounce = null;
+          this.broadcastCssReload();
+        }, 50);
+      });
+    } catch {
+      // dist/dashboard not yet created; CSS hot reload disabled until first build
+    }
+  }
+
+  private broadcastCssReload(): void {
+    const message = JSON.stringify({ type: "css-reload", timestamp: new Date().toISOString(), data: {} });
+    for (const client of this.wss.clients) {
+      if (client.readyState === 1) client.send(message);
+    }
+  }
+
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server.once("error", (error: NodeJS.ErrnoException) => {
@@ -2419,6 +2444,7 @@ const dashboard = new DashboardUI();
       this.server.listen(this.port, this.host, () => {
         const url = `http://${this.host}:${this.port}`;
         console.log(`[Dashboard] Server listening at ${url}`);
+        this.startCssWatch();
         resolve();
       });
     });
@@ -2439,6 +2465,12 @@ const dashboard = new DashboardUI();
   }
 
   close(): void {
+    if (this.cssReloadDebounce !== null) {
+      clearTimeout(this.cssReloadDebounce);
+      this.cssReloadDebounce = null;
+    }
+    this.cssWatcher?.close();
+    this.cssWatcher = null;
     this.wss.close();
     this.server.close();
   }
