@@ -129,6 +129,100 @@ test("GitHubApiGateway retries GraphQL HTTP 200 rate-limit errors", async () => 
   assert.equal(callCount, 2);
 });
 
+test("GitHubApiGateway sends If-None-Match and serves cached body on 304 (saving rate limit)", async () => {
+  const sentIfNoneMatch: Array<string | null> = [];
+  let callCount = 0;
+
+  const gateway = new GitHubApiGateway({
+    token: "token",
+    fetchImpl: async (_url, init) => {
+      callCount += 1;
+      const headers = new Headers((init as RequestInit | undefined)?.headers);
+      sentIfNoneMatch.push(headers.get("if-none-match"));
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ number: 1 }]), {
+          status: 200,
+          headers: { ETag: '"abc123"', "Content-Type": "application/json" },
+        });
+      }
+      // Resource unchanged — GitHub answers 304 with no body.
+      return new Response(null, {
+        status: 304,
+        headers: { ETag: '"abc123"' },
+      });
+    },
+  });
+
+  const first = await gateway.request<Array<{ number: number }>>("/repos/o/r/issues?state=open");
+  const second = await gateway.request<Array<{ number: number }>>("/repos/o/r/issues?state=open");
+
+  assert.deepEqual(first, [{ number: 1 }]);
+  assert.deepEqual(second, [{ number: 1 }], "304 should replay the cached body");
+  assert.equal(callCount, 2);
+  assert.equal(sentIfNoneMatch[0], null, "first request has no ETag to send");
+  assert.equal(sentIfNoneMatch[1], '"abc123"', "second request sends If-None-Match");
+});
+
+test("GitHubApiGateway replays cached Link header so pagination survives a 304", async () => {
+  let callCount = 0;
+  const gateway = new GitHubApiGateway({
+    token: "token",
+    fetchImpl: async (url) => {
+      callCount += 1;
+      const target = typeof url === "string" ? url : url.toString();
+      // Page 2 always returns a fresh single item; page 1 is cached then 304s.
+      if (target.includes("page=2")) {
+        return new Response(JSON.stringify([{ number: 2 }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ number: 1 }]), {
+          status: 200,
+          headers: {
+            ETag: '"page1"',
+            "Content-Type": "application/json",
+            Link: '<https://api.github.com/repos/o/r/issues?per_page=100&page=2>; rel="next"',
+          },
+        });
+      }
+      return new Response(null, { status: 304, headers: { ETag: '"page1"' } });
+    },
+  });
+
+  const firstRun = await gateway.getAllPages<{ number: number }>("/repos/o/r/issues");
+  const secondRun = await gateway.getAllPages<{ number: number }>("/repos/o/r/issues");
+
+  assert.deepEqual(firstRun, [{ number: 1 }, { number: 2 }]);
+  assert.deepEqual(
+    secondRun,
+    [{ number: 1 }, { number: 2 }],
+    "a 304 on page 1 must still follow the cached Link to page 2",
+  );
+});
+
+test("GitHubApiGateway skips conditional requests when disabled", async () => {
+  const sentIfNoneMatch: Array<string | null> = [];
+  const gateway = new GitHubApiGateway({
+    token: "token",
+    conditionalRequests: false,
+    fetchImpl: async (_url, init) => {
+      const headers = new Headers((init as RequestInit | undefined)?.headers);
+      sentIfNoneMatch.push(headers.get("if-none-match"));
+      return new Response(JSON.stringify([{ number: 1 }]), {
+        status: 200,
+        headers: { ETag: '"abc123"', "Content-Type": "application/json" },
+      });
+    },
+  });
+
+  await gateway.request("/repos/o/r/issues?state=open");
+  await gateway.request("/repos/o/r/issues?state=open");
+
+  assert.deepEqual(sentIfNoneMatch, [null, null], "no If-None-Match when caching disabled");
+});
+
 test("GitHubApiGateway enforces spacing between mutative requests", async () => {
   let nowMs = 1_000;
   const sleeps: number[] = [];

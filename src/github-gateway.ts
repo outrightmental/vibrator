@@ -26,6 +26,14 @@ export interface GitHubApiGatewayOptions {
   maxAttempts?: number;
   secondaryFallbackWaitMs?: number;
   resetSkewMs?: number;
+  /**
+   * Enable ETag conditional requests (`If-None-Match`) for GET requests.
+   * Defaults to true. GitHub does not count `304 Not Modified` responses
+   * against the primary rate limit, so caching ETags makes the orchestrator's
+   * repeated polling of unchanged endpoints — the same snapshot fetched by
+   * every engine each cycle — effectively free. See {@link GitHubApiGateway}.
+   */
+  conditionalRequests?: boolean;
 }
 
 export interface GitHubRequestOptions extends RequestInit {
@@ -85,6 +93,19 @@ function headersToObject(headers: Headers): Record<string, string> {
   return mapped;
 }
 
+/**
+ * Single choke-point for every GitHub REST and GraphQL call vibrator makes.
+ *
+ * Frugality with the GitHub rate limit is built in at three layers:
+ *  1. A serialized request queue ({@link enqueue}) so calls never burst.
+ *  2. Rate-limit hold tracking that pauses all traffic until the reset window.
+ *  3. ETag conditional requests ({@link etagCache}): every GET sends
+ *     `If-None-Match` with the previously-seen ETag, and GitHub answers
+ *     unchanged resources with `304 Not Modified`, which does NOT count
+ *     against the primary rate limit. Because the orchestrator polls the same
+ *     endpoints every cycle — and N concurrent engines each fetch the same
+ *     snapshot — most reads are repeats that now cost no quota at all.
+ */
 export class GitHubApiGateway {
   private readonly apiBaseUrl: string;
   private readonly token: string;
@@ -98,12 +119,21 @@ export class GitHubApiGateway {
   private readonly maxAttempts: number;
   private readonly secondaryFallbackWaitMs: number;
   private readonly resetSkewMs: number;
+  private readonly conditionalRequests: boolean;
 
   private latestSnapshotByResource = new Map<string, GitHubRateLimitSnapshot>();
   private activeHold: GitHubRateLimitHold | undefined;
   private lastMutativeRequestAtMs = 0;
   private queueTail: Promise<unknown> = Promise.resolve();
   private wasHolding = false;
+  /**
+   * Per-URL ETag cache for GET requests. Maps a resolved request URL to the
+   * `ETag` returned with its last successful response and that response's body
+   * and headers. On the next GET to the same URL we send `If-None-Match`; if
+   * GitHub replies `304 Not Modified` (which does not count against the
+   * primary rate limit) we serve the cached body instead of spending quota.
+   */
+  private etagCache = new Map<string, { etag: string; body: string; headers: Headers }>();
 
   constructor(options: GitHubApiGatewayOptions) {
     this.apiBaseUrl = options.apiBaseUrl ?? "https://api.github.com";
@@ -118,6 +148,7 @@ export class GitHubApiGateway {
     this.maxAttempts = options.maxAttempts ?? 3;
     this.secondaryFallbackWaitMs = options.secondaryFallbackWaitMs ?? 60_000;
     this.resetSkewMs = options.resetSkewMs ?? 5_000;
+    this.conditionalRequests = options.conditionalRequests ?? true;
   }
 
   request<T>(path: string, init: GitHubRequestOptions = {}): Promise<T> {
@@ -270,15 +301,28 @@ export class GitHubApiGateway {
     const method = (init.method ?? "GET").toUpperCase();
     const retryOnRateLimit = init.retryOnRateLimit ?? true;
 
+    // Only safe GETs (no request body) are cacheable. A 304 from GitHub does
+    // not count against the primary rate limit, so this is where the savings
+    // come from.
+    const cacheKey =
+      this.conditionalRequests && method === "GET" && init.body === undefined
+        ? this.resolveUrl(path)
+        : undefined;
+
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       await this.waitUntilReady();
       await this.waitForMutativeSpacingIfNeeded(isMutativeHttpMethod(method));
 
       const includeJsonContentType = typeof init.body === "string";
+      const requestHeaders = this.buildRequestHeaders(init.headers, includeJsonContentType);
+      const cached = cacheKey ? this.etagCache.get(cacheKey) : undefined;
+      if (cached && !requestHeaders.has("If-None-Match")) {
+        requestHeaders.set("If-None-Match", cached.etag);
+      }
       const response = await this.fetchImpl(this.resolveUrl(path), {
         ...init,
         ...(init.method !== undefined ? { method } : {}),
-        headers: headersToObject(this.buildRequestHeaders(init.headers, includeJsonContentType)),
+        headers: headersToObject(requestHeaders),
       });
 
       const observedAtMs = this.clock();
@@ -325,6 +369,17 @@ export class GitHubApiGateway {
         );
       }
 
+      // Resource unchanged since our cached copy — serve it for free. GitHub
+      // returns 304 only when we sent a matching If-None-Match, so the cache
+      // entry is guaranteed to exist here.
+      if (response.status === 304 && cacheKey) {
+        const hit = this.etagCache.get(cacheKey);
+        if (hit) {
+          const data = hit.body ? (JSON.parse(hit.body) as T) : (undefined as T);
+          return { data, headers: hit.headers };
+        }
+      }
+
       if (response.status === 404) {
         throw toErrorWithStatus(`GitHub request failed (404 Not Found) for ${path}`, 404);
       }
@@ -340,6 +395,20 @@ export class GitHubApiGateway {
           `GitHub request failed (${response.status} ${response.statusText}) for ${path}. Response body: ${responseBody || "(empty)"}`,
           response.status,
         );
+      }
+
+      // Cache the ETag so the next GET to this URL can be a free 304. Headers
+      // are cloned because the response's own headers (e.g. Link, used for
+      // pagination) must survive to be replayed on a future cache hit.
+      if (cacheKey) {
+        const etag = response.headers.get("etag");
+        if (etag) {
+          this.etagCache.set(cacheKey, {
+            etag,
+            body: responseBody,
+            headers: new Headers(response.headers),
+          });
+        }
       }
 
       const data = await this.parseJsonOrUndefined<T>(response, responseBody);
