@@ -372,7 +372,7 @@ function buildProjectConfig(
   const cycleMinimumSeconds =
     projectEnvConfig.cycle_minimum_seconds ?? envConfig.cycle_minimum_seconds ?? 60;
 
-  const claudeModel = projectEnvConfig.claude_code_model ?? envConfig.claude_code_model;
+  const claudeModel = projectEnvConfig.claude_code_model ?? envConfig.claude_code_model ?? "claude-sonnet-4-6";
   const claudeCommitModel = projectEnvConfig.claude_describe_model ?? envConfig.claude_describe_model;
 
   const projectNumber = projectEnvConfig.github_project_number;
