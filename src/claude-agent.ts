@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { GitHubApiGateway } from "./github-gateway.js";
@@ -1070,6 +1070,45 @@ export function isNonFastForwardPushError(message: string): boolean {
   return /non-fast-forward|failed to push some refs|tip of your current branch is behind/i.test(
     message,
   );
+}
+
+export interface ClaudeAuthResult {
+  valid: boolean;
+  reason?: string;
+}
+
+export async function validateClaudeAuth(): Promise<ClaudeAuthResult> {
+  const credentialsPath = join(homedir(), ".claude", ".credentials.json");
+
+  let raw: string;
+  try {
+    raw = await readFile(credentialsPath, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return { valid: false, reason: "credentials file not found" };
+    }
+    return { valid: false, reason: `credentials file unreadable: ${(err as Error).message}` };
+  }
+
+  let credentials: unknown;
+  try {
+    credentials = JSON.parse(raw);
+  } catch {
+    return { valid: false, reason: "credentials file is not valid JSON" };
+  }
+
+  const oauth = (credentials as Record<string, unknown>)?.claudeAiOauth as
+    | Record<string, unknown>
+    | undefined;
+  if (oauth) {
+    const expiresAt = oauth.expiresAt;
+    if (typeof expiresAt === "number" && expiresAt < Date.now()) {
+      return { valid: false, reason: "OAuth token has expired" };
+    }
+  }
+
+  return { valid: true };
 }
 
 function isCommandLengthError(error: unknown): boolean {

@@ -8,6 +8,7 @@ import {
   DEFAULT_COMMIT_MODEL,
   isClaudeUsageLimitMessage,
   getClaudeQuotaBlockedUntilMs,
+  validateClaudeAuth,
 } from "./claude-agent.js";
 import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "./env-config.js";
 import {
@@ -750,6 +751,16 @@ async function main(): Promise<void> {
   const noBrowser = argv.includes("--no-browser");
 
   const envConfig = loadEnvConfig();
+
+  // ── Validate Claude authentication before opening the browser ─────────────
+  const authResult = await validateClaudeAuth();
+  if (!authResult.valid) {
+    console.error(`\nError: Claude authentication is invalid or expired.`);
+    console.error(`Please run:  claude auth login`);
+    console.error(`Then restart vibrator.\n`);
+    process.exit(1);
+  }
+
   const emitter = globalEventEmitter;
   const shutdownSignal = { requested: false };
 
