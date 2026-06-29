@@ -570,16 +570,32 @@ export function runCommand(
 ): Promise<string> {
   ensureChildCleanupHandlers();
   return new Promise((resolve, reject) => {
+    // On Windows a non-captured stream goes to a drained pipe (forwarded to our
+    // own stdio below) rather than being inherited. Reason: `detached:false` is
+    // not enough on its own — a git child that inherits the parent's
+    // console/ConPTY handle for stdout can fail to write to it in any
+    // console-less moment and die with "fatal: unknown write failure on
+    // standard output" (exit 128), because git's end-of-command check exempts
+    // pipes/sockets but NOT console char devices. A real anonymous pipe is a
+    // plain kernel handle valid in any process, so git always writes cleanly.
+    // POSIX keeps "inherit" — its TTY passthrough (e.g. clone/fetch progress
+    // meters) is unaffected and the bug does not occur there.
+    const passthrough: "inherit" | "pipe" = process.platform === "win32" ? "pipe" : "inherit";
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
-      // Lead our own process group so the whole subtree (claude + its node
-      // workers / MCP servers) can be signalled at once — see killProcessTree.
-      detached: true,
+      // POSIX only: lead our own process group so the whole subtree (claude +
+      // its node workers / MCP servers) can be signalled at once via
+      // process.kill(-pid) — see killProcessTree. Never detach on Windows:
+      // there are no signalable process groups (process.kill(-pid) throws and
+      // killProcessTree already falls back to child.kill, so detaching buys
+      // nothing) and detached:true sets DETACHED_PROCESS, which severs the
+      // child from the console and triggers the write failure described above.
+      detached: process.platform !== "win32",
       stdio: [
         options.input !== undefined ? "pipe" : "ignore",
-        options.captureStdout ? "pipe" : "inherit",
-        options.captureStderr ? "pipe" : "inherit",
+        options.captureStdout ? "pipe" : passthrough,
+        options.captureStderr ? "pipe" : passthrough,
       ],
     });
     liveChildren.add(child);
@@ -615,17 +631,29 @@ export function runCommand(
         stderrBytes -= stderrChunks.shift()!.length;
       }
     };
-    if (options.captureStdout && child.stdout) {
-      child.stdout.on("data", (chunk: Buffer) => {
+    if (options.captureStdout) {
+      child.stdout?.on("data", (chunk: Buffer) => {
         stdoutChunks.push(chunk);
         options.onStdoutChunk?.(chunk.toString("utf8"));
       });
+    } else {
+      // Windows passthrough: forward the child's piped stdout to ours so its
+      // output still appears, but via a drained pipe instead of an inherited
+      // console handle. `end: false` keeps our stdout open after the child's
+      // stream closes (otherwise the first finished command closes vibrator's
+      // stdout). On POSIX child.stdout is null (inherited), so this is a no-op.
+      child.stdout?.pipe(process.stdout, { end: false });
+      // A broken downstream (e.g. terminal closed) must not crash vibrator.
+      child.stdout?.on("error", () => {});
     }
 
     if (options.captureStderr && child.stderr) {
       child.stderr.on("data", (chunk: Buffer) => {
         captureStderrTail(chunk);
       });
+    } else {
+      child.stderr?.pipe(process.stderr, { end: false });
+      child.stderr?.on("error", () => {});
     }
 
     // Reap any process-group stragglers the direct child left behind. `claude`
