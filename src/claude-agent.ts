@@ -1580,13 +1580,30 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     }
 
     if (await pathExists(repoDir)) {
-      await rm(repoDir, { recursive: true, force: true });
+      // maxRetries rides out the transient EBUSY/EPERM Windows throws when a
+      // virus scanner or a lingering handle is still touching a file we just
+      // released; without it a single locked file aborts the whole checkout.
+      await rm(repoDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
-    await runCommand("git", ["worktree", "prune"], { cwd: canonicalDir });
+    // A prior interrupted run can leave a stale worktree registration for this
+    // path in the canonical clone's admin dir (`_main/.git/worktrees/<id>`).
+    // `prune` clears an unlocked-but-missing entry, but a *locked* one — or a
+    // leftover directory git won't clobber — makes a plain `worktree add` fail
+    // forever with "is a missing but locked worktree" / "already exists" (exit
+    // 128), wedging this checkout until someone runs `git worktree remove` by
+    // hand. Deregister the path (best effort), prune, then add with `-f -f`,
+    // which overrides a locked/missing registration, so checkout self-heals.
+    await runCommand("git", ["worktree", "remove", "--force", repoDir], {
+      cwd: canonicalDir,
+      captureStderr: true,
+    }).catch(() => {
+      // The common case: nothing registered at this path, so nothing to clear.
+    });
+    await runCommand("git", ["worktree", "prune"], { cwd: canonicalDir, captureStderr: true });
     await runCommand(
       "git",
-      ["worktree", "add", "--detach", repoDir, worktreeRef],
-      { cwd: canonicalDir },
+      ["worktree", "add", "--detach", "-f", "-f", repoDir, worktreeRef],
+      { cwd: canonicalDir, captureStderr: true },
     );
   }
 
