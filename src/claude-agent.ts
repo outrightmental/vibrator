@@ -1564,6 +1564,20 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     });
   }
 
+  /**
+   * Enables git's long-path support on a clone so working-tree operations
+   * (`clean`, `reset --hard`, `checkout`, `merge`) don't abort with "Filename
+   * too long" when a checkout contains deeply nested dependency trees. pnpm's
+   * `node_modules/.pnpm/<hash>/node_modules/...` layout routinely produces paths
+   * past Windows' 260-char MAX_PATH; without this, `git clean -fd` exits 1 and
+   * wedges the pre-implementation reset. No-op off Windows (git ignores
+   * core.longpaths elsewhere). Linked worktrees inherit this from the canonical
+   * clone's shared config, so setting it on `_main` also covers every worktree.
+   */
+  private async enableGitLongPaths(dir: string): Promise<void> {
+    await runCommand("git", ["config", "core.longpaths", "true"], { cwd: dir });
+  }
+
   private async ensureCanonicalClone(owner: string, repo: string): Promise<string> {
     const canonicalDir = join(this.checkoutRootDir, `${owner}-${repo}`, "_main");
     await mkdir(canonicalDir, { recursive: true });
@@ -1579,6 +1593,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
       { cwd: canonicalDir },
     );
+    await this.enableGitLongPaths(canonicalDir);
     await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: canonicalDir });
     return canonicalDir;
   }
@@ -1641,6 +1656,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
           { cwd: repoDir },
         );
+        // A legacy regular clone keeps its own config rather than sharing the
+        // canonical clone's, so it needs long-path support set directly.
+        await this.enableGitLongPaths(repoDir);
         await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: repoDir });
       }
       return;
