@@ -355,9 +355,114 @@ test("listOpenIssues falls back gracefully when Issue Dependencies endpoint is u
   const issues = await client.listOpenIssues();
   assert.equal(issues.length, 1);
   assert.equal(issues[0]?.blockedByIssueNumbers, undefined);
+  assert.equal(
+    issues[0]?.blockersUnknown,
+    undefined,
+    "A 404 means the feature is off, not that blockers are unknown — must NOT fail closed.",
+  );
   assert.ok(
     warnOutput.some((line) => line.includes("Issue Dependencies feature")),
     "Expected a warning explaining the dependency-endpoint degradation",
+  );
+});
+
+test("listOpenIssues marks blockersUnknown when a dependency lookup fails transiently", async (t) => {
+  // Regression: a transient (non-404) failure of the per-issue dependency
+  // lookup used to be swallowed, leaving the issue with no blockers — so the
+  // planner started it even though its real blockers were still open. The
+  // failed issue must instead be flagged blockersUnknown so the planner fails
+  // closed. A second issue with a clean (empty) lookup must be unaffected.
+  const warnOutput: string[] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    warnOutput.push(args.map(String).join(" "));
+  });
+
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: string | URL | Request): Promise<Response> => {
+      const url = String(_url);
+
+      if (url.includes("/issues?") && !url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 5,
+              title: "Issue five (lookup will fail)",
+              body: "no blocker mentions in body",
+              state: "open",
+              created_at: "2024-01-01T00:00:00Z",
+              updated_at: "2024-01-01T00:00:00Z",
+            },
+            {
+              number: 6,
+              title: "Issue six (clean lookup)",
+              body: "no blocker mentions in body",
+              state: "open",
+              created_at: "2024-01-02T00:00:00Z",
+              updated_at: "2024-01-02T00:00:00Z",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (url.includes("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { repository: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // #5's dependency lookup fails with a plain 403 (not a rate-limit
+      // signal: no x-ratelimit headers, non-secondary body) — thrown
+      // immediately by the gateway with statusCode 403.
+      if (url.endsWith("/issues/5/dependencies/blocked_by")) {
+        return new Response(JSON.stringify({ message: "Forbidden" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // #6 has no dependencies.
+      if (url.endsWith("/issues/6/dependencies/blocked_by")) {
+        return new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected fetch call to ${url}`);
+    },
+  );
+
+  t.after(() => {
+    fetchMock.mock.restore();
+  });
+
+  const client = new GitHubClient({
+    owner: "outrightmental",
+    repo: "testrepo",
+    token: "token",
+  });
+
+  const issues = await client.listOpenIssues();
+  const five = issues.find((i) => i.number === 5);
+  const six = issues.find((i) => i.number === 6);
+
+  assert.equal(
+    five?.blockersUnknown,
+    true,
+    "Issue whose dependency lookup failed must be flagged blockersUnknown (fail closed).",
+  );
+  assert.equal(
+    six?.blockersUnknown,
+    undefined,
+    "Issue with a clean lookup must NOT be flagged unknown.",
+  );
+  assert.equal(six?.blockedByIssueNumbers, undefined);
+  assert.ok(
+    warnOutput.some((line) => line.includes("blocker status as unknown")),
+    "Expected a warning explaining the issue was treated as unknown.",
   );
 });
 

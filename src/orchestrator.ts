@@ -556,6 +556,15 @@ export function buildPlan(
       return false;
     }
 
+    // Fail closed: if the GitHub-native dependency lookup for this issue
+    // failed this cycle, its blocker status is unknown. Never start it — a
+    // failed lookup must not be mistaken for "no blockers" (the regression
+    // that let blocked issues get picked up under intermittent API errors).
+    // The flag clears on the next cycle once the lookup succeeds.
+    if (issue.blockersUnknown) {
+      return false;
+    }
+
     const blockers = blockedIssueIndex[issue.number] ?? [];
     if (!blockers.every((blocker) => !openIssueNumbers.has(blocker))) {
       return false;

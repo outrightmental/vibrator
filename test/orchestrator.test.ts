@@ -24,6 +24,9 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "number">): Issue {
     ...(overrides.blockedByIssueNumbers !== undefined
       ? { blockedByIssueNumbers: overrides.blockedByIssueNumbers }
       : {}),
+    ...(overrides.blockersUnknown !== undefined
+      ? { blockersUnknown: overrides.blockersUnknown }
+      : {}),
     ...(overrides.milestone !== undefined ? { milestone: overrides.milestone } : {}),
   };
 }
@@ -824,6 +827,50 @@ test("buildPlan does not start an issue blocked via GitHub-native dependencies",
   );
   assert.deepEqual(plan.blockedIssueNumbers[327], [325]);
   assert.deepEqual(plan.blockedIssueNumbers[336], [327, 329]);
+});
+
+test("buildPlan fails closed: never starts an issue whose blocker status is unknown", () => {
+  // Regression: under intermittent GitHub API errors, the native-dependency
+  // lookup for an issue can fail. A failed lookup must NOT be mistaken for
+  // "no blockers" — that is what let blocked issues get picked up. The issue
+  // is flagged blockersUnknown and must be skipped this cycle.
+  const snapshot: RepositorySnapshot = {
+    issues: [
+      createIssue({ number: 1, createdAt: "2024-01-01T00:00:00.000Z" }),
+      createIssue({
+        number: 2,
+        createdAt: "2024-01-02T00:00:00.000Z",
+        blockersUnknown: true,
+      }),
+    ],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+  const started = plan.actions
+    .filter((a) => a.type === "start-implementation")
+    .map((a) => (a as { issueNumber: number }).issueNumber)
+    .sort((l, r) => l - r);
+
+  assert.deepEqual(
+    started,
+    [1],
+    "#2 must not start while its blocker status is unknown, even though no blockers are listed.",
+  );
+});
+
+test("buildPlan starts an issue once its blocker lookup succeeds (no unknown flag)", () => {
+  // The flag is per-cycle: with a clean lookup and no open blockers, the same
+  // issue becomes eligible again — failing closed must not permanently stall it.
+  const snapshot: RepositorySnapshot = {
+    issues: [createIssue({ number: 2, createdAt: "2024-01-02T00:00:00.000Z" })],
+    pullRequests: [],
+    agentSessions: [],
+  };
+
+  const plan = buildPlan(snapshot, 3);
+  assert.deepEqual(plan.actions, [{ type: "start-implementation", issueNumber: 2 }]);
 });
 
 test("buildPlan ignores GitHub-native blockers that are already closed", () => {

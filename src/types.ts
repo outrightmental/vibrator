@@ -37,6 +37,18 @@ export interface Issue {
    */
   blockedByIssueNumbers?: number[];
   /**
+   * True when the GitHub-native Issue Dependencies lookup for this issue
+   * could not be completed (a transient API failure such as a rate-limit
+   * 403, a 5xx, or a network error — distinct from a 404/410 that means the
+   * feature is simply unavailable on the repository). When set, the issue's
+   * blocker status is UNKNOWN: vibrator must NOT start it, because doing so
+   * could begin work on an issue whose dependencies are still open. The flag
+   * clears on the next cycle once the lookup succeeds. Failing closed here is
+   * deliberate — silently treating a failed lookup as "no blockers" is what
+   * let blocked issues get picked up.
+   */
+  blockersUnknown?: boolean;
+  /**
    * The milestone this issue belongs to, if any. Milestones order the work
    * queue — issues from earlier-numbered milestones are picked first — but do
    * not gate it: an issue from any milestone is eligible to start.
