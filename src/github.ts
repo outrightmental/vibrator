@@ -400,7 +400,8 @@ export class GitHubClient {
         .filter((issue) => !issue.pull_request)
         .map((issue) => issue.number),
     );
-    const blockedByNumbers = await this.fetchOpenIssueBlockedByNumbers(openIssueNumbers);
+    const { blockedBy: blockedByNumbers, issuesWithUnknownBlockers } =
+      await this.fetchOpenIssueBlockedByNumbers(openIssueNumbers);
     return issues
       .filter((issue) => !issue.pull_request)
       .map((issue) => {
@@ -418,6 +419,9 @@ export class GitHubClient {
           ...(parentNumber !== undefined ? { parentNumber } : {}),
           ...(blockedBy && blockedBy.length > 0
             ? { blockedByIssueNumbers: blockedBy }
+            : {}),
+          ...(issuesWithUnknownBlockers.has(issue.number)
+            ? { blockersUnknown: true }
             : {}),
           ...(issue.milestone
             ? { milestone: { number: issue.milestone.number, title: issue.milestone.title } }
@@ -509,15 +513,26 @@ export class GitHubClient {
    * blocked only by closed (or otherwise non-open) blockers are omitted
    * from the result map entirely.
    *
-   * Issue Dependencies is a rolling-out GitHub feature. If the endpoint
-   * is unavailable on a given repository the call returns 404 (or some
-   * other error); the failure is logged once and the orchestrator
-   * continues to work without dependency-based blocking.
+   * Two distinct failure modes are handled differently:
+   *
+   *   - 404/410 means the Issue Dependencies feature (still rolling out) is
+   *     unavailable on this repository. There are then no native blockers to
+   *     honor, so the orchestrator degrades gracefully to body-text/parent
+   *     blocking. These issues are NOT reported as unknown.
+   *
+   *   - Any other failure (a rate-limit 403, a 5xx, a network error, a parse
+   *     failure) means we genuinely could not determine that one issue's
+   *     blockers. Such issues are returned in `issuesWithUnknownBlockers` so
+   *     the planner can FAIL CLOSED and refuse to start them this cycle.
+   *     Treating a failed lookup as "no blockers" — the previous behavior —
+   *     is exactly what let blocked issues get picked up under intermittent
+   *     API errors.
    */
   private async fetchOpenIssueBlockedByNumbers(
     openIssueNumbers: ReadonlySet<number>,
-  ): Promise<Map<number, number[]>> {
-    const result = new Map<number, number[]>();
+  ): Promise<{ blockedBy: Map<number, number[]>; issuesWithUnknownBlockers: Set<number> }> {
+    const blockedBy = new Map<number, number[]>();
+    const issuesWithUnknownBlockers = new Set<number>();
     let featureUnavailable = false;
 
     const lookups = [...openIssueNumbers].map(async (issueNumber) => {
@@ -531,7 +546,7 @@ export class GitHubClient {
           .map((blocker) => blocker.number)
           .sort((left, right) => left - right);
         if (openBlockers.length > 0) {
-          result.set(issueNumber, openBlockers);
+          blockedBy.set(issueNumber, openBlockers);
         }
       } catch (error) {
         const statusCode = (error as { statusCode?: number }).statusCode;
@@ -548,16 +563,19 @@ export class GitHubClient {
           }
           return;
         }
-        // Transient or unexpected failure on a single issue: log and keep
-        // going so one bad call doesn't poison the whole list.
+        // Transient or unexpected failure on a single issue: we do NOT know
+        // this issue's blockers. Mark it unknown so the planner fails closed
+        // (skips it this cycle) instead of mistaking it for unblocked.
+        issuesWithUnknownBlockers.add(issueNumber);
         console.warn(
-          `[vibrator] Could not fetch dependencies for issue #${issueNumber}: ${String(error)}.`,
+          `[vibrator] Could not fetch dependencies for issue #${issueNumber}: ${String(error)}. ` +
+          `Treating its blocker status as unknown and not starting it this cycle.`,
         );
       }
     });
 
     await Promise.all(lookups);
-    return result;
+    return { blockedBy, issuesWithUnknownBlockers };
   }
 
   async listOpenPullRequests(): Promise<PullRequest[]> {
