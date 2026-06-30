@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dump as dumpYaml } from "js-yaml";
 
 import { loadEnvConfig, resolveGitHubToken, applyProjectDefaults, type EnvConfig, type ProjectEnvConfig } from "../src/env-config.js";
 
@@ -17,9 +18,9 @@ async function withTempDir(
   }
 }
 
-async function writeEnvJson(dir: string, content: unknown): Promise<string> {
-  const filePath = join(dir, "env.json");
-  await writeFile(filePath, JSON.stringify(content), "utf-8");
+async function writeEnvYaml(dir: string, content: unknown): Promise<string> {
+  const filePath = join(dir, "env.yaml");
+  await writeFile(filePath, dumpYaml(content), "utf-8");
   return filePath;
 }
 
@@ -30,7 +31,7 @@ const minimalValidConfig = {
 
 test("loadEnvConfig loads a valid minimal config", async () => {
   await withTempDir(async (dir) => {
-    const filePath = await writeEnvJson(dir, minimalValidConfig);
+    const filePath = await writeEnvYaml(dir, minimalValidConfig);
     const config = loadEnvConfig(filePath);
     assert.equal(config.github_tokens.length, 1);
     assert.equal(config.projects.length, 1);
@@ -71,7 +72,7 @@ test("loadEnvConfig loads a full config with all optional fields", async () => {
         },
       ],
     };
-    const filePath = await writeEnvJson(dir, full);
+    const filePath = await writeEnvYaml(dir, full);
     const config = loadEnvConfig(filePath);
     assert.equal(config.claude_code_model, "claude-sonnet-4-6");
     assert.equal(config.max_concurrency, 5);
@@ -85,22 +86,22 @@ test("loadEnvConfig loads a full config with all optional fields", async () => {
 
 test("loadEnvConfig throws when file does not exist", () => {
   assert.throws(
-    () => loadEnvConfig("/nonexistent/path/env.json"),
+    () => loadEnvConfig("/nonexistent/path/env.yaml"),
     /Configuration file not found/,
   );
 });
 
-test("loadEnvConfig throws on invalid JSON", async () => {
+test("loadEnvConfig throws on invalid YAML", async () => {
   await withTempDir(async (dir) => {
-    const filePath = join(dir, "env.json");
-    await writeFile(filePath, "{ not valid json }", "utf-8");
+    const filePath = join(dir, "env.yaml");
+    await writeFile(filePath, "key: [\nbad yaml", "utf-8");
     assert.throws(() => loadEnvConfig(filePath), /Failed to parse/);
   });
 });
 
 test("loadEnvConfig throws when github_tokens is missing", async () => {
   await withTempDir(async (dir) => {
-    const filePath = await writeEnvJson(dir, {
+    const filePath = await writeEnvYaml(dir, {
       projects: [{ github_repository: "owner/repo" }],
     });
     assert.throws(() => loadEnvConfig(filePath), /"github_tokens" must be a non-empty array/);
@@ -109,7 +110,7 @@ test("loadEnvConfig throws when github_tokens is missing", async () => {
 
 test("loadEnvConfig throws when github_tokens is empty", async () => {
   await withTempDir(async (dir) => {
-    const filePath = await writeEnvJson(dir, {
+    const filePath = await writeEnvYaml(dir, {
       github_tokens: [],
       projects: [{ github_repository: "owner/repo" }],
     });
@@ -119,7 +120,7 @@ test("loadEnvConfig throws when github_tokens is empty", async () => {
 
 test("loadEnvConfig throws when projects is missing", async () => {
   await withTempDir(async (dir) => {
-    const filePath = await writeEnvJson(dir, {
+    const filePath = await writeEnvYaml(dir, {
       github_tokens: [{ name: "default", token: "ghp_test" }],
     });
     assert.throws(() => loadEnvConfig(filePath), /"projects" must be a non-empty array/);
@@ -128,7 +129,7 @@ test("loadEnvConfig throws when projects is missing", async () => {
 
 test("loadEnvConfig throws when projects is empty", async () => {
   await withTempDir(async (dir) => {
-    const filePath = await writeEnvJson(dir, {
+    const filePath = await writeEnvYaml(dir, {
       github_tokens: [{ name: "default", token: "ghp_test" }],
       projects: [],
     });
@@ -138,7 +139,7 @@ test("loadEnvConfig throws when projects is empty", async () => {
 
 test("loadEnvConfig throws when a token entry is missing name", async () => {
   await withTempDir(async (dir) => {
-    const filePath = await writeEnvJson(dir, {
+    const filePath = await writeEnvYaml(dir, {
       github_tokens: [{ token: "ghp_test" }],
       projects: [{ github_repository: "owner/repo" }],
     });
@@ -148,7 +149,7 @@ test("loadEnvConfig throws when a token entry is missing name", async () => {
 
 test("loadEnvConfig throws when a token entry is missing token", async () => {
   await withTempDir(async (dir) => {
-    const filePath = await writeEnvJson(dir, {
+    const filePath = await writeEnvYaml(dir, {
       github_tokens: [{ name: "default" }],
       projects: [{ github_repository: "owner/repo" }],
     });
@@ -158,7 +159,7 @@ test("loadEnvConfig throws when a token entry is missing token", async () => {
 
 test("loadEnvConfig throws when a project entry is missing github_repository", async () => {
   await withTempDir(async (dir) => {
-    const filePath = await writeEnvJson(dir, {
+    const filePath = await writeEnvYaml(dir, {
       github_tokens: [{ name: "default", token: "ghp_test" }],
       projects: [{}],
     });
