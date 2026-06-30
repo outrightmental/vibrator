@@ -84,6 +84,26 @@ test("loadEnvConfig loads a full config with all optional fields", async () => {
   });
 });
 
+test("loadEnvConfig correctly ignores YAML comments", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "env.yaml");
+    const yaml = [
+      "# Top-level comment explaining the file",
+      "github_tokens:",
+      "  - name: default",
+      "    token: ghp_test123 # inline comment on the token",
+      "    default: true",
+      "# projects comment",
+      "projects:",
+      "  - github_repository: owner/repo # another inline comment",
+    ].join("\n");
+    await writeFile(filePath, yaml, "utf-8");
+    const config = loadEnvConfig(filePath);
+    assert.equal(config.github_tokens[0]!.token, "ghp_test123");
+    assert.equal(config.projects[0]!.github_repository, "owner/repo");
+  });
+});
+
 test("loadEnvConfig throws when file does not exist", () => {
   assert.throws(
     () => loadEnvConfig("/nonexistent/path/env.yaml"),
