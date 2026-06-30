@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { load as loadYaml } from "js-yaml";
 
 export interface GitHubTokenConfig {
   name: string;
@@ -56,20 +57,20 @@ export interface EnvConfig {
 }
 
 export function loadEnvConfig(configPath?: string): EnvConfig {
-  const filePath = configPath ?? join(process.cwd(), "env.json");
+  const filePath = configPath ?? join(process.cwd(), "env.yaml");
   if (!existsSync(filePath)) {
     throw new Error(
-      `Configuration file not found: ${filePath}\nCreate env.json based on env.example.json.`,
+      `Configuration file not found: ${filePath}\nCreate env.yaml based on env.example.yaml.`,
     );
   }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(filePath, "utf-8"));
+    raw = loadYaml(readFileSync(filePath, "utf-8"));
   } catch (error) {
     throw new Error(`Failed to parse ${filePath}: ${(error as Error).message}`);
   }
   if (typeof raw !== "object" || raw === null) {
-    throw new Error(`${filePath} must contain a JSON object.`);
+    throw new Error(`${filePath} must contain a YAML mapping.`);
   }
   const config = raw as Record<string, unknown>;
   if (!Array.isArray(config.github_tokens) || config.github_tokens.length === 0) {
@@ -147,7 +148,7 @@ export function resolveGitHubToken(envConfig: EnvConfig, tokenName?: string): st
     const found = envConfig.github_tokens.find((t) => t.name === tokenName);
     if (!found) {
       throw new Error(
-        `GitHub token named "${tokenName}" not found in env.json "github_tokens".`,
+        `GitHub token named "${tokenName}" not found in env.yaml "github_tokens".`,
       );
     }
     return found.token.trim();
@@ -155,7 +156,7 @@ export function resolveGitHubToken(envConfig: EnvConfig, tokenName?: string): st
   const defaultToken =
     envConfig.github_tokens.find((t) => t.default === true) ?? envConfig.github_tokens[0];
   if (!defaultToken) {
-    throw new Error('No GitHub tokens configured in env.json "github_tokens".');
+    throw new Error('No GitHub tokens configured in env.yaml "github_tokens".');
   }
   return defaultToken.token.trim();
 }
