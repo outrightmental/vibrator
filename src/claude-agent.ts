@@ -1105,25 +1105,56 @@ export interface ClaudeAuthResult {
   reason?: string;
 }
 
-export async function validateClaudeAuth(): Promise<ClaudeAuthResult> {
-  const credentialsPath = join(homedir(), ".claude", ".credentials.json");
+/**
+ * Read the raw Claude credentials blob.
+ *
+ * Claude Code stores credentials differently per platform:
+ * - macOS: the system Keychain, under the generic password "Claude Code-credentials".
+ *   The `~/.claude/.credentials.json` file does NOT exist there.
+ * - Linux/Windows: the `~/.claude/.credentials.json` file.
+ *
+ * Returns the raw JSON string, or a `ClaudeAuthResult` describing why it could
+ * not be read.
+ */
+async function readClaudeCredentials(): Promise<{ raw: string } | ClaudeAuthResult> {
+  if (process.platform === "darwin") {
+    const result = spawnSync(
+      "security",
+      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      { encoding: "utf8" },
+    );
+    if (result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
+      return { raw: result.stdout.trim() };
+    }
+    // Keychain item missing (status 44) or any other failure. Fall through to the
+    // file in case the user keeps a file-based credential, then report not-found.
+  }
 
-  let raw: string;
+  const credentialsPath = join(homedir(), ".claude", ".credentials.json");
   try {
-    raw = await readFile(credentialsPath, "utf8");
+    return { raw: await readFile(credentialsPath, "utf8") };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
-      return { valid: false, reason: "credentials file not found" };
+      return { valid: false, reason: "credentials not found" };
     }
-    return { valid: false, reason: `credentials file unreadable: ${(err as Error).message}` };
+    return { valid: false, reason: `credentials unreadable: ${(err as Error).message}` };
+  }
+}
+
+export async function validateClaudeAuth(
+  readCredentials: () => Promise<{ raw: string } | ClaudeAuthResult> = readClaudeCredentials,
+): Promise<ClaudeAuthResult> {
+  const read = await readCredentials();
+  if ("valid" in read) {
+    return read;
   }
 
   let credentials: unknown;
   try {
-    credentials = JSON.parse(raw);
+    credentials = JSON.parse(read.raw);
   } catch {
-    return { valid: false, reason: "credentials file is not valid JSON" };
+    return { valid: false, reason: "credentials are not valid JSON" };
   }
 
   const oauth = (credentials as Record<string, unknown>)?.claudeAiOauth as
@@ -1131,7 +1162,12 @@ export async function validateClaudeAuth(): Promise<ClaudeAuthResult> {
     | undefined;
   if (oauth) {
     const expiresAt = oauth.expiresAt;
-    if (typeof expiresAt === "number" && expiresAt < Date.now()) {
+    const hasRefreshToken =
+      typeof oauth.refreshToken === "string" && oauth.refreshToken.length > 0;
+    // An expired *access* token is normal and harmless: the Claude CLI silently
+    // refreshes it using the refresh token. Only treat the credential as invalid
+    // if it is expired AND there is no refresh token to recover with.
+    if (typeof expiresAt === "number" && expiresAt < Date.now() && !hasRefreshToken) {
       return { valid: false, reason: "OAuth token has expired" };
     }
   }

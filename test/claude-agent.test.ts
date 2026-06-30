@@ -284,111 +284,62 @@ test("isRebaseInProgress returns false when no rebase state exists", async () =>
   assert.equal(result, false);
 });
 
-test("validateClaudeAuth returns invalid when credentials file is missing", async () => {
-  const fakeHome = await mkdtemp(join(tmpdir(), "vibrator-auth-test-"));
-  const prevHome = process.env.HOME;
-  try {
-    process.env.HOME = fakeHome;
-    const result = await validateClaudeAuth();
-    assert.equal(result.valid, false);
-    assert.equal(result.reason, "credentials file not found");
-  } finally {
-    process.env.HOME = prevHome;
-    await rm(fakeHome, { recursive: true });
-  }
+// The credential reader is injected so these tests exercise the validation
+// logic without depending on the host's real credential store (the macOS
+// Keychain on darwin, a file elsewhere).
+const fakeReader =
+  (value: { raw: string } | { valid: boolean; reason?: string }) =>
+  async () =>
+    value;
+
+test("validateClaudeAuth returns invalid when credentials are missing", async () => {
+  const result = await validateClaudeAuth(
+    fakeReader({ valid: false, reason: "credentials not found" }),
+  );
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, "credentials not found");
 });
 
-test("validateClaudeAuth returns invalid when credentials file contains invalid JSON", async () => {
-  const fakeHome = await mkdtemp(join(tmpdir(), "vibrator-auth-test-"));
-  const prevHome = process.env.HOME;
-  try {
-    process.env.HOME = fakeHome;
-    await mkdir(join(fakeHome, ".claude"), { recursive: true });
-    await writeFile(join(fakeHome, ".claude", ".credentials.json"), "not-json");
-    const result = await validateClaudeAuth();
-    assert.equal(result.valid, false);
-    assert.equal(result.reason, "credentials file is not valid JSON");
-  } finally {
-    process.env.HOME = prevHome;
-    await rm(fakeHome, { recursive: true });
-  }
+test("validateClaudeAuth returns invalid when credentials contain invalid JSON", async () => {
+  const result = await validateClaudeAuth(fakeReader({ raw: "not-json" }));
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, "credentials are not valid JSON");
 });
 
-test("validateClaudeAuth returns invalid when OAuth token is expired", async () => {
-  const fakeHome = await mkdtemp(join(tmpdir(), "vibrator-auth-test-"));
-  const prevHome = process.env.HOME;
-  try {
-    process.env.HOME = fakeHome;
-    await mkdir(join(fakeHome, ".claude"), { recursive: true });
-    const credentials = { claudeAiOauth: { accessToken: "tok", expiresAt: Date.now() - 10000 } };
-    await writeFile(
-      join(fakeHome, ".claude", ".credentials.json"),
-      JSON.stringify(credentials),
-    );
-    const result = await validateClaudeAuth();
-    assert.equal(result.valid, false);
-    assert.equal(result.reason, "OAuth token has expired");
-  } finally {
-    process.env.HOME = prevHome;
-    await rm(fakeHome, { recursive: true });
-  }
+test("validateClaudeAuth returns invalid when OAuth token is expired and has no refresh token", async () => {
+  const credentials = { claudeAiOauth: { accessToken: "tok", expiresAt: Date.now() - 10000 } };
+  const result = await validateClaudeAuth(fakeReader({ raw: JSON.stringify(credentials) }));
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, "OAuth token has expired");
+});
+
+test("validateClaudeAuth returns valid when access token is expired but a refresh token is present", async () => {
+  // The Claude CLI silently refreshes an expired access token, so this is a
+  // normal, valid state — not a reason to block startup.
+  const credentials = {
+    claudeAiOauth: { accessToken: "tok", refreshToken: "refresh", expiresAt: Date.now() - 10000 },
+  };
+  const result = await validateClaudeAuth(fakeReader({ raw: JSON.stringify(credentials) }));
+  assert.equal(result.valid, true);
+  assert.equal(result.reason, undefined);
 });
 
 test("validateClaudeAuth returns valid when OAuth token is not yet expired", async () => {
-  const fakeHome = await mkdtemp(join(tmpdir(), "vibrator-auth-test-"));
-  const prevHome = process.env.HOME;
-  try {
-    process.env.HOME = fakeHome;
-    await mkdir(join(fakeHome, ".claude"), { recursive: true });
-    const credentials = { claudeAiOauth: { accessToken: "tok", expiresAt: Date.now() + 3600000 } };
-    await writeFile(
-      join(fakeHome, ".claude", ".credentials.json"),
-      JSON.stringify(credentials),
-    );
-    const result = await validateClaudeAuth();
-    assert.equal(result.valid, true);
-    assert.equal(result.reason, undefined);
-  } finally {
-    process.env.HOME = prevHome;
-    await rm(fakeHome, { recursive: true });
-  }
+  const credentials = { claudeAiOauth: { accessToken: "tok", expiresAt: Date.now() + 3600000 } };
+  const result = await validateClaudeAuth(fakeReader({ raw: JSON.stringify(credentials) }));
+  assert.equal(result.valid, true);
+  assert.equal(result.reason, undefined);
 });
 
-test("validateClaudeAuth returns valid when credentials file has no expiry field", async () => {
-  const fakeHome = await mkdtemp(join(tmpdir(), "vibrator-auth-test-"));
-  const prevHome = process.env.HOME;
-  try {
-    process.env.HOME = fakeHome;
-    await mkdir(join(fakeHome, ".claude"), { recursive: true });
-    const credentials = { claudeAiOauth: { accessToken: "tok" } };
-    await writeFile(
-      join(fakeHome, ".claude", ".credentials.json"),
-      JSON.stringify(credentials),
-    );
-    const result = await validateClaudeAuth();
-    assert.equal(result.valid, true);
-  } finally {
-    process.env.HOME = prevHome;
-    await rm(fakeHome, { recursive: true });
-  }
+test("validateClaudeAuth returns valid when credentials have no expiry field", async () => {
+  const credentials = { claudeAiOauth: { accessToken: "tok" } };
+  const result = await validateClaudeAuth(fakeReader({ raw: JSON.stringify(credentials) }));
+  assert.equal(result.valid, true);
 });
 
-test("validateClaudeAuth returns valid when credentials file has no oauth section", async () => {
-  const fakeHome = await mkdtemp(join(tmpdir(), "vibrator-auth-test-"));
-  const prevHome = process.env.HOME;
-  try {
-    process.env.HOME = fakeHome;
-    await mkdir(join(fakeHome, ".claude"), { recursive: true });
-    await writeFile(
-      join(fakeHome, ".claude", ".credentials.json"),
-      JSON.stringify({ someOtherKey: "value" }),
-    );
-    const result = await validateClaudeAuth();
-    assert.equal(result.valid, true);
-  } finally {
-    process.env.HOME = prevHome;
-    await rm(fakeHome, { recursive: true });
-  }
+test("validateClaudeAuth returns valid when credentials have no oauth section", async () => {
+  const result = await validateClaudeAuth(fakeReader({ raw: JSON.stringify({ someOtherKey: "value" }) }));
+  assert.equal(result.valid, true);
 });
 
 test("selfReview does not report changes when only merging latest base advances HEAD", async (t) => {
