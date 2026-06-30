@@ -214,10 +214,12 @@ export class CylinderRow extends LitElement {
     const cyl = this.cylinder;
     if (!cyl) return html``;
 
-    const isActive = cyl.status === 'active';
-    const isIdle = cyl.status === 'idle';
+    const isActive   = cyl.status === 'active';
+    const isDone     = cyl.status === 'done';
+    const isError    = cyl.status === 'error';
+    const isIdle     = cyl.status === 'idle';
     const modelLabel = isIdle ? 'Idle' : (formatModelName(cyl.model) ?? `CYL ${cyl.index}`);
-    const cycleLabel = cyl.iterationNumber > 0 ? ` #${cyl.iterationNumber}` : '';
+    const cycleLabel = (isActive || isDone || isError) && cyl.iterationNumber > 0 ? ` #${cyl.iterationNumber}` : '';
     const hasThinking = isActive && cyl.thinkingLines.length > 0;
     const dotClass = `cylinder-dot${isActive ? ' pulsing' : ''}`;
     const thinkingClass = `cylinder-thinking-stream${hasThinking ? ' active' : ''}`;
