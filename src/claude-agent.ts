@@ -400,46 +400,89 @@ const MAX_CAPTURED_STDERR_BYTES = 256 * 1024;
  * than joining claude's. That means signalling claude's group (`kill(-pid)`)
  * does NOT reach them: they survive, reparent to launchd, and keep holding
  * ~1 GB of RAM apiece until the machine runs out of memory. The only reliable
- * teardown is to kill the whole descendant tree by pid.
+ * teardown is to kill the whole descendant tree.
  *
- * Because a descendant that has already reparented to launchd can no longer be
- * found by walking down from claude's pid, we snapshot each live child's
- * descendant pids on a periodic sweep *while they are still alive* and union
- * them into `childDescendants`. At teardown we SIGKILL every pid we ever saw
- * (a pid stays valid across reparenting), plus a final fresh snapshot, plus
- * claude's own group as a backstop. This registry tracks every live child so a
- * process-exit or termination signal can reap them all before vibrator exits.
+ * A descendant that has reparented to launchd can no longer be found by walking
+ * down from claude's pid, so we snapshot each live child's descendants on a
+ * periodic sweep *while they are still alive*. For each descendant we record two
+ * things that both stay valid across reparenting:
+ *   - its **pid** (identified by start time so a recycled pid is never mistaken
+ *     for the original), and
+ *   - its **process-group id (pgid)** — the load-bearing key, because a pgid
+ *     persists after the parent dies, so `kill(-pgid)` reaches a setsid-escaped
+ *     grandchild AND any children it spawned after it left claude's subtree,
+ *     which a pid-only reap (walking down from a now-dead claude) cannot see.
+ *
+ * At teardown we SIGKILL every observed descendant pid (identity-checked), every
+ * observed descendant process group, a fresh snapshot of anything still reachable
+ * from claude, and claude's own group as a backstop. This registry tracks every
+ * live child so a process-exit or termination signal can reap them before
+ * vibrator exits.
+ *
+ * The sweep runs often (every second) so a short claude run — e.g. the fast
+ * haiku commit-model pass — still has its subtree recorded before it exits;
+ * at the old 5 s cadence such a run finished before the first tick, so its
+ * detached workers were never recorded and leaked on normal completion.
  */
 const liveChildren = new Set<ChildProcess>();
 
-/** Maps a live child's pid → every descendant pid observed while it ran. */
-const childDescendants = new Map<number, Set<number>>();
+/**
+ * Maps a live child's pid → every descendant pid observed while it ran, each
+ * paired with the descendant's absolute start time (`ps lstart`). The start time
+ * is the descendant's identity: at teardown a pid whose start no longer matches
+ * has been recycled to an unrelated process and must not be killed. The
+ * descendant's current process group is read fresh at teardown (it may have
+ * reparented since), so it is not stored here.
+ */
+const childDescendants = new Map<number, Map<number, string>>();
 let descendantSweepTimer: ReturnType<typeof setInterval> | undefined;
 
 /**
- * Read the whole process table once and return a parent→children adjacency map.
- * Uses `ps` synchronously so this is safe to call from a `process.on("exit")`
- * handler (which may only do synchronous work).
+ * Sweep cadence. Kept at 1 s (not 5 s) so a claude run shorter than the interval
+ * still gets at least one snapshot of its detached subtree before it exits.
  */
-function readProcessTree(): Map<number, number[]> {
-  const childrenByParent = new Map<number, number[]>();
+const DESCENDANT_SWEEP_INTERVAL_MS = 1000;
+
+/** Per-process facts read from `ps`: parent pid, process-group id, start time. */
+interface ProcessInfo {
+  ppid: number;
+  pgid: number;
+  start: string;
+}
+
+/**
+ * Read the whole process table once. Returns a parent→children adjacency map and
+ * a pid→info map (ppid, pgid, start time). Uses `ps` synchronously so this is
+ * safe to call from a `process.on("exit")` handler (which may only do
+ * synchronous work).
+ */
+function readProcessTable(): {
+  children: Map<number, number[]>;
+  infoByPid: Map<number, ProcessInfo>;
+} {
+  const children = new Map<number, number[]>();
+  const infoByPid = new Map<number, ProcessInfo>();
   let stdout: string;
   try {
-    const result = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8" });
+    // `lstart` is a fixed-format absolute date and must be the trailing field.
+    const result = spawnSync("ps", ["-eo", "pid=,ppid=,pgid=,lstart="], { encoding: "utf8" });
     stdout = result.stdout ?? "";
   } catch {
-    return childrenByParent;
+    return { children, infoByPid };
   }
   for (const line of stdout.split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
     if (!match) continue;
     const pid = Number.parseInt(match[1]!, 10);
     const ppid = Number.parseInt(match[2]!, 10);
-    const siblings = childrenByParent.get(ppid) ?? [];
+    const pgid = Number.parseInt(match[3]!, 10);
+    const start = match[4]!;
+    const siblings = children.get(ppid) ?? [];
     siblings.push(pid);
-    childrenByParent.set(ppid, siblings);
+    children.set(ppid, siblings);
+    infoByPid.set(pid, { ppid, pgid, start });
   }
-  return childrenByParent;
+  return { children, infoByPid };
 }
 
 /** Breadth-first collection of every descendant pid of `rootPid`. */
@@ -459,30 +502,27 @@ function descendantsOf(rootPid: number, tree: Map<number, number[]>): number[] {
   return out;
 }
 
-/** One-shot descendant snapshot for a single root pid. */
-function collectDescendantPids(rootPid: number): number[] {
-  return descendantsOf(rootPid, readProcessTree());
-}
-
 /**
- * Periodically record the descendants of every live child so we still know
- * their pids after they detach and reparent to launchd. One `ps` per tick
- * covers all live children at once.
+ * Periodically record the descendants of every live child — pid, pgid and start
+ * time — so we can still reap them after they detach and reparent to launchd.
+ * One `ps` per tick covers all live children at once.
  */
 function sweepDescendants(): void {
   if (childDescendants.size === 0) return;
-  const tree = readProcessTree();
+  const { children, infoByPid } = readProcessTable();
   for (const [rootPid, observed] of childDescendants) {
-    for (const descendant of descendantsOf(rootPid, tree)) {
-      observed.add(descendant);
+    for (const descendant of descendantsOf(rootPid, children)) {
+      const info = infoByPid.get(descendant);
+      if (!info) continue;
+      observed.set(descendant, info.start);
     }
   }
 }
 
 function startTrackingChild(pid: number): void {
-  childDescendants.set(pid, new Set());
+  childDescendants.set(pid, new Map());
   if (!descendantSweepTimer) {
-    descendantSweepTimer = setInterval(sweepDescendants, 5000);
+    descendantSweepTimer = setInterval(sweepDescendants, DESCENDANT_SWEEP_INTERVAL_MS);
     // Never let the sweep keep the event loop (and thus the process) alive.
     descendantSweepTimer.unref?.();
   }
@@ -497,30 +537,72 @@ function stopTrackingChild(pid: number): void {
 }
 
 /**
- * Tear a child down completely: SIGKILL every descendant pid we ever observed
- * (plus a fresh snapshot taken now, in case the child is still alive), then the
- * child's own process group as a backstop. Killing grandchildren by pid is what
- * actually stops the ~1 GB-apiece orphans — claude spawns them in their own
- * process groups, so the group-only kill below never reaches them.
+ * Tear a child down completely. In one fresh `ps` read we:
+ *   1. SIGKILL every descendant pid we observed while the child ran, skipping any
+ *      whose start time no longer matches — that pid was recycled to an unrelated
+ *      process (over many minutes at 1 s cadence the observed set accumulates
+ *      thousands of short-lived pids; without this check a recycled one could be
+ *      an innocent app or another engine's live claude).
+ *   2. SIGKILL every process GROUP those still-alive descendants belong to. A pgid
+ *      survives the parent dying and reparenting, so this reaches a setsid-escaped
+ *      grandchild — and anything it spawned after leaving claude's subtree — which
+ *      the downward walk below cannot.
+ *   3. SIGKILL anything still reachable by walking down from claude's pid (covers
+ *      the still-alive case, e.g. a timeout kill), and claude's own group as a
+ *      final backstop.
  */
 function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
   if (pid === undefined) return;
 
-  const targets = new Set<number>(childDescendants.get(pid));
-  for (const descendant of collectDescendantPids(pid)) {
-    targets.add(descendant);
+  const { children, infoByPid } = readProcessTable();
+  // Never signal our own process group — that would take vibrator itself (and its
+  // siblings) down. Claude's detached descendants live in other groups.
+  const ownPgid = infoByPid.get(process.pid)?.pgid;
+
+  const pidTargets = new Set<number>();
+  const groupTargets = new Set<number>();
+  const considerGroup = (pgid: number): void => {
+    if (pgid > 1 && pgid !== pid && pgid !== ownPgid) groupTargets.add(pgid);
+  };
+
+  // 1 + 2: observed descendants, identity-checked, plus their groups.
+  const observed = childDescendants.get(pid);
+  if (observed) {
+    for (const [descPid, recordedStart] of observed) {
+      const current = infoByPid.get(descPid);
+      if (!current) continue; // already gone
+      if (recordedStart && current.start !== recordedStart) continue; // pid recycled → skip
+      pidTargets.add(descPid);
+      // The group is provably claude's — a confirmed-same descendant is in it now.
+      considerGroup(current.pgid);
+    }
   }
-  // Kill descendants first so a surviving parent cannot keep spawning more, and
-  // before any of them notice the parent is gone and reparent away.
-  for (const descendant of targets) {
+
+  // 3: whatever is still reachable from claude right now (the still-alive case).
+  for (const descPid of descendantsOf(pid, children)) {
+    pidTargets.add(descPid);
+    const info = infoByPid.get(descPid);
+    if (info) considerGroup(info.pgid);
+  }
+
+  // Kill individual pids first so a surviving parent cannot spawn more.
+  for (const target of pidTargets) {
     try {
-      process.kill(descendant, signal);
+      process.kill(target, signal);
     } catch {
       // Already gone — nothing to do.
     }
   }
-
+  // Then whole groups — reaches reparented escapees and their later children.
+  for (const groupPid of groupTargets) {
+    try {
+      process.kill(-groupPid, signal);
+    } catch {
+      // Group already empty — nothing to do.
+    }
+  }
+  // Backstop: claude's own process group.
   try {
     process.kill(-pid, signal);
   } catch {
