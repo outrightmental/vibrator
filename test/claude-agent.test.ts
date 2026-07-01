@@ -1428,3 +1428,66 @@ test("runCommand kills a grandchild that left the process group (setsid escape)"
     `out-of-group grandchild pid ${grandchildPid} survived — group-only kill missed it`,
   );
 });
+
+test("runCommand reaps a group-escaped grandchild on NORMAL completion of a short run", async () => {
+  // The overnight OOM regression: on the *normal-completion* path (no timeout),
+  // the leader is already dead when teardown runs, so the fresh downward snapshot
+  // from its pid is empty and cannot see a setsid grandchild that has reparented
+  // to launchd. The only defense is the descendants recorded by the periodic
+  // sweep *while the leader was alive*. At the old 5 s cadence a run shorter than
+  // 5 s finished before the first tick fired, so nothing was ever recorded and
+  // the ~1 GB grandchild leaked. This exercises that exact case: a leader that
+  // lives longer than the (1 s) sweep interval but well under 5 s, a grandchild
+  // that leaves the group via setsid(), and a clean exit — so the reap must come
+  // from the recorded pid/pgid, not the group backstop or a live snapshot.
+  const script =
+    "perl -e 'use POSIX (); POSIX::setsid(); sleep 30' >/dev/null 2>&1 & " +
+    'echo "GRANDCHILD:$!"; ' +
+    "sleep 3"; // outlive the 1 s sweep so it records the grandchild; no `wait`, so exit is clean
+
+  const stdout = await runCommand("sh", ["-c", script], {
+    captureStdout: true,
+    // No timeout: this is the happy path. Teardown fires from `close`, by which
+    // point the leader is gone and only the recorded pid/pgid can find the escapee.
+  });
+
+  const match = stdout.match(/GRANDCHILD:(\d+)/);
+  assert.ok(match, `expected to capture grandchild pid, got: ${JSON.stringify(stdout)}`);
+  const grandchildPid = Number.parseInt(match![1]!, 10);
+
+  // Confirm the grandchild really left the leader's group (own pgid), so this
+  // covers the reparent-proof pgid path rather than claude's own-group backstop.
+  const psOut = spawnSync("ps", ["-o", "pid=,pgid=", "-p", String(grandchildPid)], {
+    encoding: "utf8",
+  }).stdout.trim();
+  const pgidMatch = /^(\d+)\s+(\d+)$/.exec(psOut);
+  if (pgidMatch) {
+    assert.equal(
+      pgidMatch[1],
+      pgidMatch[2],
+      "expected the setsid grandchild to lead its own process group",
+    );
+  }
+
+  // Give the SIGKILL a moment to land.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  let stillAlive = true;
+  try {
+    process.kill(grandchildPid, 0);
+  } catch (error) {
+    stillAlive = (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+  if (stillAlive) {
+    try {
+      process.kill(grandchildPid, "SIGKILL");
+    } catch {
+      /* ignore */
+    }
+  }
+  assert.equal(
+    stillAlive,
+    false,
+    `escaped grandchild pid ${grandchildPid} survived normal completion — the sweep never recorded it`,
+  );
+});
