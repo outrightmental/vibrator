@@ -437,6 +437,184 @@ test("selfReview does not report changes when only merging latest base advances 
   }
 });
 
+// Shell snippet that parses `--model <value>` and `--effort <value>` from the
+// claude CLI arguments and writes them to the given log files.
+function captureModelAndEffortSnippet(modelLogPath: string, effortLogPath: string): string[] {
+  return [
+    "MODEL_USED=\"(none)\"",
+    "EFFORT_USED=\"(none)\"",
+    "while [ $# -gt 0 ]; do",
+    "  if [ \"$1\" = \"--model\" ] && [ $# -gt 1 ]; then",
+    "    MODEL_USED=\"$2\"",
+    "    shift 2",
+    "  elif [ \"$1\" = \"--effort\" ] && [ $# -gt 1 ]; then",
+    "    EFFORT_USED=\"$2\"",
+    "    shift 2",
+    "  else",
+    "    shift",
+    "  fi",
+    "done",
+    `printf '%s' "$MODEL_USED" > "${modelLogPath}"`,
+    `printf '%s' "$EFFORT_USED" > "${effortLogPath}"`,
+  ];
+}
+
+test("implementIssue passes claudeInitialModel and claudeInitialEffort to the claude CLI", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibrator-initial-model-effort-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const modelLogPath = join(root, "model-used.txt");
+  const effortLogPath = join(root, "effort-used.txt");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const issueNumber = 301;
+  const issueTitle = "Initial model wiring";
+  const branch = "vibrator/issue-301-initial-model-wiring";
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        ...captureModelAndEffortSnippet(modelLogPath, effortLogPath),
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"fresh implementation\" >> implementation.txt",
+        "git add implementation.txt",
+        "git commit -m \"agent implementation commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Initial model wiring\",\"body\":\"Closes #301\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+      claudeInitialModel: "claude-sonnet-4-6",
+      claudeInitialEffort: "high",
+      claudeReviewModel: "claude-opus-4-8",
+      claudeReviewEffort: "medium",
+    });
+
+    const result = await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber,
+      issueTitle,
+      issueBody: "Wire the initial model.",
+      baseBranch: "main",
+    });
+
+    assert.equal(result.branch, branch);
+    const { readFile } = await import("node:fs/promises");
+    assert.equal((await readFile(modelLogPath, "utf8")).trim(), "claude-sonnet-4-6");
+    assert.equal((await readFile(effortLogPath, "utf8")).trim(), "high");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("selfReview passes claudeReviewModel and claudeReviewEffort to the claude CLI", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibrator-review-model-effort-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const modelLogPath = join(root, "model-used.txt");
+  const effortLogPath = join(root, "effort-used.txt");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const prBranch = "feature/review-model-effort";
+  const prNumber = 88;
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+    runOrThrow("git", ["checkout", "-b", prBranch], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", prBranch], seedDir);
+    const prHeadSha = runOrThrow("git", ["rev-parse", "HEAD"], seedDir);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        ...captureModelAndEffortSnippet(modelLogPath, effortLogPath),
+        "echo LGTM",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    mockSameRepoPullRequestFetch(t, {
+      owner: "example",
+      repo: "repo",
+      pullRequestNumber: prNumber,
+      branch: prBranch,
+      headSha: prHeadSha,
+      cloneUrl: remoteDir,
+    });
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+      claudeInitialModel: "claude-sonnet-4-6",
+      claudeInitialEffort: "high",
+      claudeReviewModel: "claude-opus-4-8",
+      claudeReviewEffort: "medium",
+    });
+
+    await client.selfReview({
+      owner: "example",
+      repo: "repo",
+      pullRequestNumber: prNumber,
+      pullRequestTitle: "Review model wiring",
+      pullRequestBody: "Body",
+      headRefName: prBranch,
+      baseRefName: "main",
+    });
+
+    const { readFile } = await import("node:fs/promises");
+    assert.equal((await readFile(modelLogPath, "utf8")).trim(), "claude-opus-4-8");
+    assert.equal((await readFile(effortLogPath, "utf8")).trim(), "medium");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("implementIssue cleans stale uncommitted state left by a prior interrupted run", async () => {
   const root = await mkdtemp(join(tmpdir(), "vibrator-stale-checkout-test-"));
   const remoteDir = join(root, "remote.git");

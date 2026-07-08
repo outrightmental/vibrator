@@ -21,8 +21,14 @@ export interface ProjectEnvConfig {
   focus_mode?: boolean;
   /** Max concurrent work items for this project. Capped at global max_concurrency. */
   max_concurrency?: number;
-  /** Claude model for implementation. Defaults to global claude_code_model. */
-  claude_code_model?: string;
+  /** Claude model for initial implementation. Defaults to global claude_code_initial_model. */
+  claude_code_initial_model?: string;
+  /** Claude model for reviewing an implementation. Defaults to global claude_code_review_model. */
+  claude_code_review_model?: string;
+  /** Claude effort for initial implementation. Defaults to global claude_code_initial_effort. */
+  claude_code_initial_effort?: string;
+  /** Claude effort for reviewing an implementation. Defaults to global claude_code_review_effort. */
+  claude_code_review_effort?: string;
   /** Claude model for PR descriptions. Defaults to global claude_describe_model. */
   claude_describe_model?: string;
   /** Minimum seconds between engine cycle starts. Defaults to global cycle_minimum_seconds. */
@@ -34,8 +40,14 @@ export interface ProjectEnvConfig {
 }
 
 export interface EnvConfig {
-  /** Claude model for implementation across all projects (default: claude-sonnet-4-6). */
-  claude_code_model?: string;
+  /** Claude model for initial implementation across all projects (default: claude-sonnet-4-6). */
+  claude_code_initial_model?: string;
+  /** Claude model for reviewing an implementation across all projects (default: claude-opus-4-8). */
+  claude_code_review_model?: string;
+  /** Claude effort for initial implementation across all projects (default: high). */
+  claude_code_initial_effort?: string;
+  /** Claude effort for reviewing an implementation across all projects (default: high). */
+  claude_code_review_effort?: string;
   /** Claude model for PR descriptions across all projects (default: claude-haiku-4-5). */
   claude_describe_model?: string;
   /** Total size of the shared cylinder pool across all projects (default: 3). */
@@ -91,6 +103,12 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
   if (!Array.isArray(config.projects) || config.projects.length === 0) {
     throw new Error(`${filePath}: "projects" must be a non-empty array.`);
   }
+  if ("claude_code_model" in config) {
+    throw new Error(
+      `${filePath}: "claude_code_model" is no longer supported. ` +
+        `Replace it with "claude_code_initial_model" and "claude_code_review_model".`,
+    );
+  }
   for (let i = 0; i < config.projects.length; i++) {
     const p = config.projects[i] as Record<string, unknown>;
     if (!p || typeof p !== "object") {
@@ -99,13 +117,22 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
     if (typeof p.github_repository !== "string" || !p.github_repository.trim()) {
       throw new Error(`${filePath}: "projects[${i}].github_repository" must be a non-empty string.`);
     }
+    if ("claude_code_model" in p) {
+      throw new Error(
+        `${filePath}: "projects[${i}].claude_code_model" is no longer supported. ` +
+          `Replace it with "claude_code_initial_model" and "claude_code_review_model".`,
+      );
+    }
   }
   return raw as EnvConfig;
 }
 
 export interface ResolvedProjectDefaults {
   max_concurrency: number;
-  claude_code_model: string;
+  claude_code_initial_model: string;
+  claude_code_review_model: string;
+  claude_code_initial_effort: string;
+  claude_code_review_effort: string;
   claude_describe_model: string | undefined;
   cycle_minimum_seconds: number;
   reviewers: string[];
@@ -127,8 +154,22 @@ export function applyProjectDefaults(
       : globalMax;
   return {
     max_concurrency: maxConcurrency,
-    claude_code_model:
-      projectConfig.claude_code_model ?? globalConfig.claude_code_model ?? "claude-sonnet-4-6",
+    claude_code_initial_model:
+      projectConfig.claude_code_initial_model ??
+      globalConfig.claude_code_initial_model ??
+      "claude-sonnet-4-6",
+    claude_code_review_model:
+      projectConfig.claude_code_review_model ??
+      globalConfig.claude_code_review_model ??
+      "claude-opus-4-8",
+    claude_code_initial_effort:
+      projectConfig.claude_code_initial_effort ??
+      globalConfig.claude_code_initial_effort ??
+      "high",
+    claude_code_review_effort:
+      projectConfig.claude_code_review_effort ??
+      globalConfig.claude_code_review_effort ??
+      "high",
     claude_describe_model:
       projectConfig.claude_describe_model ?? globalConfig.claude_describe_model,
     cycle_minimum_seconds:

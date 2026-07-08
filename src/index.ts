@@ -303,7 +303,14 @@ function describeSession(
 interface Config {
   owner: string;
   repo: string;
-  claudeModel: string | undefined;
+  /** Model used to initially implement a feature. Defaults to claude-sonnet-4-6. */
+  claudeInitialModel: string | undefined;
+  /** Model used to review an implementation. Defaults to claude-opus-4-8. */
+  claudeReviewModel: string | undefined;
+  /** Effort used to initially implement a feature. Defaults to high. */
+  claudeInitialEffort: string | undefined;
+  /** Effort used to review an implementation. Defaults to high. */
+  claudeReviewEffort: string | undefined;
   /** Model used for commit message generation. Defaults to claude-haiku when unset. */
   claudeCommitModel: string | undefined;
   /** Per-project concurrency cap (a subset of the global pool). */
@@ -350,7 +357,10 @@ function buildProjectConfig(
   return {
     owner,
     repo,
-    claudeModel: resolved.claude_code_model,
+    claudeInitialModel: resolved.claude_code_initial_model,
+    claudeReviewModel: resolved.claude_code_review_model,
+    claudeInitialEffort: resolved.claude_code_initial_effort,
+    claudeReviewEffort: resolved.claude_code_review_effort,
     claudeCommitModel: resolved.claude_describe_model,
     maxConcurrency: resolved.max_concurrency,
     cycleMinimumMs: Math.round(resolved.cycle_minimum_seconds * 1000),
@@ -612,7 +622,9 @@ async function runEngine(
           action.type !== "start-implementation" ? action.pullRequestNumber : null,
         model: action.type === "squash-merge"
           ? (config.claudeCommitModel ?? DEFAULT_COMMIT_MODEL)
-          : (config.claudeModel ?? null),
+          : action.type === "self-review"
+            ? (config.claudeReviewModel ?? null)
+            : (config.claudeInitialModel ?? null),
         startedAt: Date.now(),
       });
 
@@ -802,7 +814,10 @@ async function main(): Promise<void> {
     const claudeAgentClient = createClaudeAgentClient({
       githubGateway,
       githubToken,
-      ...(config.claudeModel !== undefined ? { claudeModel: config.claudeModel } : {}),
+      ...(config.claudeInitialModel !== undefined ? { claudeInitialModel: config.claudeInitialModel } : {}),
+      ...(config.claudeReviewModel !== undefined ? { claudeReviewModel: config.claudeReviewModel } : {}),
+      ...(config.claudeInitialEffort !== undefined ? { claudeInitialEffort: config.claudeInitialEffort } : {}),
+      ...(config.claudeReviewEffort !== undefined ? { claudeReviewEffort: config.claudeReviewEffort } : {}),
       ...(config.claudeCommitModel !== undefined ? { claudeCommitModel: config.claudeCommitModel } : {}),
     });
     return {

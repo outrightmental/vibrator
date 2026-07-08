@@ -42,7 +42,10 @@ test("loadEnvConfig loads a valid minimal config", async () => {
 test("loadEnvConfig loads a full config with all optional fields", async () => {
   await withTempDir(async (dir) => {
     const full = {
-      claude_code_model: "claude-sonnet-4-6",
+      claude_code_initial_model: "claude-sonnet-4-6",
+      claude_code_review_model: "claude-opus-4-8",
+      claude_code_initial_effort: "high",
+      claude_code_review_effort: "high",
       claude_describe_model: "claude-haiku-4-5",
       max_concurrency: 5,
       cycle_minimum_seconds: 30,
@@ -60,7 +63,8 @@ test("loadEnvConfig loads a full config with all optional fields", async () => {
           reviewers: ["alice", "bob"],
           focus_mode: true,
           max_concurrency: 2,
-          claude_code_model: "claude-opus-4-8",
+          claude_code_initial_model: "claude-opus-4-8",
+          claude_code_review_model: "claude-opus-4-8",
           claude_describe_model: "claude-haiku-4-5",
           cycle_minimum_seconds: 45,
           dashboard_port: 3001,
@@ -74,7 +78,7 @@ test("loadEnvConfig loads a full config with all optional fields", async () => {
     };
     const filePath = await writeEnvYaml(dir, full);
     const config = loadEnvConfig(filePath);
-    assert.equal(config.claude_code_model, "claude-sonnet-4-6");
+    assert.equal(config.claude_code_initial_model, "claude-sonnet-4-6");
     assert.equal(config.max_concurrency, 5);
     assert.equal(config.github_tokens.length, 2);
     assert.equal(config.projects.length, 2);
@@ -187,6 +191,32 @@ test("loadEnvConfig throws when a project entry is missing github_repository", a
   });
 });
 
+test("loadEnvConfig throws when global claude_code_model is present", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      claude_code_model: "claude-sonnet-4-6",
+    });
+    assert.throws(
+      () => loadEnvConfig(filePath),
+      /"claude_code_model" is no longer supported/,
+    );
+  });
+});
+
+test("loadEnvConfig throws when per-project claude_code_model is present", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      github_tokens: [{ name: "default", token: "ghp_test", default: true }],
+      projects: [{ github_repository: "owner/repo", claude_code_model: "claude-sonnet-4-6" }],
+    });
+    assert.throws(
+      () => loadEnvConfig(filePath),
+      /"projects\[0\]\.claude_code_model" is no longer supported/,
+    );
+  });
+});
+
 test("resolveGitHubToken returns the default token (marked with default: true)", () => {
   const config: EnvConfig = {
     github_tokens: [
@@ -275,25 +305,88 @@ test("applyProjectDefaults defaults max_concurrency to 3 when neither level spec
   assert.equal(result.max_concurrency, 3);
 });
 
-test("applyProjectDefaults uses per-project claude_code_model over global", () => {
+test("applyProjectDefaults uses per-project claude_code_initial_model over global", () => {
   const result = applyProjectDefaults(
-    { github_repository: "o/r", claude_code_model: "claude-opus-4-8" },
-    { ...baseEnvConfig, claude_code_model: "claude-sonnet-4-6" },
+    { github_repository: "o/r", claude_code_initial_model: "claude-opus-4-8" },
+    { ...baseEnvConfig, claude_code_initial_model: "claude-sonnet-4-6" },
   );
-  assert.equal(result.claude_code_model, "claude-opus-4-8");
+  assert.equal(result.claude_code_initial_model, "claude-opus-4-8");
 });
 
-test("applyProjectDefaults falls back to global claude_code_model", () => {
+test("applyProjectDefaults falls back to global claude_code_initial_model", () => {
   const result = applyProjectDefaults(
     { github_repository: "o/r" },
-    { ...baseEnvConfig, claude_code_model: "claude-sonnet-4-6" },
+    { ...baseEnvConfig, claude_code_initial_model: "claude-sonnet-4-6" },
   );
-  assert.equal(result.claude_code_model, "claude-sonnet-4-6");
+  assert.equal(result.claude_code_initial_model, "claude-sonnet-4-6");
 });
 
-test("applyProjectDefaults defaults claude_code_model to claude-sonnet-4-6", () => {
+test("applyProjectDefaults defaults claude_code_initial_model to claude-sonnet-4-6", () => {
   const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
-  assert.equal(result.claude_code_model, "claude-sonnet-4-6");
+  assert.equal(result.claude_code_initial_model, "claude-sonnet-4-6");
+});
+
+test("applyProjectDefaults uses per-project claude_code_review_model over global", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", claude_code_review_model: "claude-sonnet-4-6" },
+    { ...baseEnvConfig, claude_code_review_model: "claude-opus-4-8" },
+  );
+  assert.equal(result.claude_code_review_model, "claude-sonnet-4-6");
+});
+
+test("applyProjectDefaults falls back to global claude_code_review_model", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r" },
+    { ...baseEnvConfig, claude_code_review_model: "claude-opus-4-8" },
+  );
+  assert.equal(result.claude_code_review_model, "claude-opus-4-8");
+});
+
+test("applyProjectDefaults defaults claude_code_review_model to claude-opus-4-8", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(result.claude_code_review_model, "claude-opus-4-8");
+});
+
+test("applyProjectDefaults uses per-project claude_code_initial_effort over global", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", claude_code_initial_effort: "low" },
+    { ...baseEnvConfig, claude_code_initial_effort: "medium" },
+  );
+  assert.equal(result.claude_code_initial_effort, "low");
+});
+
+test("applyProjectDefaults falls back to global claude_code_initial_effort", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r" },
+    { ...baseEnvConfig, claude_code_initial_effort: "medium" },
+  );
+  assert.equal(result.claude_code_initial_effort, "medium");
+});
+
+test("applyProjectDefaults defaults claude_code_initial_effort to high", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(result.claude_code_initial_effort, "high");
+});
+
+test("applyProjectDefaults uses per-project claude_code_review_effort over global", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r", claude_code_review_effort: "low" },
+    { ...baseEnvConfig, claude_code_review_effort: "medium" },
+  );
+  assert.equal(result.claude_code_review_effort, "low");
+});
+
+test("applyProjectDefaults falls back to global claude_code_review_effort", () => {
+  const result = applyProjectDefaults(
+    { github_repository: "o/r" },
+    { ...baseEnvConfig, claude_code_review_effort: "medium" },
+  );
+  assert.equal(result.claude_code_review_effort, "medium");
+});
+
+test("applyProjectDefaults defaults claude_code_review_effort to high", () => {
+  const result = applyProjectDefaults({ github_repository: "o/r" }, baseEnvConfig);
+  assert.equal(result.claude_code_review_effort, "high");
 });
 
 test("applyProjectDefaults uses per-project claude_describe_model over global", () => {
