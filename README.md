@@ -234,7 +234,6 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `GITHUB_REPOSITORY` | — | Default `owner/repo` when the CLI argument is omitted. |
 | `MAX_CONCURRENCY` | `3` | Maximum active work items across open PRs and in-flight implementations. |
 | `CYCLE_MINIMUM_SECONDS` | `60` | Minimum seconds between engine cycle starts. |
-| `CLAUDE_MODEL` | *(Claude default)* | Claude model for implementation and review (e.g. `claude-sonnet-4-6`). Split in `env.yaml` into `claude_code_initial_model` (default `claude-sonnet-4-6`) and `claude_code_review_model` (default `claude-opus-4-8`), with `claude_code_initial_effort` and `claude_code_review_effort` (both default `high`). |
 | `CLAUDE_COMMIT_MODEL` | `claude-haiku-4-5-20251001` | Model for commit message generation. A faster model is appropriate here. |
 | `DASHBOARD_PORT` | `3000` | HTTP port for the Dashboard server. |
 | `DASHBOARD_TITLE` | repository name (Simple SDLC) / project title (Project SDLC) | Title displayed in the Dashboard header. |
@@ -242,6 +241,17 @@ Classic PATs may need `repo`, `project` when using project mode, and `workflow` 
 | `GITHUB_PROJECT_NUMBER` | — | GitHub Projects v2 board number. Enables [Project SDLC](#project-sdlc-human-in-the-loop). |
 | `VIBRATOR_REVIEWERS` | — | Comma-separated GitHub logins to request review from (Project SDLC only). |
 | `MODE` | — | Set to `focus` (case-insensitive) to activate focus mode. Only issues labelled `focus` will be picked up. |
+
+**env.yaml model configuration**
+
+Model and effort for each phase are set in `env.yaml` (not environment variables). Per-project overrides take precedence over global values.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `claude_code_initial_model` | `claude-sonnet-4-6` | Claude model used during initial implementation. |
+| `claude_code_review_model` | `claude-opus-4-8` | Claude model used during self-review. |
+| `claude_code_initial_effort` | `high` | Reasoning effort for initial implementation. |
+| `claude_code_review_effort` | `high` | Reasoning effort for self-review. |
 
 **CLI flags**
 
