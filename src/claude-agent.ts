@@ -1402,7 +1402,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     this.claudeInitialModel = options.claudeInitialModel;
     this.claudeReviewModel = options.claudeReviewModel ?? options.claudeInitialModel;
     this.claudeInitialEffort = options.claudeInitialEffort;
-    this.claudeReviewEffort = options.claudeReviewEffort;
+    this.claudeReviewEffort = options.claudeReviewEffort ?? options.claudeInitialEffort;
     this.claudeCommitModel = options.claudeCommitModel ?? DEFAULT_COMMIT_MODEL;
     this.claudeTimeoutMs = options.claudeTimeoutMs ?? DEFAULT_CLAUDE_TIMEOUT_MS;
   }
