@@ -283,8 +283,14 @@ interface ClaudeAgentClientOptions {
   githubGateway?: GitHubApiGateway;
   /** Override repository clone URLs in tests or enterprise deployments. */
   repositoryCloneUrl?: string | ((owner: string, repo: string) => string);
-  /** Model to pass to the claude CLI via --model. When omitted, uses the default model. */
-  claudeModel?: string;
+  /** Model used to initially implement a feature, passed to the claude CLI via --model. When omitted, uses the default model. */
+  claudeInitialModel?: string;
+  /** Model used to review an implementation, passed to the claude CLI via --model. When omitted, falls back to the initial model. */
+  claudeReviewModel?: string;
+  /** Effort used to initially implement a feature, passed to the claude CLI via --effort. */
+  claudeInitialEffort?: string;
+  /** Effort used to review an implementation, passed to the claude CLI via --effort. */
+  claudeReviewEffort?: string;
   /** Model used specifically for commit message generation. Defaults to claude-haiku-4-5-20251001. */
   claudeCommitModel?: string;
   /** Maximum milliseconds the Claude CLI is allowed to run before being killed. Defaults to 30 minutes. */
@@ -1370,7 +1376,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     | ((owner: string, repo: string) => string)
     | undefined;
   private readonly gitAuth: GitAuth;
-  private readonly claudeModel: string | undefined;
+  private readonly claudeInitialModel: string | undefined;
+  private readonly claudeReviewModel: string | undefined;
+  private readonly claudeInitialEffort: string | undefined;
+  private readonly claudeReviewEffort: string | undefined;
   private readonly claudeCommitModel: string;
   private readonly claudeTimeoutMs: number;
 
@@ -1390,7 +1399,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       });
     this.repositoryCloneUrl = options.repositoryCloneUrl;
     this.gitAuth = new GitAuth(this.githubToken);
-    this.claudeModel = options.claudeModel;
+    this.claudeInitialModel = options.claudeInitialModel;
+    this.claudeReviewModel = options.claudeReviewModel ?? options.claudeInitialModel;
+    this.claudeInitialEffort = options.claudeInitialEffort;
+    this.claudeReviewEffort = options.claudeReviewEffort;
     this.claudeCommitModel = options.claudeCommitModel ?? DEFAULT_COMMIT_MODEL;
     this.claudeTimeoutMs = options.claudeTimeoutMs ?? DEFAULT_CLAUDE_TIMEOUT_MS;
   }
@@ -1415,7 +1427,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     });
 
     const prompt = buildImplementationPrompt(params, branch);
-    const stdout = await this.runClaude(prompt, repoDir);
+    const stdout = await this.runClaude(prompt, repoDir, this.claudeInitialModel, this.claudeInitialEffort);
     const payload = extractImplementationPayload(stdout);
 
     // Safety net: if Claude edited files but did not commit them (e.g. because
@@ -1500,7 +1512,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     ).trim();
 
     const prompt = buildSelfReviewPrompt(params);
-    const stdout = await this.runClaude(prompt, repoDir);
+    const stdout = await this.runClaude(prompt, repoDir, this.claudeReviewModel, this.claudeReviewEffort);
     const commentResponses = extractSelfReviewPayload(stdout);
 
     // Determine whether Claude actually committed review fixes before the
@@ -1561,7 +1573,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     }
 
     const prompt = buildResolveConflictsPrompt(params);
-    await this.runClaude(prompt, repoDir);
+    await this.runClaude(prompt, repoDir, this.claudeInitialModel, this.claudeInitialEffort);
     // Merge latest from base branch using 'theirs' strategy before pushing.
     await this.runAuthenticatedGit(["fetch", "origin", params.baseRefName], { cwd: repoDir });
     try {
@@ -1584,7 +1596,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       pullRequestNumber: params.pullRequestNumber,
     });
     const prompt = buildAddressFailingChecksPrompt(params);
-    await this.runClaude(prompt, repoDir);
+    await this.runClaude(prompt, repoDir, this.claudeInitialModel, this.claudeInitialEffort);
     return this.pushAndReportHead(repoDir, params.headRefName, {
       baseBranch: params.baseRefName,
     });
@@ -1978,7 +1990,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
         console.warn(
           `[vibrator] Merge conflict while integrating origin/${branch} before push retry (${attempt}/${maxRetries}); delegating resolution to Claude.`,
         );
-        await this.runClaude(buildPushConflictResolutionPrompt(branch), repoDir);
+        await this.runClaude(buildPushConflictResolutionPrompt(branch), repoDir, this.claudeInitialModel, this.claudeInitialEffort);
 
         const stillMerging = await pathExists(join(gitDir, "MERGE_HEAD"));
         if (stillMerging) {
@@ -2002,7 +2014,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     }
   }
 
-  private async runClaude(prompt: string, cwd: string, modelOverride?: string): Promise<string> {
+  private async runClaude(prompt: string, cwd: string, modelOverride?: string, effortOverride?: string): Promise<string> {
     const env: NodeJS.ProcessEnv = { ...process.env };
     // Use the local Claude Code subscription, not the Anthropic Platform API.
     // Removing ANTHROPIC_API_KEY forces the claude CLI to authenticate via
@@ -2012,8 +2024,9 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     delete env.GH_TOKEN;
     delete env.GITHUB_TOKEN;
     delete env.VIBRATOR_GITHUB_TOKEN;
-    const effectiveModel = modelOverride ?? this.claudeModel;
+    const effectiveModel = modelOverride ?? this.claudeInitialModel;
     const modelArgs = effectiveModel ? ["--model", effectiveModel] : [];
+    const effortArgs = effortOverride ? ["--effort", effortOverride] : [];
 
     const startTime = Date.now();
 
@@ -2071,6 +2084,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           "--permission-mode",
           "bypassPermissions",
           ...modelArgs,
+          ...effortArgs,
           ...(useStdinPrompt ? [] : [prompt]),
         ],
         {
