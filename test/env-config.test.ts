@@ -191,6 +191,32 @@ test("loadEnvConfig throws when a project entry is missing github_repository", a
   });
 });
 
+test("loadEnvConfig throws when global claude_code_model is present", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      ...minimalValidConfig,
+      claude_code_model: "claude-sonnet-4-6",
+    });
+    assert.throws(
+      () => loadEnvConfig(filePath),
+      /"claude_code_model" is no longer supported/,
+    );
+  });
+});
+
+test("loadEnvConfig throws when per-project claude_code_model is present", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = await writeEnvYaml(dir, {
+      github_tokens: [{ name: "default", token: "ghp_test", default: true }],
+      projects: [{ github_repository: "owner/repo", claude_code_model: "claude-sonnet-4-6" }],
+    });
+    assert.throws(
+      () => loadEnvConfig(filePath),
+      /"projects\[0\]\.claude_code_model" is no longer supported/,
+    );
+  });
+});
+
 test("resolveGitHubToken returns the default token (marked with default: true)", () => {
   const config: EnvConfig = {
     github_tokens: [

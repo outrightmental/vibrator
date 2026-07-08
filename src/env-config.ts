@@ -103,6 +103,12 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
   if (!Array.isArray(config.projects) || config.projects.length === 0) {
     throw new Error(`${filePath}: "projects" must be a non-empty array.`);
   }
+  if ("claude_code_model" in config) {
+    throw new Error(
+      `${filePath}: "claude_code_model" is no longer supported. ` +
+        `Replace it with "claude_code_initial_model" and "claude_code_review_model".`,
+    );
+  }
   for (let i = 0; i < config.projects.length; i++) {
     const p = config.projects[i] as Record<string, unknown>;
     if (!p || typeof p !== "object") {
@@ -110,6 +116,12 @@ export function loadEnvConfig(configPath?: string): EnvConfig {
     }
     if (typeof p.github_repository !== "string" || !p.github_repository.trim()) {
       throw new Error(`${filePath}: "projects[${i}].github_repository" must be a non-empty string.`);
+    }
+    if ("claude_code_model" in p) {
+      throw new Error(
+        `${filePath}: "projects[${i}].claude_code_model" is no longer supported. ` +
+          `Replace it with "claude_code_initial_model" and "claude_code_review_model".`,
+      );
     }
   }
   return raw as EnvConfig;
