@@ -1827,12 +1827,49 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // pointing elsewhere, so we cannot construct paths under `<repoDir>/.git`.
     const gitDir = await getGitDir(repoDir);
     if (await isRebaseInProgress(repoDir, pathExists, gitDir)) {
-      await runCommand("git", ["rebase", "--abort"], { cwd: repoDir });
+      // `--abort` is preferred because it restores the pre-rebase HEAD, but it
+      // refuses to run on a damaged state dir (e.g. an interrupted run left an
+      // unreadable `orig-head`, so abort exits 1 with the rebase still
+      // registered). `--quit` drops the rebase state without touching the tree,
+      // and the hard reset below supplies the cleanup, so a wedged rebase can
+      // never strand this checkout.
+      await runCommand("git", ["rebase", "--abort"], { cwd: repoDir, captureStderr: true }).catch(
+        async (error: unknown) => {
+          console.warn(
+            `[vibrator] \`git rebase --abort\` failed in ${repoDir}; clearing the rebase state with \`--quit\` and hard-resetting instead. ${error}`,
+          );
+          await runCommand("git", ["rebase", "--quit"], { cwd: repoDir, captureStderr: true }).catch(
+            () => {
+              // Nothing left to try — the hard reset below is the last resort.
+            },
+          );
+        },
+      );
     }
     if (await pathExists(join(gitDir, "MERGE_HEAD"))) {
-      await runCommand("git", ["merge", "--abort"], { cwd: repoDir });
+      // `git merge --abort` is `git reset --merge`, which REFUSES to run when a
+      // file that differs between HEAD and the index also has unstaged
+      // working-tree changes: "error: Entry '<path>' not uptodate. Cannot
+      // merge." (exit 128). An interrupted conflict resolution leaves exactly
+      // that — a file the merge staged cleanly, then rewritten in the working
+      // tree by a test run (e.g. a regenerated snapshot). Treating the refusal
+      // as fatal wedged the checkout permanently, because every later attempt
+      // re-entered the same state and re-ran the same doomed command.
+      //
+      // The refusal is harmless here: `--merge` declines only to avoid losing
+      // working-tree edits, and we are discarding those on purpose. The hard
+      // reset below drops the merge state (git removes MERGE_HEAD, MERGE_MSG
+      // and friends on any reset) and restores the tree to HEAD regardless, so
+      // this call is best effort.
+      await runCommand("git", ["merge", "--abort"], { cwd: repoDir, captureStderr: true }).catch(
+        (error: unknown) => {
+          console.warn(
+            `[vibrator] \`git merge --abort\` failed in ${repoDir}; discarding the merge with a hard reset instead. ${error}`,
+          );
+        },
+      );
     }
-    await runCommand("git", ["reset", "--hard", "HEAD"], { cwd: repoDir });
+    await runCommand("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, captureStderr: true });
     // Drop untracked files (e.g. new files Claude created but never committed)
     // while preserving gitignored artifacts like node_modules.
     await runCommand("git", ["clean", "-fd"], { cwd: repoDir });
