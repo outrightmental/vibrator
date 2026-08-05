@@ -1866,6 +1866,113 @@ test("concurrent implementIssue calls share one canonical clone without collidin
   }
 });
 
+test("implementIssue clears a stale index.lock left by a killed git process", async () => {
+  // Regression: a run cut short mid-write — the process-group reap on timeout,
+  // an OOM kill, a machine restart — leaves `index.lock` in the worktree's git
+  // dir with no process behind it. `git reset --hard HEAD` then exits 128
+  // ("Unable to create '<...>/index.lock': File exists") on every later
+  // attempt. Nothing removed it, and the checkout was not recreated either: a
+  // stale lock does not stop `git rev-parse --verify HEAD` resolving, so
+  // `ensureWorktreeCheckout` took its reuse path and returned before the
+  // remove-and-recreate repair. The task directory was wedged permanently.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-stale-index-lock-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    // Build the canonical clone and a linked worktree exactly as the checkout
+    // path does, so the planted lock lands in the per-worktree git dir.
+    const canonicalDir = join(checkoutRootDir, "example-repo", "_main");
+    const taskDir = join(checkoutRootDir, "example-repo", "issue-1");
+    await mkdir(join(checkoutRootDir, "example-repo"), { recursive: true });
+    runOrThrow("git", ["clone", remoteDir, canonicalDir], root);
+    runOrThrow(
+      "git",
+      ["worktree", "add", "--detach", "-f", "-f", taskDir, "origin/main"],
+      canonicalDir,
+    );
+
+    const taskGitDir = runOrThrow("git", ["rev-parse", "--absolute-git-dir"], taskDir);
+    const indexLockPath = join(taskGitDir, "index.lock");
+    await writeFile(indexLockPath, "", "utf8");
+
+    // Sanity-check the wedge, and that the checkout would be REUSED rather than
+    // recreated — a stale lock leaves HEAD perfectly resolvable.
+    assert.equal(
+      spawnSync("git", ["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: taskDir }).status,
+      0,
+      "a stale index.lock should leave HEAD resolvable, so the checkout is reused not recreated",
+    );
+    const resetProbe = spawnSync("git", ["reset", "--hard", "HEAD"], {
+      cwd: taskDir,
+      encoding: "utf8",
+    });
+    assert.notEqual(resetProbe.status, 0, "a stale index.lock should defeat `git reset --hard`");
+    assert.match(resetProbe.stderr, /index\.lock/);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"implementation\" >> impl.txt",
+        "git add impl.txt",
+        "git commit -m \"agent commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test\",\"body\":\"Closes #1\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+    });
+
+    // This previously threw on `git reset --hard HEAD`, forever.
+    await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 1,
+      issueTitle: "First task",
+      issueBody: "Do something.",
+      baseBranch: "main",
+    });
+
+    const lockSurvived = await stat(indexLockPath).then(
+      () => true,
+      () => false,
+    );
+    assert.equal(lockSurvived, false, "the stale index.lock should have been cleared");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("implementIssue recovers a checkout wedged by a merge `git merge --abort` refuses to undo", async () => {
   // Regression: `git merge --abort` is `git reset --merge`, which REFUSES to
   // run when a file that differs between HEAD and the index also has unstaged

@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { GitHubApiGateway } from "./github-gateway.js";
@@ -1898,6 +1898,36 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // Resolve the actual git directory — in a linked worktree `.git` is a file
     // pointing elsewhere, so we cannot construct paths under `<repoDir>/.git`.
     const gitDir = await getGitDir(repoDir);
+
+    // Clear the two lock files a killed git leaves behind in THIS worktree's
+    // git dir. A run cut short mid-write — the process-group reap on timeout,
+    // an OOM kill, a machine restart — leaves `index.lock` or `HEAD.lock`
+    // present with no process behind them, and git then refuses every later
+    // attempt: `reset --hard` exits 128 ("Unable to create '<...>/index.lock':
+    // File exists"), a stale `HEAD.lock` exits 1. Nothing removes them, and the
+    // checkout is NOT recreated in that state — a stale lock does not stop
+    // `git rev-parse --verify HEAD` resolving, so `ensureWorktreeCheckout`
+    // takes its reuse path and returns before the remove-and-recreate repair.
+    // That is the same permanent wedge the rebase and merge fallbacks below
+    // exist to prevent: every later cycle re-enters the state and re-runs the
+    // same doomed command. git's own advice for these files is to remove them
+    // by hand once no git process is left; this is that, automated.
+    //
+    // Unconditional, with no staleness heuristic: each engine gets its own
+    // checkout directory, and this runs before that engine's Claude session
+    // starts, so no live git process of ours holds a lock here. Deliberately
+    // only these two — they are per-worktree, whereas `config.lock`,
+    // `packed-refs.lock` and `FETCH_HEAD.lock` live in the shared common dir
+    // that `getGitDir` does not return, where a concurrent fetch on `_main`
+    // may legitimately hold them.
+    await Promise.all(
+      ["index.lock", "HEAD.lock"].map((lockName) =>
+        unlink(join(gitDir, lockName)).catch(() => {
+          // The overwhelmingly common case: no stale lock to clear.
+        }),
+      ),
+    );
+
     if (await isRebaseInProgress(repoDir, pathExists, gitDir)) {
       // `--abort` is preferred because it restores the pre-rebase HEAD, but it
       // refuses to run on a damaged state dir (e.g. an interrupted run left an
