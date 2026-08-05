@@ -1365,6 +1365,43 @@ function buildPushRecoveryBackupBranchName(branch: string): string {
 
 export const DEFAULT_COMMIT_MODEL = "claude-haiku-4-5-20251001";
 
+/**
+ * Serializes canonical-clone setup per `_main` directory.
+ *
+ * `ensureCanonicalClone` is a read-modify-write over a shared `.git`, and its
+ * `pathExists(".git")` probe is not atomic with the clone it gates. `git clone`
+ * creates `.git` (and `remote.origin.url`) almost immediately but writes
+ * `remote.origin.fetch` only at the very end, after the transport round trip —
+ * and it writes it with `git_config_set_multivar(key, value, "^$", 0)`, whose
+ * empty-only value pattern means it APPENDS rather than replaces. So a second
+ * engine that slips past the probe mid-clone either collides with the in-flight
+ * clone (exit 128, "destination path already exists and is not an empty
+ * directory", losing that engine its action) or writes the refspec into a
+ * config the finishing clone then appends a byte-identical copy to. That second
+ * outcome is silent — the clone still exits 0 — and it is what wedged a
+ * canonical clone in the wild: `remote.origin.fetch` duplicated, after which
+ * every engine's every cycle died on the same config write.
+ *
+ * Module-scoped rather than an instance field because one agent client is built
+ * per project, so two projects naming the same repository must share the lock.
+ */
+const canonicalCloneLocks = new Map<string, Promise<unknown>>();
+
+function withCanonicalCloneLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const prior = canonicalCloneLocks.get(dir) ?? Promise.resolve();
+  // Chained onto both settle paths: a plain `.then(fn)` would poison the queue
+  // for every later waiter as soon as one engine's clone failed.
+  const run = prior.then(fn, fn);
+  const tail = run.catch(() => {});
+  canonicalCloneLocks.set(dir, tail);
+  void tail.then(() => {
+    if (canonicalCloneLocks.get(dir) === tail) {
+      canonicalCloneLocks.delete(dir);
+    }
+  });
+  return run;
+}
+
 class DefaultClaudeAgentClient implements ClaudeAgentClient {
   private readonly checkoutRootDir: string;
   private readonly claudeCommand: string;
@@ -1695,6 +1732,31 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
   }
 
   /**
+   * Writes a git config key so it ends up with exactly one value, whatever the
+   * config held before.
+   *
+   * `git config <key> <value>` is NOT this operation: it replaces a single
+   * existing value, but *refuses* — exit 5, "cannot overwrite multiple values
+   * with a single value" — the moment the key is already multi-valued. Every
+   * key we set here is conceptually single-valued, so a duplicate is corruption
+   * we want to collapse, not an error we want to propagate. Because
+   * `runCommand` throws on non-zero exit and these calls sit on the checkout
+   * path taken at the start of *every* cycle, that refusal wedged a repository
+   * permanently: each engine re-entered the same config, re-ran the same doomed
+   * command, and failed identically forever, with no code path that could ever
+   * remove the extra value. Observed in the wild on a canonical clone whose
+   * `.git/config` had picked up `fetch = +refs/heads/*:refs/remotes/origin/*`
+   * twice (see `ensureCanonicalClone` — concurrent engines share one `_main`).
+   *
+   * `--replace-all` with no value-pattern collapses however many values exist —
+   * zero, one, or many — down to the one we want, so the write is idempotent
+   * and self-healing rather than a latch that can only ever jam.
+   */
+  private async setGitConfig(dir: string, key: string, value: string): Promise<void> {
+    await runCommand("git", ["config", "--replace-all", key, value], { cwd: dir });
+  }
+
+  /**
    * Enables git's long-path support on a clone so working-tree operations
    * (`clean`, `reset --hard`, `checkout`, `merge`) don't abort with "Filename
    * too long" when a checkout contains deeply nested dependency trees. pnpm's
@@ -1705,26 +1767,36 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
    * clone's shared config, so setting it on `_main` also covers every worktree.
    */
   private async enableGitLongPaths(dir: string): Promise<void> {
-    await runCommand("git", ["config", "core.longpaths", "true"], { cwd: dir });
+    await this.setGitConfig(dir, "core.longpaths", "true");
   }
 
   private async ensureCanonicalClone(owner: string, repo: string): Promise<string> {
     const canonicalDir = join(this.checkoutRootDir, `${owner}-${repo}`, "_main");
-    await mkdir(canonicalDir, { recursive: true });
-    if (!(await pathExists(join(canonicalDir, ".git")))) {
-      await this.runAuthenticatedGit([
-        "clone",
-        this.getRepositoryCloneUrl(owner, repo),
+    // The whole body is serialized, not just the clone: leaving the config
+    // write outside the lock still lets it land inside another engine's
+    // in-flight clone, which is precisely the interleaving that duplicates the
+    // refspec. `fetch --prune` stays inside too, so N engines don't race ref
+    // locks on the shared clone — the cost is one serialized, usually fast
+    // fetch. Worktree creation and the Claude run deliberately stay OUTSIDE:
+    // they are per-checkout and safe concurrently once the clone is complete,
+    // and a 30-minute Claude run must never hold this lock.
+    await withCanonicalCloneLock(canonicalDir, async () => {
+      await mkdir(canonicalDir, { recursive: true });
+      if (!(await pathExists(join(canonicalDir, ".git")))) {
+        await this.runAuthenticatedGit([
+          "clone",
+          this.getRepositoryCloneUrl(owner, repo),
+          canonicalDir,
+        ]);
+      }
+      await this.setGitConfig(
         canonicalDir,
-      ]);
-    }
-    await runCommand(
-      "git",
-      ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
-      { cwd: canonicalDir },
-    );
-    await this.enableGitLongPaths(canonicalDir);
-    await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: canonicalDir });
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/origin/*",
+      );
+      await this.enableGitLongPaths(canonicalDir);
+      await this.runAuthenticatedGit(["fetch", "origin", "--prune"], { cwd: canonicalDir });
+    });
     return canonicalDir;
   }
 
@@ -1781,10 +1853,10 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
 
     if ((await pathExists(gitPath)) && (await hasResolvableHead(repoDir))) {
       if ((await stat(gitPath)).isDirectory()) {
-        await runCommand(
-          "git",
-          ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
-          { cwd: repoDir },
+        await this.setGitConfig(
+          repoDir,
+          "remote.origin.fetch",
+          "+refs/heads/*:refs/remotes/origin/*",
         );
         // A legacy regular clone keeps its own config rather than sharing the
         // canonical clone's, so it needs long-path support set directly.
@@ -1872,7 +1944,29 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     await runCommand("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, captureStderr: true });
     // Drop untracked files (e.g. new files Claude created but never committed)
     // while preserving gitignored artifacts like node_modules.
-    await runCommand("git", ["clean", "-fd"], { cwd: repoDir });
+    //
+    // Best effort, like the rebase and merge recoveries above. `clean` exits 1
+    // on any single path it cannot unlink — a Windows handle still held by a
+    // process a prior `bypassPermissions` run left alive, a read-only build
+    // artifact — and this is the last statement of the reset, so a throw here
+    // wedges the checkout in exactly the way the `merge --abort` comment
+    // describes: every later cycle re-enters the same state and re-runs the
+    // same doomed command. Long paths were one cause of that (see
+    // `enableGitLongPaths`) and were fixed at the source; the command itself
+    // stayed fatal for every other cause. Retry once for the transient handle,
+    // then continue — `reset --hard` above has already restored every tracked
+    // file, which is what the following checkout actually depends on.
+    await runCommand("git", ["clean", "-fd"], { cwd: repoDir, captureStderr: true }).catch(
+      async () => {
+        await runCommand("git", ["clean", "-fd"], { cwd: repoDir, captureStderr: true }).catch(
+          (error: unknown) => {
+            console.warn(
+              `[vibrator] \`git clean -fd\` failed in ${repoDir}; continuing with the tree reset to HEAD. Surviving untracked files may be swept into the next commit by the \`git add --all\` safety net. ${error}`,
+            );
+          },
+        );
+      },
+    );
   }
 
   private async checkoutPullRequest(params: {

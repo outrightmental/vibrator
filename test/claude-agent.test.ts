@@ -1533,6 +1533,339 @@ test("implementIssue repairs a leftover interrupted clone with an unborn HEAD", 
   }
 });
 
+test("implementIssue collapses a canonical clone whose single-valued git config keys were duplicated", async () => {
+  // Regression: the checkout path set its git config with
+  // `git config <key> <value>`, which replaces ONE existing value but exits 5
+  // ("cannot overwrite multiple values with a single value") the moment the key
+  // already holds more than one. A canonical clone that picked up a second
+  // `fetch = +refs/heads/*:refs/remotes/origin/*` line — concurrent engines
+  // share one `_main`, so its config is written from several processes — was
+  // therefore wedged permanently: `runCommand` throws on non-zero exit, every
+  // cycle re-entered the same config and re-ran the same doomed command, and no
+  // code path could ever remove the extra value. Writing with `--replace-all`
+  // collapses however many values are present down to the one we want, so the
+  // checkout converges instead of latching.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-dup-config-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const canonicalRefspec = "+refs/heads/*:refs/remotes/origin/*";
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"implementation\" >> impl.txt",
+        "git add impl.txt",
+        "git commit -m \"agent commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test\",\"body\":\"Closes #1\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+    });
+
+    // Seed the canonical clone directly, then recreate the corruption:
+    // duplicate both single-valued keys the checkout path writes, exactly as
+    // observed in the wild. Seeding it here rather than via a first
+    // `implementIssue` matters — the wedge must be in place before the very
+    // first agent run, so the run under test is the one that has to survive it.
+    const canonicalDir = join(checkoutRootDir, "example-repo", "_main");
+    await mkdir(join(checkoutRootDir, "example-repo"), { recursive: true });
+    runOrThrow("git", ["clone", remoteDir, canonicalDir], root);
+    runOrThrow("git", ["config", "--add", "remote.origin.fetch", canonicalRefspec], canonicalDir);
+    runOrThrow("git", ["config", "--add", "core.longpaths", "true"], canonicalDir);
+
+    // Sanity-check that this really is the wedge: a plain single-value write —
+    // what the checkout used to do — refuses to run against the corrupted key.
+    const plainWrite = spawnSync("git", ["config", "remote.origin.fetch", canonicalRefspec], {
+      cwd: canonicalDir,
+      encoding: "utf8",
+    });
+    assert.notEqual(
+      plainWrite.status,
+      0,
+      "a plain `git config <key> <value>` should refuse a multi-valued key",
+    );
+    assert.match(plainWrite.stderr, /cannot overwrite multiple values/);
+
+    // This previously threw, wedging the repository for every engine forever.
+    await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 1,
+      issueTitle: "First task",
+      issueBody: "Do something.",
+      baseBranch: "main",
+    });
+
+    // The checkout must have collapsed each key back to exactly one value.
+    const refspecs = runOrThrow(
+      "git",
+      ["config", "--get-all", "remote.origin.fetch"],
+      canonicalDir,
+    ).split(/\r?\n/);
+    assert.deepEqual(
+      refspecs,
+      [canonicalRefspec],
+      "canonical clone should be left with exactly one fetch refspec",
+    );
+
+    const longPaths = runOrThrow(
+      "git",
+      ["config", "--get-all", "core.longpaths"],
+      canonicalDir,
+    ).split(/\r?\n/);
+    assert.deepEqual(
+      longPaths,
+      ["true"],
+      "canonical clone should be left with exactly one core.longpaths value",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("implementIssue converges a legacy regular clone whose git config keys were duplicated", async () => {
+  // Companion to the canonical-clone case above, for the OTHER config write.
+  // `ensureWorktreeCheckout` keeps a backward-compat branch for task
+  // directories left behind as regular clones (`.git` is a directory, not a
+  // worktree file). Those own their config rather than sharing `_main`'s, and
+  // the branch sits in the fast path that returns BEFORE the remove-and-
+  // recreate self-heal — so a duplicated key there is permanent for that
+  // checkout too, and no worktree-based test can reach the line. Several such
+  // legacy checkouts exist on real machines.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-legacy-dup-config-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const canonicalRefspec = "+refs/heads/*:refs/remotes/origin/*";
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    // A legacy task directory: a real clone with a resolvable HEAD, so the
+    // checkout takes the backward-compat branch instead of recreating it.
+    const taskDir = join(checkoutRootDir, "example-repo", "issue-1");
+    await mkdir(join(checkoutRootDir, "example-repo"), { recursive: true });
+    runOrThrow("git", ["clone", remoteDir, taskDir], root);
+    const taskGitStatBefore = await stat(join(taskDir, ".git"));
+    assert.ok(
+      taskGitStatBefore.isDirectory(),
+      "fixture must be a regular clone, or it would not exercise the legacy branch",
+    );
+
+    runOrThrow("git", ["config", "--add", "remote.origin.fetch", canonicalRefspec], taskDir);
+    runOrThrow("git", ["config", "--add", "core.longpaths", "true"], taskDir);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"implementation\" >> impl.txt",
+        "git add impl.txt",
+        "git commit -m \"agent commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test\",\"body\":\"Closes #1\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+    });
+
+    // This previously threw on the legacy branch's config write.
+    await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 1,
+      issueTitle: "First task",
+      issueBody: "Do something.",
+      baseBranch: "main",
+    });
+
+    assert.deepEqual(
+      runOrThrow("git", ["config", "--get-all", "remote.origin.fetch"], taskDir).split(/\r?\n/),
+      [canonicalRefspec],
+      "legacy clone should be left with exactly one fetch refspec",
+    );
+    assert.deepEqual(
+      runOrThrow("git", ["config", "--get-all", "core.longpaths"], taskDir).split(/\r?\n/),
+      ["true"],
+      "legacy clone should be left with exactly one core.longpaths value",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent implementIssue calls share one canonical clone without colliding", async () => {
+  // Regression: `ensureCanonicalClone` was a check-then-act with no
+  // serialization — `pathExists(".git")` gated only the clone, and every engine
+  // for a project shares one agent client while executing in parallel.
+  //
+  // Two distinct failures came out of that. The common one: both engines pass
+  // the `.git` probe before either clone creates anything, both spawn
+  // `git clone` into the same directory, and the loser dies with "destination
+  // path already exists and is not an empty directory" (exit 128), costing that
+  // engine its whole action. The rarer, permanent one: an engine passes the
+  // probe MID-clone and writes `remote.origin.fetch` into a config the
+  // finishing clone then appends a byte-identical second copy to — clone writes
+  // that key with an empty-only value pattern, so it adds rather than replaces
+  // — after which every config write on the checkout path exits 5 forever.
+  //
+  // So this asserts BOTH: that concurrent calls all succeed, and that the
+  // canonical clone is left with exactly one refspec.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-concurrent-canonical-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+  const canonicalRefspec = "+refs/heads/*:refs/remotes/origin/*";
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"implementation\" >> impl.txt",
+        "git add impl.txt",
+        "git commit -m \"agent commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test\",\"body\":\"Closes #1\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    // One client for the whole project, exactly as the engine pool uses it.
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+    });
+
+    // Both start against a completely empty checkout root, so both race the
+    // very first clone of `_main` — the window the bug lives in.
+    const results = await Promise.allSettled(
+      [1, 2, 3].map((issueNumber) =>
+        client.implementIssue({
+          owner: "example",
+          repo: "repo",
+          issueNumber,
+          issueTitle: `Task ${issueNumber}`,
+          issueBody: "Do something.",
+          baseBranch: "main",
+        }),
+      ),
+    );
+
+    const rejected = results.flatMap((result) =>
+      result.status === "rejected" ? [String(result.reason)] : [],
+    );
+    assert.deepEqual(
+      rejected,
+      [],
+      `concurrent checkouts of the same repository should all succeed, got: ${rejected.join(" | ")}`,
+    );
+
+    const canonicalDir = join(checkoutRootDir, "example-repo", "_main");
+    assert.deepEqual(
+      runOrThrow("git", ["config", "--get-all", "remote.origin.fetch"], canonicalDir).split(
+        /\r?\n/,
+      ),
+      [canonicalRefspec],
+      "racing engines must not leave the canonical clone with a duplicated refspec",
+    );
+
+    for (const issueNumber of [1, 2, 3]) {
+      const taskGitStat = await stat(
+        join(checkoutRootDir, "example-repo", `issue-${issueNumber}`, ".git"),
+      );
+      assert.ok(
+        taskGitStat.isFile(),
+        `issue-${issueNumber} should be a linked worktree (.git is a file)`,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("implementIssue recovers a checkout wedged by a merge `git merge --abort` refuses to undo", async () => {
   // Regression: `git merge --abort` is `git reset --merge`, which REFUSES to
   // run when a file that differs between HEAD and the index also has unstaged
