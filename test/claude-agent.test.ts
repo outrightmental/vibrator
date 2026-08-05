@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import {
   createClaudeAgentClient,
@@ -1968,6 +1968,210 @@ test("implementIssue clears a stale index.lock left by a killed git process", as
       () => false,
     );
     assert.equal(lockSurvived, false, "the stale index.lock should have been cleared");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("implementIssue clears a stale config.lock that even --replace-all cannot cure", async () => {
+  // Regression: a `git config` killed mid-write — the shutdown reaper, an OOM
+  // kill — dies holding `.git/config.lock`. git takes that lock with a single
+  // O_CREAT|O_EXCL and never retries, so every later config write on the
+  // canonical clone exits 255 ("could not lock config file") forever. Nothing
+  // removed it, and crucially `--replace-all` does NOT cure this one: it is a
+  // second permanent wedge sitting behind the duplicated-refspec fix.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-stale-config-lock-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const checkoutRootDir = join(root, "checkouts");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    const canonicalDir = join(checkoutRootDir, "example-repo", "_main");
+    await mkdir(join(checkoutRootDir, "example-repo"), { recursive: true });
+    runOrThrow("git", ["clone", remoteDir, canonicalDir], root);
+
+    const configLockPath = join(canonicalDir, ".git", "config.lock");
+    await writeFile(configLockPath, "", "utf8");
+
+    // Sanity-check that this defeats the write the checkout actually performs.
+    const replaceAllProbe = spawnSync(
+      "git",
+      ["config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+      { cwd: canonicalDir, encoding: "utf8" },
+    );
+    assert.notEqual(
+      replaceAllProbe.status,
+      0,
+      "a stale config.lock should defeat even `git config --replace-all`",
+    );
+    assert.match(replaceAllProbe.stderr, /could not lock config file/);
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"implementation\" >> impl.txt",
+        "git add impl.txt",
+        "git commit -m \"agent commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test\",\"body\":\"Closes #1\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+    });
+
+    // This previously threw with status 255 on every cycle, forever.
+    await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 1,
+      issueTitle: "First task",
+      issueBody: "Do something.",
+      baseBranch: "main",
+    });
+
+    const lockSurvived = await stat(configLockPath).then(
+      () => true,
+      () => false,
+    );
+    assert.equal(lockSurvived, false, "the stale config.lock should have been cleared");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("implementIssue re-clones a canonical clone left unusable by an interrupted clone", async () => {
+  // Regression: the checkout probed only `pathExists(_main/.git)` and treated
+  // any leftover directory as a healthy clone, and nothing in the checkout path
+  // ever removed `_main` — the remove-and-recreate repair covers only
+  // `issue-N` / `pr-N` worktrees. A clone killed mid-flight leaves `.git`
+  // present but the repository unusable, so every later cycle skipped the clone
+  // on the strength of that directory and then failed forever.
+  //
+  // Note the fixture also pins the subtle part: an invalid `.git` does not make
+  // git fail, it makes git WALK UP to an ancestor repository's git dir. The
+  // checkout root here is placed inside an outer repo so a health check that
+  // merely ran `rev-parse` without comparing the answer to this directory would
+  // wrongly conclude the broken clone is fine.
+  const root = await mkdtemp(join(tmpdir(), "vibrator-unusable-canonical-test-"));
+  const remoteDir = join(root, "remote.git");
+  const seedDir = join(root, "seed");
+  const binDir = join(root, "bin");
+  const outerRepoDir = join(root, "outer");
+  const checkoutRootDir = join(outerRepoDir, "checkouts");
+  const claudeStubPath = join(binDir, "claude-stub.sh");
+
+  await mkdir(binDir, { recursive: true });
+
+  try {
+    runOrThrow("git", ["init", "--bare", "-b", "main", remoteDir], root);
+    runOrThrow("git", ["clone", remoteDir, seedDir], root);
+    runOrThrow("git", ["config", "user.name", "Seed User"], seedDir);
+    runOrThrow("git", ["config", "user.email", "seed@example.com"], seedDir);
+
+    await writeFile(join(seedDir, "README.md"), "# test\n", "utf8");
+    runOrThrow("git", ["add", "README.md"], seedDir);
+    runOrThrow("git", ["commit", "-m", "initial main commit"], seedDir);
+    runOrThrow("git", ["branch", "-M", "main"], seedDir);
+    runOrThrow("git", ["push", "-u", "origin", "main"], seedDir);
+
+    // An ancestor repository above the checkout root, so a naive `rev-parse`
+    // health check would resolve upward and pass.
+    await mkdir(outerRepoDir, { recursive: true });
+    runOrThrow("git", ["init", "-b", "main", outerRepoDir], root);
+
+    // The wreckage an interrupted clone leaves: `.git` exists, nothing usable.
+    const canonicalDir = join(checkoutRootDir, "example-repo", "_main");
+    await mkdir(join(canonicalDir, ".git"), { recursive: true });
+
+    const ancestorProbe = spawnSync("git", ["rev-parse", "--absolute-git-dir"], {
+      cwd: canonicalDir,
+      encoding: "utf8",
+    });
+    assert.equal(ancestorProbe.status, 0, "broken .git should still resolve, via the ancestor");
+    assert.notEqual(
+      resolve(ancestorProbe.stdout.trim()),
+      resolve(join(canonicalDir, ".git")),
+      "the fixture must resolve to the ANCESTOR git dir, or it does not pin the bug",
+    );
+
+    await writeFile(
+      claudeStubPath,
+      [
+        "#!/bin/sh",
+        "set -eu",
+        "git config user.name \"Claude Stub\"",
+        "git config user.email \"claude-stub@example.com\"",
+        "echo \"implementation\" >> impl.txt",
+        "git add impl.txt",
+        "git commit -m \"agent commit\"",
+        `echo \"${IMPLEMENTATION_PAYLOAD_START_MARKER}\"`,
+        "echo '{\"title\":\"Test\",\"body\":\"Closes #1\"}'",
+        `echo \"${IMPLEMENTATION_PAYLOAD_END_MARKER}\"`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await chmod(claudeStubPath, 0o755);
+
+    const client = createClaudeAgentClient({
+      checkoutRootDir,
+      claudeCommand: claudeStubPath,
+      githubToken: "test-token",
+      repositoryCloneUrl: remoteDir,
+      claudeTimeoutMs: 120000,
+    });
+
+    // This previously skipped the clone and then failed on the config write.
+    await client.implementIssue({
+      owner: "example",
+      repo: "repo",
+      issueNumber: 1,
+      issueTitle: "First task",
+      issueBody: "Do something.",
+      baseBranch: "main",
+    });
+
+    // The canonical clone must have been rebuilt as a real repository.
+    const rebuilt = runOrThrow("git", ["rev-parse", "--absolute-git-dir"], canonicalDir);
+    assert.equal(
+      resolve(rebuilt),
+      resolve(join(canonicalDir, ".git")),
+      "canonical clone should have been re-cloned in place, not resolved to an ancestor",
+    );
+    assert.equal(
+      runOrThrow("git", ["config", "--get", "remote.origin.url"], canonicalDir).length > 0,
+      true,
+      "rebuilt canonical clone should have an origin URL",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

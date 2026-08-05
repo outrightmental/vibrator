@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { GitHubApiGateway } from "./github-gateway.js";
 
 
@@ -1770,6 +1770,66 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     await this.setGitConfig(dir, "core.longpaths", "true");
   }
 
+  /**
+   * Removes `_main` when it exists but is not a usable clone, so the caller's
+   * `.git` probe re-clones it.
+   *
+   * That probe treats ANY leftover `.git` as a healthy clone, and nothing else
+   * in the checkout path ever removes `_main` — the remove-and-recreate repair
+   * covers only `issue-N` / `pr-N` worktrees. So a clone killed mid-flight
+   * (Ctrl-C, an OOM kill, the process-group reap) leaves `.git` present but the
+   * repository unusable, every later cycle skips the clone on the strength of
+   * that directory, and the config write or fetch below fails forever.
+   *
+   * Probing beats trusting the path. Two conditions, both load-bearing:
+   * `rev-parse --absolute-git-dir` must resolve to THIS directory — an invalid
+   * `.git` does not make git fail, it makes git WALK UP and answer with an
+   * ancestor repository's git dir, which would make a broken `_main` look
+   * healthy for anyone whose checkout root sits inside a repo — and origin must
+   * have a URL, without which the fetch cannot run.
+   *
+   * Deliberately NOT gated on `hasResolvableHead`: an interrupted clone usually
+   * leaves an unborn HEAD while remaining a perfectly good object and ref
+   * store, and `_main`'s own working tree is never used — only worktrees are —
+   * so requiring a resolvable HEAD would force needless full re-clones.
+   *
+   * Rebuilding `_main` is safe for existing task directories: their `.git` file
+   * then points at a missing `_main/.git/worktrees/<id>`, `hasResolvableHead`
+   * fails, and `ensureWorktreeCheckout` re-adds each as a worktree of the new
+   * canonical clone.
+   */
+  private async discardUnusableCanonicalClone(canonicalDir: string): Promise<void> {
+    if (!(await pathExists(join(canonicalDir, ".git")))) {
+      return;
+    }
+    const readGit = async (args: readonly string[]): Promise<string> => {
+      try {
+        return (
+          await runCommand("git", args, {
+            cwd: canonicalDir,
+            captureStdout: true,
+            captureStderr: true,
+          })
+        ).trim();
+      } catch {
+        return "";
+      }
+    };
+    const gitDir = await readGit(["rev-parse", "--absolute-git-dir"]);
+    const originUrl = await readGit(["config", "--get", "remote.origin.url"]);
+    const usable =
+      gitDir !== "" &&
+      originUrl !== "" &&
+      resolve(gitDir) === resolve(join(canonicalDir, ".git"));
+    if (usable) {
+      return;
+    }
+    console.warn(
+      `[vibrator] Canonical clone at ${canonicalDir} is unusable (git dir "${gitDir}", origin "${originUrl}"); discarding it and re-cloning.`,
+    );
+    await rm(canonicalDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+
   private async ensureCanonicalClone(owner: string, repo: string): Promise<string> {
     const canonicalDir = join(this.checkoutRootDir, `${owner}-${repo}`, "_main");
     // The whole body is serialized, not just the clone: leaving the config
@@ -1781,6 +1841,7 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // they are per-checkout and safe concurrently once the clone is complete,
     // and a 30-minute Claude run must never hold this lock.
     await withCanonicalCloneLock(canonicalDir, async () => {
+      await this.discardUnusableCanonicalClone(canonicalDir);
       await mkdir(canonicalDir, { recursive: true });
       if (!(await pathExists(join(canonicalDir, ".git")))) {
         await this.runAuthenticatedGit([
@@ -1789,6 +1850,19 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
           canonicalDir,
         ]);
       }
+      // A `git config` killed mid-write — the shutdown reaper, an OOM kill —
+      // dies holding `.git/config.lock`, and nothing ever removes it. git takes
+      // that lock with a single O_CREAT|O_EXCL and never retries, so every
+      // later config write exits 255 ("could not lock config file"), which
+      // `--replace-all` cannot cure either: it is a second permanent wedge with
+      // the same shape as the duplicated refspec it replaced. Safe to clear
+      // unconditionally here because we hold the canonical-clone lock and no
+      // `git config` writer of ours survives process exit, so a lock still
+      // present on entry has no owner. Scoped to this one file for the same
+      // reason `resetWorkingTreeToClean` sweeps only the per-worktree locks:
+      // `FETCH_HEAD.lock` and friends are legitimately held for the length of a
+      // transfer, and deleting those would corrupt a live fetch.
+      await rm(join(canonicalDir, ".git", "config.lock"), { force: true });
       await this.setGitConfig(
         canonicalDir,
         "remote.origin.fetch",
