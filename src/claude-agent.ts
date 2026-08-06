@@ -1459,9 +1459,15 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
       : `origin/${params.baseBranch}`;
 
     // Create or reset the feature branch from an up-to-date starting point.
-    await runCommand("git", ["checkout", "-B", branch, branchStartPoint], {
-      cwd: repoDir,
-    });
+    // A linked worktree shares the canonical clone's ref store, so `checkout
+    // -B` writes `refs/heads/<branch>` into `_main/.git`. Concurrent engines
+    // doing this against the same canonical clone race that shared store and a
+    // loser dies with "cannot lock ref" (exit 1), so serialize it per clone.
+    await withCanonicalCloneLock(this.canonicalDirFor(params.owner, params.repo), () =>
+      runCommand("git", ["checkout", "-B", branch, branchStartPoint], {
+        cwd: repoDir,
+      }),
+    );
 
     const prompt = buildImplementationPrompt(params, branch);
     const stdout = await this.runClaude(prompt, repoDir, this.claudeInitialModel, this.claudeInitialEffort);
@@ -1830,8 +1836,13 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     await rm(canonicalDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 
+  /** Absolute path to the shared canonical clone (`_main`) for a repo. */
+  private canonicalDirFor(owner: string, repo: string): string {
+    return join(this.checkoutRootDir, `${owner}-${repo}`, "_main");
+  }
+
   private async ensureCanonicalClone(owner: string, repo: string): Promise<string> {
-    const canonicalDir = join(this.checkoutRootDir, `${owner}-${repo}`, "_main");
+    const canonicalDir = this.canonicalDirFor(owner, repo);
     // The whole body is serialized, not just the clone: leaving the config
     // write outside the lock still lets it land inside another engine's
     // in-flight clone, which is precisely the interleaving that duplicates the
@@ -1954,18 +1965,25 @@ class DefaultClaudeAgentClient implements ClaudeAgentClient {
     // 128), wedging this checkout until someone runs `git worktree remove` by
     // hand. Deregister the path (best effort), prune, then add with `-f -f`,
     // which overrides a locked/missing registration, so checkout self-heals.
-    await runCommand("git", ["worktree", "remove", "--force", repoDir], {
-      cwd: canonicalDir,
-      captureStderr: true,
-    }).catch(() => {
-      // The common case: nothing registered at this path, so nothing to clear.
+    // Deregister/prune/add all mutate the shared canonical clone's worktree
+    // admin dir and refs (`_main/.git/worktrees`, `_main/.git/config`).
+    // Concurrent engines each preparing their own worktree of the same clone
+    // race those shared locks, so a loser dies with exit 128/1. Serialize the
+    // mutation per canonical clone; the long Claude run stays outside it.
+    await withCanonicalCloneLock(canonicalDir, async () => {
+      await runCommand("git", ["worktree", "remove", "--force", repoDir], {
+        cwd: canonicalDir,
+        captureStderr: true,
+      }).catch(() => {
+        // The common case: nothing registered at this path, so nothing to clear.
+      });
+      await runCommand("git", ["worktree", "prune"], { cwd: canonicalDir, captureStderr: true });
+      await runCommand(
+        "git",
+        ["worktree", "add", "--detach", "-f", "-f", repoDir, worktreeRef],
+        { cwd: canonicalDir, captureStderr: true },
+      );
     });
-    await runCommand("git", ["worktree", "prune"], { cwd: canonicalDir, captureStderr: true });
-    await runCommand(
-      "git",
-      ["worktree", "add", "--detach", "-f", "-f", repoDir, worktreeRef],
-      { cwd: canonicalDir, captureStderr: true },
-    );
   }
 
   private async resetWorkingTreeToClean(repoDir: string): Promise<void> {
