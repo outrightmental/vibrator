@@ -283,6 +283,26 @@ Apply the `manual` label to any issue or PR to remove it from automated work:
 
 Vibrator creates the `manual` label in the repository on startup if it does not already exist.
 
+### The `review` label
+
+Apply the `review` label to an issue to opt it into the
+**implement-then-wait-for-review** workflow
+([outrightmental.com#409](https://github.com/outrightmental/outrightmental.com/issues/409)):
+Vibrator implements the issue, self-reviews, and fixes failing checks exactly
+as usual — but after the clean self-review it marks the PR ready and **stops**.
+The final PR is never squash-merged; it waits for a human. This is the flag
+that automated intake (e.g. Mailbot's note-to-issue pipeline) applies so a
+one-line emailed note becomes a reviewable PR without ever landing on `main`
+unattended.
+
+- Works in every mode; in Project SDLC it is redundant (that mode already never auto-merges).
+- The label is copied onto the PR when it is opened, so the no-merge gate survives even if the issue is closed or relabelled mid-flight.
+- A parked PR does not count against `MAX_CONCURRENCY`.
+- Converting the PR back to draft, or commenting on it, re-queues it: Vibrator addresses the feedback, self-reviews, and requests review again.
+- Removing the label from both the issue and the PR returns the PR to the normal auto-merge flow.
+
+Vibrator creates the `review` label in the repository on startup if it does not already exist.
+
 ### Milestone ordering
 
 Milestones act as a priority queue, not a gate. Issues in earlier milestones are preferred over later-milestone issues, but all eligible unblocked issues can start regardless of milestone. Bug-typed issues (GitHub's native Issue Type = "Bug") always jump ahead of every other type.

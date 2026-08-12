@@ -17,7 +17,7 @@ import {
   loadSnapshot,
 } from "./github.js";
 import { GitHubApiGateway } from "./github-gateway.js";
-import { buildPlan, FOCUS_LABEL, type ProjectModeConfig } from "./orchestrator.js";
+import { buildPlan, FOCUS_LABEL, REVIEW_LABEL, type ProjectModeConfig } from "./orchestrator.js";
 import {
   repoActionKey,
   claimsForRepo,
@@ -906,6 +906,17 @@ async function main(): Promise<void> {
       bullet("\"manual\" label is present");
     } catch (error) {
       bullet(`could not ensure "manual" label exists: ${(error as Error).message}`);
+    }
+    note(`ensuring the "${REVIEW_LABEL}" label exists on the repository…`);
+    try {
+      await ctx.gitHubClient.ensureLabelExists(
+        REVIEW_LABEL,
+        "d93f0b",
+        "Vibrator implements this issue but leaves the final PR for human review",
+      );
+      bullet(`"${REVIEW_LABEL}" label is present`);
+    } catch (error) {
+      bullet(`could not ensure "${REVIEW_LABEL}" label exists: ${(error as Error).message}`);
     }
     if (ctx.config.focusMode) {
       note(`ensuring the "${FOCUS_LABEL}" label exists on the repository…`);
