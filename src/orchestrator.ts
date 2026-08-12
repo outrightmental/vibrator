@@ -47,6 +47,16 @@ const MANUAL_LABEL = "manual";
 export const FOCUS_LABEL = "focus";
 
 /**
+ * The label that opts an issue into the implement-then-wait-for-review
+ * workflow: vibrator implements it, self-reviews, and fixes CI exactly as
+ * usual, but after the clean self-review it requests human review instead
+ * of squash-merging — the final PR is always left for a human
+ * (outrightmental.com#409). Works in every mode; in project mode it is
+ * redundant (project mode already never auto-merges).
+ */
+export const REVIEW_LABEL = "review";
+
+/**
  * PRs labelled "manual" are never worked on automatically: no self-review,
  * no merge, no conflict resolution. They sit parked, exactly like an issue
  * labelled "manual" is never picked up.
@@ -210,6 +220,7 @@ function planPullRequestAction(
   agentSessions: AgentSession[],
   projectMode?: ProjectModeConfig,
   issueProjectStatuses?: ReadonlyMap<number, string>,
+  reviewGated = false,
 ): OrchestratorAction | undefined {
   const primaryIssueNumber = issueNumbers[0];
 
@@ -279,14 +290,16 @@ function planPullRequestAction(
     return undefined;
   }
 
-  // In project mode, handle re-queue conditions after human review was requested.
-  if (projectMode && latestCompletedSession?.phase === "request-review") {
+  // After human review was requested (project mode or a review-gated PR),
+  // handle re-queue conditions; otherwise the PR stays parked for the human.
+  if ((projectMode || reviewGated) && latestCompletedSession?.phase === "request-review") {
     // PR converted to draft → human wants more work done.
     const needsWork =
       pullRequest.draft ||
       pullRequest.hasNewCommentsSinceLastRead ||
-      // Issue moved back to "Ready" in the project board.
-      (actionIssueNumber !== undefined &&
+      // Issue moved back to "Ready" in the project board (project mode only).
+      (projectMode !== undefined &&
+        actionIssueNumber !== undefined &&
         issueProjectStatuses?.get(actionIssueNumber)?.toLowerCase() === "ready");
 
     if (!needsWork) {
@@ -332,16 +345,17 @@ function planPullRequestAction(
       });
     }
 
-    // Clean self-review. In project mode, one clean pass → request human review
-    // (never auto-merge).
-    if (projectMode) {
+    // Clean self-review. In project mode or on a review-gated PR, one clean
+    // pass → request human review (never auto-merge). The human is the
+    // second reviewer.
+    if (projectMode || reviewGated) {
       if (mergeGateAction !== "proceed") {
         return mergeGateAction;
       }
       return withIssueNumber({
         type: "request-review",
         pullRequestNumber: pullRequest.number,
-        reviewers: projectMode.reviewers,
+        reviewers: projectMode?.reviewers ?? [],
       });
     }
 
@@ -443,6 +457,15 @@ export function buildPlan(
   );
   const isFocusPullRequest = (pullRequest: PullRequest): boolean =>
     pullRequest.linkedIssueNumbers.some((issueNumber) => focusIssueNumbers.has(issueNumber));
+  // A PR is review-gated when it advances a `review`-labelled issue or
+  // carries the label itself (the label is copied onto the PR at creation so
+  // the gate survives even if the issue is closed or relabelled mid-flight).
+  const reviewIssueNumbers = new Set(
+    issues.filter((issue) => issue.labels.includes(REVIEW_LABEL)).map((issue) => issue.number),
+  );
+  const isReviewGatedPullRequest = (pullRequest: PullRequest): boolean =>
+    pullRequest.labels.includes(REVIEW_LABEL) ||
+    pullRequest.linkedIssueNumbers.some((issueNumber) => reviewIssueNumbers.has(issueNumber));
   const blockedIssueIndex = buildBlockedIssueIndex(issues);
 
   // Only expose open blockers to the dashboard — a closed issue no longer blocks anything.
@@ -496,6 +519,7 @@ export function buildPlan(
       snapshot.agentSessions,
       projectMode,
       issueProjectStatuses,
+      isReviewGatedPullRequest(pullRequest),
     );
     if (action) {
       actions.push(action);

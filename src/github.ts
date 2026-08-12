@@ -1416,6 +1416,21 @@ export class GitHubClient {
   }
 
   /**
+   * Add labels to a pull request (PRs are issues in the REST API). Labels
+   * that do not exist in the repository are created by GitHub implicitly.
+   */
+  async addLabelsToPullRequest(pullRequestNumber: number, labels: string[]): Promise<void> {
+    await this.request(
+      `/repos/${this.options.owner}/${this.options.repo}/issues/${pullRequestNumber}/labels`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labels }),
+      },
+    );
+  }
+
+  /**
    * Cached project metadata: node ID, status field ID, and status option map.
    */
   private projectMetaCache: Map<number, ProjectMeta> | undefined;
@@ -1731,26 +1746,28 @@ export async function loadSnapshot(
     sessionStore.load(),
   ]);
 
-  if (!projectConfig) {
-    return { issues, pullRequests, agentSessions };
-  }
+  // Merge project status into issues (project mode only).
+  let issuesWithStatus = issues;
+  if (projectConfig) {
+    let projectStatuses: Map<number, { itemId: string; status: string; statusOptionId: string }>;
+    try {
+      projectStatuses = await gitHubClient.fetchProjectIssueStatuses(projectConfig.projectNumber);
+    } catch (error) {
+      console.warn(`[vibrator] Could not fetch project statuses: ${String(error)}`);
+      projectStatuses = new Map();
+    }
 
-  // Merge project status into issues.
-  let projectStatuses: Map<number, { itemId: string; status: string; statusOptionId: string }>;
-  try {
-    projectStatuses = await gitHubClient.fetchProjectIssueStatuses(projectConfig.projectNumber);
-  } catch (error) {
-    console.warn(`[vibrator] Could not fetch project statuses: ${String(error)}`);
-    projectStatuses = new Map();
+    issuesWithStatus = issues.map((issue) => {
+      const entry = projectStatuses.get(issue.number);
+      return entry ? { ...issue, projectStatus: entry.status } : issue;
+    });
   }
-
-  const issuesWithStatus = issues.map((issue) => {
-    const entry = projectStatuses.get(issue.number);
-    return entry ? { ...issue, projectStatus: entry.status } : issue;
-  });
 
   // For PRs whose latest completed session is `request-review`, check for
-  // new human comments since the last-read timestamp.
+  // new human comments since the last-read timestamp. This drives the
+  // re-queue signal both in project mode and for `review`-labelled work;
+  // in plain auto-merge mode no request-review sessions exist, so the guard
+  // below skips every PR without extra API calls.
   const openPullRequests = pullRequests.filter((pr) => pr.state === "open");
   const pullRequestsWithNewComments = await Promise.all(
     openPullRequests.map(async (pr) => {

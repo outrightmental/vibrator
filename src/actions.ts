@@ -1,4 +1,4 @@
-import { buildMergedPullRequestBody, CHECKS_TIMEOUT_MS } from "./orchestrator.js";
+import { buildMergedPullRequestBody, CHECKS_TIMEOUT_MS, REVIEW_LABEL } from "./orchestrator.js";
 import type {
   AgentSessionPhase,
   AgentSessionResult,
@@ -40,6 +40,8 @@ export interface ActionGitHubClient {
   addEyesReaction(comment: { id: number; kind?: string }): Promise<void>;
   /** Convert a PR from draft to ready-for-review (no-op if already ready). */
   markPullRequestReadyForReview?(pullRequestNumber: number): Promise<void>;
+  /** Add labels to a pull request. */
+  addLabelsToPullRequest?(pullRequestNumber: number, labels: string[]): Promise<void>;
   /** Request review from specific GitHub users. */
   requestPullRequestReview?(pullRequestNumber: number, reviewers: string[]): Promise<void>;
   /** Move an issue to a project status (e.g. "In Progress"). */
@@ -287,6 +289,22 @@ export async function executeAction(
         );
         if (existingPullRequest !== undefined && existingPullRequest.body.trim() !== pullRequestBody.trim()) {
           await gitHubClient.updatePullRequestBody(created.number, pullRequestBody);
+        }
+      }
+      // A `review`-labelled issue passes its label to the PR so the
+      // no-auto-merge gate survives even if the issue is closed or
+      // relabelled while the PR is in flight.
+      if (
+        created.created &&
+        issue.labels.includes(REVIEW_LABEL) &&
+        gitHubClient.addLabelsToPullRequest
+      ) {
+        try {
+          await gitHubClient.addLabelsToPullRequest(created.number, [REVIEW_LABEL]);
+        } catch (error) {
+          console.warn(
+            `[vibrator] Failed to copy the "${REVIEW_LABEL}" label onto PR #${created.number}: ${String(error)}`,
+          );
         }
       }
       // Only create a session if this is a new PR.
